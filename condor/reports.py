@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -98,6 +99,37 @@ _HTML_TEMPLATE = """\
   .section-table tr:last-child td {{ border-bottom: none; }}
   .plotly-chart {{ min-height: 400px; margin-bottom: 24px; width: 100%; overflow: hidden; }}
   .plotly-chart .js-plotly-plot, .plotly-chart .plot-container, .plotly-chart .plotly {{ width: 100% !important; }}
+  .params-panel {{
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    margin-bottom: 24px; overflow: hidden;
+  }}
+  .params-panel > summary {{
+    list-style: none; cursor: pointer; display: flex; align-items: center;
+    justify-content: space-between; gap: 16px; padding: 14px 16px;
+  }}
+  .params-panel > summary::-webkit-details-marker {{ display: none; }}
+  .params-panel > summary::marker {{ content: ""; }}
+  .params-summary-text {{ min-width: 0; }}
+  .params-title {{ display: block; font-size: 14px; font-weight: 600; color: var(--text); }}
+  .params-subtitle {{ display: block; margin-top: 2px; font-size: 12px; color: var(--text-muted); }}
+  .params-chevron {{
+    flex-shrink: 0; color: var(--text-muted); font-size: 12px;
+    transition: transform 0.15s ease;
+  }}
+  .params-panel[open] .params-chevron {{ transform: rotate(180deg); }}
+  .params-body {{ border-top: 1px solid var(--border); padding: 16px; }}
+  .params-grid {{
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px 20px;
+  }}
+  .params-field {{ min-width: 0; }}
+  .params-label {{
+    font-size: 11px; font-weight: 500; color: var(--text-muted); margin-bottom: 4px;
+    word-break: break-word;
+  }}
+  .params-value {{
+    font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    color: var(--text); word-break: break-word;
+  }}
 </style>
 </head>
 <body>
@@ -274,7 +306,7 @@ def _cleanup_locked(max_reports: int = MAX_REPORTS) -> None:
 # ── ReportBuilder ──
 
 
-_SECTION_PRIORITY = {"kpi": 0, "plotly": 1, "table": 2, "markdown": 3}
+_SECTION_PRIORITY = {"kpi": 0, "params": 1, "plotly": 2, "table": 3, "markdown": 4}
 
 _POSITIVE_TERMS = frozenset(
     {"long", "bullish", "true", "increasing", "positive", "yes", "buy"}
@@ -400,18 +432,17 @@ class ReportBuilder:
         self._sections.append({"type": "table", "columns": columns or [], "rows": rows})
         return self
 
-    def params(self, config: dict, title: str = "Run Parameters") -> ReportBuilder:
-        """Render run configuration as a two-column Parameter / Value table."""
-        rows = []
-        for key in sorted(config.keys()):
-            val = config[key]
-            if isinstance(val, (dict, list)):
-                display = json.dumps(val)
-            else:
-                display = str(val)
-            rows.append({"Parameter": key, "Value": display})
-        self.markdown(f"### {title}")
-        self.table(rows, columns=["Parameter", "Value"])
+    def params(
+        self,
+        config: dict,
+        title: str = "Run Parameters",
+        *,
+        open: bool = False,
+    ) -> ReportBuilder:
+        """Render run configuration as a collapsible parameter panel."""
+        self._sections.append(
+            {"type": "params", "title": title, "config": config, "open": open}
+        )
         return self
 
     async def save(self, report_id: str | None = None) -> str:
@@ -516,6 +547,9 @@ class ReportBuilder:
                         f'{delta_html}</div>'
                     )
                 parts.append(f'<div class="kpi-bar">{"".join(cards)}</div>')
+            elif sec["type"] == "params":
+                parts.append(ReportBuilder._render_params(sec))
+                i += 1
             elif sec["type"] == "markdown":
                 parts.append(f'<div class="section section-md">{_md_to_html(sec["content"])}</div>')
                 i += 1
@@ -528,6 +562,43 @@ class ReportBuilder:
             else:
                 i += 1
         return "\n".join(parts)
+
+    @staticmethod
+    def _format_config_value(val: Any) -> str:
+        if isinstance(val, (dict, list)):
+            return html.escape(json.dumps(val))
+        return html.escape(str(val))
+
+    @staticmethod
+    def _render_params(section: dict) -> str:
+        config = section["config"]
+        title = html.escape(section.get("title", "Run Parameters"))
+        open_attr = " open" if section.get("open") else ""
+        count = len(config)
+        subtitle = f"{count} setting{'s' if count != 1 else ''} used for this run"
+        fields = []
+        for key in sorted(config.keys()):
+            label = html.escape(key)
+            value = ReportBuilder._format_config_value(config[key])
+            fields.append(
+                f'<div class="params-field">'
+                f'<div class="params-label">{label}</div>'
+                f'<div class="params-value">{value}</div>'
+                f"</div>"
+            )
+        body = "".join(fields)
+        return (
+            f'<details class="section params-panel"{open_attr}>'
+            f'<summary class="params-summary">'
+            f'<div class="params-summary-text">'
+            f'<span class="params-title">{title}</span>'
+            f'<span class="params-subtitle">{subtitle}</span>'
+            f"</div>"
+            f'<span class="params-chevron">▼</span>'
+            f"</summary>"
+            f'<div class="params-body"><div class="params-grid">{body}</div></div>'
+            f"</details>"
+        )
 
     @staticmethod
     def _render_table(columns: list[str], rows: list[dict]) -> str:
