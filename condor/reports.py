@@ -163,10 +163,26 @@ window.addEventListener('resize', function() {{
 """
 
 
+def get_report_raw_html(report_id: str) -> tuple[str, str] | None:
+    """Return (raw_html, filename) of the report exactly as saved on disk.
+
+    This is the interactive report (live Plotly charts via CDN), suitable for
+    opening in a real browser.
+    """
+    entry = get_report(report_id)
+    if not entry:
+        return None
+    path = CHARTS_DIR / entry["filename"]
+    if not path.exists():
+        return None
+    return path.read_text(), entry["filename"]
+
+
 def _md_to_html(text: str) -> str:
     """Convert markdown to HTML, falling back to <pre> if library fails."""
     try:
         import markdown
+
         return markdown.markdown(text, extensions=["fenced_code", "tables"])
     except Exception:
         escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -226,7 +242,8 @@ def list_reports(
     if search:
         q = search.lower()
         entries = [
-            e for e in entries
+            e
+            for e in entries
             if q in e.get("title", "").lower()
             or q in e.get("source_name", "").lower()
             or any(q in t.lower() for t in e.get("tags", []))
@@ -258,7 +275,9 @@ def list_reports_grouped() -> list[dict]:
             groups[sn]["all_tags"].update(e.get("tags", []))
     for g in groups.values():
         g["all_tags"] = sorted(g["all_tags"])
-    return sorted(groups.values(), key=lambda g: g["latest_report"]["created_at"], reverse=True)
+    return sorted(
+        groups.values(), key=lambda g: g["latest_report"]["created_at"], reverse=True
+    )
 
 
 def get_report(report_id: str) -> dict | None:
@@ -413,8 +432,18 @@ class ReportBuilder:
         self._manual_order = True
         return self
 
-    def kpi(self, label: str, value: str, delta: str | None = None, trend: str = "neutral") -> ReportBuilder:
-        self._sections.append({"type": "kpi", "label": label, "value": value, "delta": delta, "trend": trend})
+    def kpi(
+        self, label: str, value: str, delta: str | None = None, trend: str = "neutral"
+    ) -> ReportBuilder:
+        self._sections.append(
+            {
+                "type": "kpi",
+                "label": label,
+                "value": value,
+                "delta": delta,
+                "trend": trend,
+            }
+        )
         return self
 
     def markdown(self, text: str) -> ReportBuilder:
@@ -426,7 +455,9 @@ class ReportBuilder:
         self._sections.append({"type": "plotly", "content": html})
         return self
 
-    def table(self, rows: list[dict], columns: list[str] | None = None) -> ReportBuilder:
+    def table(
+        self, rows: list[dict], columns: list[str] | None = None
+    ) -> ReportBuilder:
         if not columns and rows:
             columns = list(rows[0].keys())
         self._sections.append({"type": "table", "columns": columns or [], "rows": rows})
@@ -521,7 +552,9 @@ class ReportBuilder:
         sections = list(self._sections)
         if not self._manual_order:
             # Stable sort: kpi first, then plotly, table, markdown
-            sections = sorted(sections, key=lambda s: _SECTION_PRIORITY.get(s["type"], 99))
+            sections = sorted(
+                sections, key=lambda s: _SECTION_PRIORITY.get(s["type"], 99)
+            )
 
         parts = []
         i = 0
@@ -544,17 +577,21 @@ class ReportBuilder:
                         f'<div class="kpi-card">'
                         f'<div class="label">{k["label"]}</div>'
                         f'<div class="value{(" " + value_cls) if value_cls else ""}">{k["value"]}</div>'
-                        f'{delta_html}</div>'
+                        f"{delta_html}</div>"
                     )
                 parts.append(f'<div class="kpi-bar">{"".join(cards)}</div>')
             elif sec["type"] == "params":
                 parts.append(ReportBuilder._render_params(sec))
                 i += 1
             elif sec["type"] == "markdown":
-                parts.append(f'<div class="section section-md">{_md_to_html(sec["content"])}</div>')
+                parts.append(
+                    f'<div class="section section-md">{_md_to_html(sec["content"])}</div>'
+                )
                 i += 1
             elif sec["type"] == "plotly":
-                parts.append(f'<div class="section plotly-chart">{sec["content"]}</div>')
+                parts.append(
+                    f'<div class="section plotly-chart">{sec["content"]}</div>'
+                )
                 i += 1
             elif sec["type"] == "table":
                 parts.append(ReportBuilder._render_table(sec["columns"], sec["rows"]))
@@ -629,7 +666,9 @@ class LiveReport:
     subsequent call. Ideal for continuous routines that accumulate data.
     """
 
-    def __init__(self, title: str, source_name: str = "", tags: list[str] | None = None):
+    def __init__(
+        self, title: str, source_name: str = "", tags: list[str] | None = None
+    ):
         self._title = title
         self._source_name = source_name
         self._tags = tags or []

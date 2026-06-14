@@ -494,6 +494,11 @@ export interface RoutineInstance {
   error?: string | null;
 }
 
+export interface RoutineHooks {
+  telegram: { enabled: boolean; chat_ids: string[] };
+  trigger: "success" | "always" | "failure";
+}
+
 // ── Archived Bots ──
 
 export interface ArchivedBotSummary {
@@ -1161,6 +1166,15 @@ export const api = {
     apiFetch<{ options: string[] }>(
       `/api/v1/routines/options/${encodeURIComponent(source)}?server=${encodeURIComponent(server)}`,
     ),
+
+  getRoutineHooks: (name: string) =>
+    apiFetch<RoutineHooks>(`/api/v1/routines/${encodeURIComponent(name)}/hooks`),
+
+  saveRoutineHooks: (name: string, hooks: RoutineHooks) =>
+    apiFetch<RoutineHooks>(`/api/v1/routines/${encodeURIComponent(name)}/hooks`, {
+      method: "PUT",
+      body: JSON.stringify(hooks),
+    }),
 
   // ── Agent Routines & Reports ──
 
