@@ -28,6 +28,9 @@ if _web_url_raw:
     WEB_URL = _web_url_raw.rstrip("/")
     _parsed = urlparse(WEB_URL)
     WEB_PORT = _parsed.port or (443 if _parsed.scheme == "https" else 80)
+    # Explicit WEB_PORT overrides URL-derived port (dev: WEB_URL=:5173 Vite, WEB_PORT=:8088 API)
+    if _web_port_raw:
+        WEB_PORT = int(_web_port_raw)
 else:
     WEB_PORT = int(_web_port_raw) if _web_port_raw else 8088
     WEB_URL = f"http://localhost:{WEB_PORT}"

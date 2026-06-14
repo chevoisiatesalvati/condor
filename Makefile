@@ -2,7 +2,7 @@
 SHELL := /bin/bash
 export PATH := $(HOME)/.local/bin:$(HOME)/.cargo/bin:$(PATH)
 
-.PHONY: help setup install run test lint build-frontend setup-chrome
+.PHONY: help setup install run dev dev-backend dev-frontend test lint build-frontend setup-chrome
 
 # Helper function to find node/npm via nvm or system
 define find_node
@@ -19,7 +19,8 @@ help:
 	@echo ""
 	@echo "  make setup       - Interactive setup wizard"
 	@echo "  make install     - Setup + install all dependencies"
-	@echo "  make run         - Run locally (dev)"
+	@echo "  make run         - Run locally (production: built UI on :8088)"
+	@echo "  make dev         - Dev mode: Vite HMR (:5173) + API/Telegram (:8088)"
 	@echo "  make test        - Run tests"
 	@echo "  make lint        - Run black + isort"
 
@@ -49,6 +50,22 @@ build-frontend:
 
 run: build-frontend
 	uv run python main.py
+
+dev-backend:
+	CONDOR_DEV=1 WEB_URL=http://localhost:5173 WEB_PORT=8088 uv run python main.py
+
+dev-frontend:
+	@bash -c ' \
+		export NVM_DIR="$$HOME/.nvm"; \
+		[ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh"; \
+		cd frontend && npm run dev \
+	'
+
+dev:
+	@trap 'kill 0' INT TERM; \
+	$(MAKE) dev-backend & \
+	$(MAKE) dev-frontend & \
+	wait
 
 test:
 	uv run pytest

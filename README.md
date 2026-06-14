@@ -330,8 +330,32 @@ For local development or manual setup without the [deploy installer](https://git
 git clone https://github.com/hummingbot/condor.git
 cd condor
 make install     # Interactive setup + uv deps + AI CLI tools
-make run         # Start the bot
+make run         # Production: build UI + serve on http://localhost:8088
 ```
+
+### Dev vs production
+
+| | `make dev` | `make run` |
+|--|-----------|-----------|
+| Frontend | Vite HMR at `http://localhost:5173` | Built static files at `http://localhost:8088` |
+| Backend restart | Only for `main.py` / dependency changes | Full restart each time |
+| Handler/routine edits | Auto-reload (Telegram handlers) | Auto-reload (Telegram handlers) |
+| Web API edits (`condor/web/`) | Auto-reload uvicorn task | Manual restart |
+| Telegram `/web` link | `http://localhost:5173` | `http://localhost:8088` |
+
+**Development workflow:**
+
+```bash
+make dev   # Starts API/Telegram on :8088 and Vite on :5173
+```
+
+Open `http://localhost:5173` for the dashboard. React changes hot-reload instantly. Python changes under `handlers/`, `routines/`, `condor/web/`, and other `condor/` modules reload automatically without restarting the Telegram bot.
+
+**Still requires a full restart:**
+
+- Changes to `main.py` boot logic
+- `pyproject.toml` / dependency updates
+- MCP server subprocess code
 
 To run **Hummingbot API** locally with Docker (for example from a sibling clone of [hummingbot-api](https://github.com/hummingbot/hummingbot-api)):
 
