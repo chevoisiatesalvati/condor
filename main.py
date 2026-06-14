@@ -504,9 +504,183 @@ async def post_init(application: Application) -> None:
     asyncio.create_task(watch_and_reload(application))
 
 
+# ── Web server hot-reload (dev) ──
+
+_WEB_RELOAD_SKIP = frozenset({"condor.web.ws_manager"})
+_web_reload_event: asyncio.Event | None = None
+
+
+def request_web_reload() -> None:
+    """Signal the running web server to restart (reload route modules)."""
+    if _web_reload_event is not None:
+        _web_reload_event.set()
+
+
+def reload_web_modules(extra_modules: list[str] | None = None) -> None:
+    """Reload FastAPI route modules without touching the WS manager singleton."""
+    if extra_modules:
+        for name in extra_modules:
+            if name in _WEB_RELOAD_SKIP:
+                continue
+            mod = sys.modules.get(name)
+            if mod is not None:
+                importlib.reload(mod)
+                logger.info("Reloaded module: %s", name)
+
+    to_reload = sorted(
+        (
+            name
+            for name in sys.modules
+            if name.startswith("condor.web.") and name not in _WEB_RELOAD_SKIP
+        ),
+        key=lambda n: n.count("."),
+        reverse=True,
+    )
+    for name in to_reload:
+        importlib.reload(sys.modules[name])
+        logger.info("Reloaded module: %s", name)
+
+
+def _path_to_module(path: Path, project_root: Path) -> str | None:
+    """Map a .py file path under project_root to a dotted module name."""
+    try:
+        rel = path.resolve().relative_to(project_root.resolve())
+    except ValueError:
+        return None
+    if rel.suffix != ".py":
+        return None
+    parts = list(rel.parts)
+    if parts[-1] == "__init__.py":
+        parts = parts[:-1]
+    else:
+        parts[-1] = parts[-1][:-3]
+    return ".".join(parts) if parts else None
+
+
+class WebServerRunner:
+    """Restartable uvicorn server for dev hot-reload."""
+
+    def __init__(self, host: str, port: int):
+        self._host = host
+        self._port = port
+        self.server = None
+        self.task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        import uvicorn
+
+        from condor.web.app import create_app
+
+        web_app = create_app()
+        config = uvicorn.Config(
+            web_app,
+            host=self._host,
+            port=self._port,
+            log_level="info",
+            access_log=False,
+        )
+        self.server = uvicorn.Server(config)
+        self.task = asyncio.create_task(self.server.serve())
+
+    async def stop(self) -> None:
+        if self.server is not None:
+            self.server.should_exit = True
+        if self.task is not None:
+            await self.task
+        self.server = None
+        self.task = None
+
+    async def restart(self, extra_modules: list[str] | None = None) -> None:
+        await self.stop()
+        reload_web_modules(extra_modules)
+        await self.start()
+
+
+async def web_reload_loop(runner: WebServerRunner) -> None:
+    """Process web reload requests from the file watcher."""
+    global _web_reload_event, _pending_web_modules
+    if _web_reload_event is None:
+        _web_reload_event = asyncio.Event()
+
+    while True:
+        await _web_reload_event.wait()
+        _web_reload_event.clear()
+        modules = list(dict.fromkeys(_pending_web_modules))
+        _pending_web_modules.clear()
+        try:
+            await runner.restart(modules or None)
+            logger.info("✅ Auto-reloaded web server successfully")
+        except Exception as e:
+            logger.error("❌ Web server reload failed: %s", e, exc_info=True)
+
+
+_pending_web_modules: list[str] = []
+
+
+def queue_web_reload(extra_modules: list[str] | None = None) -> None:
+    """Request a web server restart, optionally reloading shared condor modules first."""
+    global _pending_web_modules
+    if extra_modules:
+        for name in extra_modules:
+            if name not in _pending_web_modules:
+                _pending_web_modules.append(name)
+    request_web_reload()
+
+
+def _classify_changes(
+    changes: set[tuple[int, str]],
+    *,
+    handlers_path: Path,
+    routines_path: Path,
+    assistants_path: Path,
+    condor_path: Path,
+    condor_web_path: Path,
+    main_py: Path,
+    project_root: Path,
+) -> tuple[bool, bool, bool, list[str]]:
+    """Return (reload_assistants, reload_handlers, reload_web, extra_condor_modules)."""
+    reload_assistants = False
+    reload_handlers = False
+    reload_web = False
+    extra_modules: list[str] = []
+
+    handlers_str = str(handlers_path.resolve())
+    routines_str = str(routines_path.resolve())
+    assistants_str = str(assistants_path.resolve())
+    condor_str = str(condor_path.resolve())
+    condor_web_str = str(condor_web_path.resolve())
+    main_py_str = str(main_py.resolve())
+
+    for _change_type, raw_path in changes:
+        path = Path(raw_path).resolve()
+        path_str = str(path)
+
+        if path_str == main_py_str:
+            logger.warning("main.py changed — full manual restart required")
+            continue
+
+        if assistants_str in path_str and path.suffix == ".md":
+            reload_assistants = True
+
+        if handlers_str in path_str or routines_str in path_str:
+            reload_handlers = True
+            continue
+
+        if condor_web_str in path_str:
+            reload_web = True
+            continue
+
+        if condor_str in path_str:
+            reload_web = True
+            mod = _path_to_module(path, project_root)
+            if mod and mod not in _WEB_RELOAD_SKIP:
+                extra_modules.append(mod)
+
+    return reload_assistants, reload_handlers, reload_web, extra_modules
+
 
 async def watch_and_reload(application: Application) -> None:
-    """Watch for file changes and reload handlers automatically."""
+    """Watch for file changes and reload handlers or web server automatically."""
     try:
         from watchfiles import awatch
     except ImportError:
@@ -515,27 +689,51 @@ async def watch_and_reload(application: Application) -> None:
         )
         return
 
-    handlers_path = Path(__file__).parent / "handlers"
-    routines_path = Path(__file__).parent / "routines"
-    assistants_path = Path(__file__).parent / "assistants"
-    watch_paths = [handlers_path, routines_path]
+    project_root = Path(__file__).parent
+    handlers_path = project_root / "handlers"
+    routines_path = project_root / "routines"
+    assistants_path = project_root / "assistants"
+    condor_path = project_root / "condor"
+    condor_web_path = condor_path / "web"
+    main_py = Path(__file__)
+
+    watch_paths: list[Path] = [handlers_path, routines_path, condor_path, main_py]
     if assistants_path.exists():
         watch_paths.append(assistants_path)
-    logger.info(f"👀 Watching for changes in: {', '.join(str(p) for p in watch_paths)}")
+
+    logger.info(
+        "👀 Watching for changes in: %s",
+        ", ".join(str(p) for p in watch_paths),
+    )
 
     async for changes in awatch(*watch_paths):
-        logger.info(f"📝 Detected changes: {changes}")
+        logger.info("📝 Detected changes: %s", changes)
         try:
-            # Reload assistants if any .md file in assistants/ changed
-            if any(str(assistants_path) in str(path) for _, path in changes):
+            reload_assistants_flag, needs_handler_reload, needs_web_reload, extra_modules = _classify_changes(
+                changes,
+                handlers_path=handlers_path,
+                routines_path=routines_path,
+                assistants_path=assistants_path,
+                condor_path=condor_path,
+                condor_web_path=condor_web_path,
+                main_py=main_py,
+                project_root=project_root,
+            )
+
+            if reload_assistants_flag:
                 from handlers.agents._shared import reload_assistants
                 reload_assistants()
                 logger.info("✅ Auto-reloaded assistants")
-            reload_handlers()
-            register_handlers(application)
-            logger.info("✅ Auto-reloaded handlers successfully")
+
+            if needs_handler_reload:
+                reload_handlers()
+                register_handlers(application)
+                logger.info("✅ Auto-reloaded handlers successfully")
+
+            if needs_web_reload:
+                queue_web_reload(extra_modules or None)
         except Exception as e:
-            logger.error(f"❌ Auto-reload failed: {e}", exc_info=True)
+            logger.error("❌ Auto-reload failed: %s", e, exc_info=True)
 
 
 def get_persistence() -> SafePicklePersistence:
@@ -647,9 +845,6 @@ async def _run_dual(application: Application) -> None:
     """Run the Telegram bot and FastAPI web server concurrently."""
     import signal
 
-    import uvicorn
-
-    from condor.web.app import create_app
     from condor.web.ws_manager import get_ws_manager
 
     # Initialize and start the Telegram application.
@@ -657,22 +852,19 @@ async def _run_dual(application: Application) -> None:
     # We drive startup manually because uvicorn runs alongside polling, so we must invoke
     # post_init ourselves — that is where BotCommand menu sync and other boot hooks run.
     await application.initialize()
+
+    global _web_reload_event
+    _web_reload_event = asyncio.Event()
+
+    web_runner = WebServerRunner(host="0.0.0.0", port=WEB_PORT)
+    await web_runner.start()
+    reload_task = asyncio.create_task(web_reload_loop(web_runner))
+
     if application.post_init:
         await application.post_init(application)
 
     await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
     await application.start()
-
-    # Create and start the web server
-    web_app = create_app()
-    config = uvicorn.Config(
-        web_app,
-        host="0.0.0.0",
-        port=WEB_PORT,
-        log_level="info",
-        access_log=False,
-    )
-    server = uvicorn.Server(config)
 
     # Start WebSocket manager
     get_ws_manager().start()
@@ -689,7 +881,14 @@ async def _run_dual(application: Application) -> None:
         except Exception as e:
             logger.warning(f"Failed to send startup notification to admin: {e}")
 
-    logger.info("Starting Condor: Telegram bot + web dashboard on port %s", WEB_PORT)
+    if os.environ.get("CONDOR_DEV"):
+        logger.info(
+            "Starting Condor (dev): Telegram bot + API on port %s — UI at %s",
+            WEB_PORT,
+            WEB_URL,
+        )
+    else:
+        logger.info("Starting Condor: Telegram bot + web dashboard on port %s", WEB_PORT)
 
     # Handle shutdown signals
     shutdown_event = asyncio.Event()
@@ -701,15 +900,16 @@ async def _run_dual(application: Application) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # Run uvicorn as a task
-    web_task = asyncio.create_task(server.serve())
-
     # Wait until shutdown signal
     await shutdown_event.wait()
 
     logger.info("Shutting down...")
-    server.should_exit = True
-    await web_task
+    reload_task.cancel()
+    try:
+        await reload_task
+    except asyncio.CancelledError:
+        pass
+    await web_runner.stop()
 
     # Graceful Telegram shutdown (mirror run_polling order: updater → stop → post_stop → shutdown
     # → post_shutdown — those hooks are not wired when not using run_polling).

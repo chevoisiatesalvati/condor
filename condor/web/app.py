@@ -65,9 +65,9 @@ def create_app() -> FastAPI:
     reports_dir.mkdir(exist_ok=True)
     app.mount("/reports", StaticFiles(directory=str(reports_dir)), name="reports")
 
-    # ── Serve built frontend (production) ──
+    # ── Serve built frontend (production only; dev uses Vite on :5173) ──
     dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-    if dist.is_dir():
+    if dist.is_dir() and not os.environ.get("CONDOR_DEV"):
         index_html = dist / "index.html"
         app.mount("/assets", StaticFiles(directory=str(dist / "assets")), name="static-assets")
 
