@@ -212,9 +212,8 @@ async def run(
         )
         builder.kpi("BB Position", f"{bb_pos * 100:.1f}%")
         builder.kpi("Histogram", f"{hist_curr:.6g}")
-        builder.params(config.model_dump(), title="Run Parameters")
+        builder.params(config.model_dump())
         builder.table([table_row], columns=table_columns)
-        builder.markdown("### Entry Rules Check")
         builder.table(conditions_rows, columns=conditions_columns)
         await builder.save()
     except Exception as e:

@@ -358,12 +358,10 @@ async def run(
         builder.kpi("Formal", str(formal_trades))
         builder.kpi("Adaptive", str(adaptive_trades))
         builder.kpi("Sim PnL", f"${total_pnl:+.2f}", trend=pnl_trend)
-        builder.params(config.model_dump(), title="Run Parameters")
-        builder.markdown("\n".join(summary_lines))
+        builder.params(config.model_dump())
         if session_rollup_rows:
             builder.table(session_rollup_rows, columns=table_columns)
         if trade_table_rows:
-            builder.markdown("### Simulated Trades")
             builder.table(
                 trade_table_rows,
                 columns=[
@@ -379,8 +377,6 @@ async def run(
                     "PnL $",
                 ],
             )
-        else:
-            builder.markdown("### Simulated Trades\n\nNo simulated trades.")
         await builder.save()
     except Exception as error:
         logger.warning("Report generation failed: %s", error)

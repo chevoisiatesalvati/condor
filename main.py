@@ -255,6 +255,10 @@ def reload_handlers():
             importlib.reload(sys.modules[module_name])
             logger.info(f"Reloaded module: {module_name}")
 
+    from routines.base import reload_routine_modules
+
+    reload_routine_modules()
+
     # Re-register fetch functions after reload (preserves in-memory cache)
     try:
         from condor.server_data_service import register_default_fetches as sds_register

@@ -196,6 +196,26 @@ def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:
     return routines
 
 
+def reload_routine_modules() -> None:
+    """Reload all imported routines.* modules (deepest packages first)."""
+    global _routines_cache
+    _routines_cache = None
+    names = sorted(
+        (name for name in list(importlib.sys.modules) if name.startswith("routines.")),
+        key=lambda name: name.count("."),
+        reverse=True,
+    )
+    for name in names:
+        module = importlib.sys.modules.get(name)
+        if module is None:
+            continue
+        try:
+            importlib.reload(module)
+            logger.info("Reloaded module: %s", name)
+        except Exception as error:
+            logger.warning("Failed to reload %s: %s", name, error)
+
+
 def discover_routines_from_path(
     routines_dir: Path, agent_slug: str | None = None
 ) -> dict[str, RoutineInfo]:

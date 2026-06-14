@@ -9,11 +9,33 @@ from routines.macdbb_replay.models import ParsedReport, ReportMeta
 from routines.macdbb_replay.paths import REPORTS_DIR, REPORTS_INDEX_PATH
 
 _PAIR_TITLE_RE = re.compile(r"MACD\+BB:\s+([A-Z0-9:-]+)\s+\((1h|4h)\)")
-_FIRST_TABLE_ROW_RE = re.compile(r"<tbody><tr>(.*?)</tr></tbody>", re.DOTALL)
+_TABLE_SECTION_RE = re.compile(
+    r'<div class="section section-table"><table><thead><tr>(?P<headers>.*?)</tr></thead>'
+    r"<tbody>(?P<body>.*?)</tbody></table></div>",
+    re.DOTALL,
+)
+_TH_RE = re.compile(r"<th[^>]*>(.*?)</th>", re.DOTALL)
 _TD_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.DOTALL)
 _COND_ROW_RE = re.compile(
-    r"<tr><td>([^<]+)</td><td>([^<]+)</td><td>(True|False)</td></tr>", re.DOTALL
+    r"<tr><td[^>]*>(.*?)</td><td[^>]*>(.*?)</td><td[^>]*>(True|False)</td></tr>",
+    re.DOTALL,
 )
+
+_SIGNAL_TABLE_HEADERS = (
+    "Pair",
+    "Interval",
+    "Signal",
+    "Price",
+    "BB Pos %",
+    "BB Mid",
+    "BB Upper",
+    "MACD",
+    "Signal Line",
+    "Histogram",
+    "Trend",
+    "Momentum",
+)
+_PAIR_VALUE_RE = re.compile(r"^[A-Z0-9]+-[A-Z0-9]+$")
 
 
 def parse_dt(value: str) -> dt.datetime:
@@ -28,30 +50,67 @@ def extract_td_value(raw_value: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", raw_value)).strip()
 
 
-def parse_report_html(report_html: str) -> ParsedReport | None:
-    first_row_match = _FIRST_TABLE_ROW_RE.search(report_html)
+def _table_headers(raw_headers: str) -> list[str]:
+    return [extract_td_value(header) for header in _TH_RE.findall(raw_headers)]
+
+
+def _first_table_row_values(raw_body: str) -> list[str] | None:
+    first_row_match = re.search(r"<tr>(.*?)</tr>", raw_body, re.DOTALL)
     if not first_row_match:
         return None
-    values = [extract_td_value(value) for value in _TD_RE.findall(first_row_match.group(1))]
+    return [extract_td_value(value) for value in _TD_RE.findall(first_row_match.group(1))]
+
+
+def _looks_like_signal_row(values: list[str]) -> bool:
     if len(values) < 12:
+        return False
+    pair, interval, signal = values[0], values[1], values[2]
+    if not _PAIR_VALUE_RE.match(pair):
+        return False
+    if interval not in ("1h", "4h"):
+        return False
+    if signal not in ("LONG", "SHORT", "NEUTRAL"):
+        return False
+    return True
+
+
+def _find_signal_row(report_html: str) -> list[str] | None:
+    for match in _TABLE_SECTION_RE.finditer(report_html):
+        headers = _table_headers(match.group("headers"))
+        if headers != list(_SIGNAL_TABLE_HEADERS):
+            continue
+        values = _first_table_row_values(match.group("body"))
+        if values and _looks_like_signal_row(values):
+            return values
+    return None
+
+
+def parse_report_html(report_html: str) -> ParsedReport | None:
+    values = _find_signal_row(report_html)
+    if not values or len(values) < 12:
         return None
 
     pair = values[0]
     interval = values[1]
     signal = values[2]
-    price = float(values[3])
-    bb_pos_pct = float(values[4])
-    bb_mid = float(values[5])
-    bb_upper = float(values[6])
-    macd = float(values[7])
-    signal_line = float(values[8])
-    histogram = float(values[9])
+    try:
+        price = float(values[3])
+        bb_pos_pct = float(values[4])
+        bb_mid = float(values[5])
+        bb_upper = float(values[6])
+        macd = float(values[7])
+        signal_line = float(values[8])
+        histogram = float(values[9])
+    except ValueError:
+        return None
     trend = values[10].lower()
     momentum = values[11].lower()
 
     condition_map: dict[tuple[str, str], bool] = {}
     for rule, condition, met in _COND_ROW_RE.findall(report_html):
-        condition_map[(rule.strip(), condition.strip())] = met.strip().lower() == "true"
+        condition_map[(extract_td_value(rule), extract_td_value(condition))] = (
+            met.strip().lower() == "true"
+        )
 
     return ParsedReport(
         pair=pair,
@@ -133,4 +192,7 @@ def load_parsed_report(report_meta: ReportMeta) -> ParsedReport | None:
     report_path = REPORTS_DIR / report_meta.filename
     if not report_path.exists():
         return None
-    return parse_report_html(report_path.read_text(encoding="utf-8"))
+    try:
+        return parse_report_html(report_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None

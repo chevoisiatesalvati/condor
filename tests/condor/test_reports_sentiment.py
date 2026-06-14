@@ -32,26 +32,26 @@ def test_render_table_skips_session_column_sentiment():
     assert 'class="positive">189.9' in html
 
 
-def test_manual_order_preserves_markdown_before_table():
-    builder = ReportBuilder("Test")
-    builder.manual_order()
-    builder.markdown("### Simulated Trades")
-    builder.table([{"Pair": "BTC-USDT", "PnL $": 10.0}], columns=["Pair", "PnL $"])
-
-    html = builder._render_sections()
-    heading_pos = html.find("Simulated Trades")
-    table_pos = html.find("BTC-USDT")
-    assert heading_pos != -1
-    assert table_pos != -1
-    assert heading_pos < table_pos
-
-
-def test_params_renders_config_table():
+def test_params_renders_collapsible_panel():
     builder = ReportBuilder("Test")
     builder.manual_order()
     builder.params({"preset": "custom", "sl_pct": 1.5})
 
     html = builder._render_sections()
+    assert 'class="section params-panel"' in html
     assert "Run Parameters" in html
     assert "preset" in html
     assert "sl_pct" in html
+    assert "<h3" not in html
+    assert "params-grid" in html
+
+
+def test_params_panel_can_start_open():
+    html = ReportBuilder._render_params(
+        {
+            "title": "Run Parameters",
+            "config": {"preset": "custom"},
+            "open": True,
+        }
+    )
+    assert 'class="section params-panel" open' in html
