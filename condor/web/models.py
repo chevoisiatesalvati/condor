@@ -18,16 +18,19 @@ class LoginRequest(BaseModel):
     hash: str
 
 
-class LoginResponse(BaseModel):
-    token: str
-    user: WebUser
-
-
 class WebUser(BaseModel):
     id: int
     username: str = ""
     first_name: str = ""
     role: str  # "admin" | "user"
+
+
+class LoginResponse(BaseModel):
+    token: str
+    user: WebUser
+
+
+LoginResponse.model_rebuild()
 
 
 # ── Servers ──
