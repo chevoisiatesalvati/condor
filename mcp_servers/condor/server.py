@@ -318,9 +318,9 @@ async def trading_agent_journal_read(
 @mcp.tool()
 @handle_errors("journal write")
 async def trading_agent_journal_write(
-    agent_id: str,
     entry_type: str,
     text: str,
+    agent_id: str = "",
     reasoning: str = "",
     risk_note: str = "",
     tick: int = 0,
@@ -329,7 +329,8 @@ async def trading_agent_journal_write(
     """Write to the trading agent's journal. Keep entries SHORT (one line).
 
     Args:
-        agent_id: The trading agent instance ID.
+        agent_id: The trading agent instance ID. Optional when Condor injects
+            CONDOR_AGENT_ID for this tick session (see [TICK INFO]).
         entry_type: "action", "learning", or "state".
             - "action": What you did this tick (auto-trimmed to last 10).
             - "learning": A new insight. Duplicates are auto-filtered. Only write
@@ -347,8 +348,11 @@ async def trading_agent_journal_write(
     Returns:
         {"written": true}
     """
+    from mcp_servers.condor.settings import settings
+
+    resolved_id = agent_id or settings.agent_id
     return trading_agent.journal_write(
-        agent_id, entry_type, text, reasoning, risk_note, tick, category,
+        resolved_id, entry_type, text, reasoning, risk_note, tick, category,
     )
 
 

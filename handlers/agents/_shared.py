@@ -283,6 +283,7 @@ def get_project_dir() -> str:
 def _condor_mcp_args(
     chat_id: int | str, user_id: int,
     agent_slug: str | None = None,
+    agent_id: str | None = None,
     server_name: str | None = None,
 ) -> list[str]:
     """Build CLI args for the condor MCP subprocess."""
@@ -302,6 +303,8 @@ def _condor_mcp_args(
     ]
     if agent_slug:
         args.extend(["--agent-slug", agent_slug])
+    if agent_id:
+        args.extend(["--agent-id", agent_id])
     if server_name:
         args.extend(["--server-name", server_name])
     return args
@@ -311,6 +314,7 @@ def build_mcp_servers_for_session(
     user_id: int, chat_id: int | str, user_data: dict | None = None,
     execution_mode: str = "loop",
     server_name: str | None = None,
+    agent_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build dynamic MCP server configs for an agent session.
 
@@ -335,7 +339,9 @@ def build_mcp_servers_for_session(
     condor = {
         "name": "condor",
         "command": "uv",
-        "args": ["run", "python", "-m", "mcp_servers.condor"] + _condor_mcp_args(chat_id, user_id, server_name=server_name),
+        "args": ["run", "python", "-m", "mcp_servers.condor"] + _condor_mcp_args(
+            chat_id, user_id, server_name=server_name, agent_id=agent_id,
+        ),
         "env": [],
     }
 
@@ -376,6 +382,7 @@ def build_mcp_servers_for_session(
 
 def build_mcp_servers_for_agent(
     server_name: str, user_id: int, chat_id: int, agent_slug: str | None = None,
+    agent_id: str | None = None,
     execution_mode: str = "loop",
 ) -> list[dict[str, Any]]:
     """Build MCP server configs for a trading agent bound to a specific server.
@@ -391,7 +398,9 @@ def build_mcp_servers_for_agent(
     condor = {
         "name": "condor",
         "command": "uv",
-        "args": ["run", "python", "-m", "mcp_servers.condor"] + _condor_mcp_args(chat_id, user_id, agent_slug, server_name=server_name),
+        "args": ["run", "python", "-m", "mcp_servers.condor"] + _condor_mcp_args(
+            chat_id, user_id, agent_slug, agent_id=agent_id, server_name=server_name,
+        ),
         "env": [],
     }
 

@@ -589,12 +589,14 @@ class TickEngine:
             mcp_servers = build_mcp_servers_for_agent(
                 server_name, self.user_id, self.chat_id,
                 agent_slug=self.strategy.slug,
+                agent_id=self.agent_id,
                 execution_mode=mode,
             )
         else:
             mcp_servers = build_mcp_servers_for_session(
                 self.user_id, self.chat_id,
                 execution_mode=mode,
+                agent_id=self.agent_id,
             )
         permission_cb = auto_approve_with_risk_check(self.risk, risk_state, execution_mode=mode)
 
