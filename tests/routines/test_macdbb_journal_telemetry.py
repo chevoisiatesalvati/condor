@@ -1,6 +1,6 @@
 """Tests for extended signals_1h journal telemetry parsing."""
 
-from routines.macdbb_replay.journal import _parse_signals_1h
+from routines.macdbb_replay.journal import _parse_decision_line, _parse_signals_1h, parse_dt
 
 
 def test_parse_signals_1h_legacy_format():
@@ -29,3 +29,17 @@ def test_parse_signals_1h_extended_format():
     assert sig.bearish_cross is True
     assert sig.price == 1.4911
     assert sig.has_replay_bands()
+
+
+def test_parse_scanner_telemetry_on_decision_line():
+    tick_time_map = {3: parse_dt("2026-06-12 12:00")}
+    line = (
+        "- **#3** tick=3 | entry_class=hold | scanner_regime=mature | "
+        "tradeable_count=5 | natr_floor_used=0.08 | best_score=1.75 | "
+        "macd_pairs=SOL-USD"
+    )
+    meta = _parse_decision_line(line, tick_time_map)
+    assert meta is not None
+    assert meta.scanner_regime == "mature"
+    assert meta.natr_floor_used == 0.08
+    assert meta.best_score == 1.75

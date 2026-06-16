@@ -69,6 +69,9 @@ class TickMeta:
     thesis_decay_streak: int | None = None
     tradeable_count: int | None = None
     scanner_analyzed: int | None = None
+    scanner_regime: Literal["mature", "degen"] | None = None
+    natr_floor_used: float | None = None
+    best_score: float | None = None
     queue_total: list[str] = field(default_factory=list)
     signals_1h: dict[str, JournalSignal1h] = field(default_factory=dict)
     filter_4h: dict[str, Filter4h] = field(default_factory=dict)
@@ -140,6 +143,10 @@ class OpenPosition:
     entry_adaptive_activation_streak: int
     entry_bb_pos_pct: float = 0.0
     entry_price_trusted: bool = False
+    sl_pct: float = 0.0
+    tp_pct: float = 0.0
+    volatility_proxy_pct: float = 0.0
+    sizing_multiplier: float = 1.0
     monitor_state: str = "thesis_intact"
     thesis_decay_streak: int = 0
     flip_streak: int = 0
@@ -165,6 +172,10 @@ class SimTrade:
     entry_score_long: float
     entry_score_short: float
     entry_adaptive_activation_streak: int
+    sl_pct_used: float = 0.0
+    tp_pct_used: float = 0.0
+    volatility_proxy_pct: float = 0.0
+    sizing_multiplier: float = 1.0
 
 
 class ReplayConfigBase(BaseModel):
@@ -318,6 +329,70 @@ class StrategyReplayConfig(ReplayConfigBase):
         default=True,
         description="Require 0 open positions before adaptive entries (matches live agent)",
     )
+    report_label: str = Field(
+        default="",
+        description="Optional label shown in saved report title",
+    )
+
+
+class DynamicStrategyReplayConfig(StrategyReplayConfig):
+    """Strategy replay with dynamic position sizing and volatility-aware barriers."""
+
+    enable_dynamic_sizing: bool = Field(
+        default=True,
+        description="Scale notional by conviction and volatility factors",
+    )
+    enable_dynamic_barriers: bool = Field(
+        default=True,
+        description="Scale SL/TP by pair volatility proxy",
+    )
+    min_notional_quote: float = Field(default=75.0)
+    max_notional_quote: float = Field(default=750.0)
+    min_conviction_mult: float = Field(default=0.75)
+    max_conviction_mult: float = Field(default=1.35)
+    strength_mult_per_unit: float = Field(
+        default=0.08,
+        description="Notional bump per 1.0 adaptive strength above open threshold",
+    )
+    extreme_displacement_mult: float = Field(default=1.10)
+    activation_streak_mult_per_tick: float = Field(
+        default=0.0,
+        description="Extra size per agent tick above activation_ticks (adaptive only)",
+    )
+    thin_universe_mult: float = Field(
+        default=0.85,
+        description="Multiplier when tradeable_count <= 2",
+    )
+    mature_tape_low_vol_mult: float = Field(
+        default=0.95,
+        description="Size reduction on mature tape when pair vol is below ref",
+    )
+    vol_inverse_sizing: bool = Field(
+        default=True,
+        description="High volatility pairs receive smaller notional",
+    )
+    min_vol_mult: float = Field(default=0.60)
+    max_vol_mult: float = Field(default=1.25)
+    ref_volatility_pct: float = Field(
+        default=0.50,
+        description="Anchor volatility %% (BTC-like) for sizing and barriers",
+    )
+    sl_vol_exponent: float = Field(default=0.70)
+    tp_vol_exponent: float = Field(default=1.00)
+    sl_min_pct: float = Field(default=0.8)
+    sl_max_pct: float = Field(default=4.0)
+    tp_min_pct: float = Field(default=3.0)
+    tp_max_pct: float = Field(default=15.0)
+    volatility_source: Literal["auto", "bb_width", "natr", "static_tier"] = Field(
+        default="auto",
+        description="How to estimate pair volatility for sizing and barriers",
+    )
+    ignore_journal_barriers_when_dynamic: bool = Field(
+        default=True,
+        description="Skip journal barrier closes when dynamic barriers are enabled",
+    )
+
+
 class AdaptiveReplayConfig(ReplayConfigBase):
     """Legacy adaptive-only replay with single position."""
 

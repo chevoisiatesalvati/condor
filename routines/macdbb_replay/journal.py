@@ -20,6 +20,9 @@ _THESIS_DECAY_STREAK_RE = re.compile(
 _ENTRY_CLASS_RE = re.compile(r"entry_class=([a-zA-Z0-9_]+)")
 _TRADEABLE_COUNT_RE = re.compile(r"tradeable_count=(\d+)")
 _SCANNER_ANALYZED_RE = re.compile(r"scanner_analyzed=(\d+)")
+_SCANNER_REGIME_RE = re.compile(r"scanner_regime=(mature|degen)", re.IGNORECASE)
+_NATR_FLOOR_USED_RE = re.compile(r"natr_floor_used=([0-9.]+)")
+_BEST_SCORE_RE = re.compile(r"best_score=([0-9.]+)")
 _QUEUE_TOTAL_RE = re.compile(r"queue_total=([A-Z0-9:-]+(?:,[A-Z0-9:-]+)*)")
 _SIGNALS_1H_RE = re.compile(r"signals_1h=([^\s]+)")
 _FILTER_4H_RE = re.compile(r"filter_4h=([^\s]+)")
@@ -387,6 +390,15 @@ def _parse_barrier_events(line: str) -> list[BarrierCloseEvent]:
     return events
 
 
+def _parse_scanner_regime(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    token = raw.strip().lower()
+    if token in {"mature", "degen"}:
+        return token
+    return None
+
+
 def _parse_decision_line(line: str, tick_time_map: dict[int, dt.datetime]) -> TickMeta | None:
     decision_match = _DECISION_RE.match(line)
     if not decision_match:
@@ -407,6 +419,9 @@ def _parse_decision_line(line: str, tick_time_map: dict[int, dt.datetime]) -> Ti
     entry_class_match = _ENTRY_CLASS_RE.search(line)
     tradeable_match = _TRADEABLE_COUNT_RE.search(line)
     analyzed_match = _SCANNER_ANALYZED_RE.search(line)
+    regime_match = _SCANNER_REGIME_RE.search(line)
+    natr_floor_match = _NATR_FLOOR_USED_RE.search(line)
+    best_score_match = _BEST_SCORE_RE.search(line)
     queue_match = _QUEUE_TOTAL_RE.search(line)
     signals_match = _SIGNALS_1H_RE.search(line)
     filter_match = _FILTER_4H_RE.search(line)
@@ -429,6 +444,11 @@ def _parse_decision_line(line: str, tick_time_map: dict[int, dt.datetime]) -> Ti
         entry_class=entry_class_match.group(1) if entry_class_match else None,
         tradeable_count=int(tradeable_match.group(1)) if tradeable_match else None,
         scanner_analyzed=int(analyzed_match.group(1)) if analyzed_match else None,
+        scanner_regime=_parse_scanner_regime(regime_match.group(1))
+        if regime_match
+        else None,
+        natr_floor_used=float(natr_floor_match.group(1)) if natr_floor_match else None,
+        best_score=float(best_score_match.group(1)) if best_score_match else None,
         queue_total=_normalize_journal_pair_list(queue_match.group(1))
         if queue_match
         else [],
@@ -482,6 +502,9 @@ def parse_journal_ticks(
     last_filter_4h: dict[str, Filter4h] = {}
     last_tradeable_count: int | None = None
     last_scanner_analyzed: int | None = None
+    last_scanner_regime: str | None = None
+    last_natr_floor_used: float | None = None
+    last_best_score: float | None = None
     last_queue_total: list[str] = []
 
     for tick_number in sorted(tick_meta_map):
@@ -502,6 +525,9 @@ def parse_journal_ticks(
                 entry_class=meta.entry_class,
                 tradeable_count=meta.tradeable_count,
                 scanner_analyzed=meta.scanner_analyzed,
+                scanner_regime=meta.scanner_regime,
+                natr_floor_used=meta.natr_floor_used,
+                best_score=meta.best_score,
                 queue_total=meta.queue_total,
                 signals_1h=meta.signals_1h,
                 filter_4h=meta.filter_4h,
@@ -526,6 +552,9 @@ def parse_journal_ticks(
                 entry_class=meta.entry_class or "opened_long",
                 tradeable_count=meta.tradeable_count,
                 scanner_analyzed=meta.scanner_analyzed,
+                scanner_regime=meta.scanner_regime,
+                natr_floor_used=meta.natr_floor_used,
+                best_score=meta.best_score,
                 queue_total=meta.queue_total,
                 signals_1h=meta.signals_1h,
                 filter_4h=filter_map,
@@ -548,6 +577,9 @@ def parse_journal_ticks(
                 entry_class=meta.entry_class or "opened_short",
                 tradeable_count=meta.tradeable_count,
                 scanner_analyzed=meta.scanner_analyzed,
+                scanner_regime=meta.scanner_regime,
+                natr_floor_used=meta.natr_floor_used,
+                best_score=meta.best_score,
                 queue_total=meta.queue_total,
                 signals_1h=meta.signals_1h,
                 filter_4h=filter_map,
@@ -565,6 +597,12 @@ def parse_journal_ticks(
             last_tradeable_count = meta.tradeable_count
         if meta.scanner_analyzed is not None:
             last_scanner_analyzed = meta.scanner_analyzed
+        if meta.scanner_regime is not None:
+            last_scanner_regime = meta.scanner_regime
+        if meta.natr_floor_used is not None:
+            last_natr_floor_used = meta.natr_floor_used
+        if meta.best_score is not None:
+            last_best_score = meta.best_score
         if meta.queue_total:
             last_queue_total = list(meta.queue_total)
 
@@ -589,6 +627,13 @@ def parse_journal_ticks(
             scanner_analyzed=meta.scanner_analyzed
             if meta.scanner_analyzed is not None
             else last_scanner_analyzed,
+            scanner_regime=meta.scanner_regime
+            if meta.scanner_regime is not None
+            else last_scanner_regime,
+            natr_floor_used=meta.natr_floor_used
+            if meta.natr_floor_used is not None
+            else last_natr_floor_used,
+            best_score=meta.best_score if meta.best_score is not None else last_best_score,
             queue_total=list(meta.queue_total or last_queue_total),
             signals_1h=dict(meta.signals_1h or last_signals),
             filter_4h=dict(meta.filter_4h or last_filter_4h),
@@ -607,6 +652,9 @@ def parse_journal_ticks(
                     entry_class=carried.entry_class,
                     tradeable_count=carried.tradeable_count,
                     scanner_analyzed=carried.scanner_analyzed,
+                    scanner_regime=carried.scanner_regime,
+                    natr_floor_used=carried.natr_floor_used,
+                    best_score=carried.best_score,
                     queue_total=carried.queue_total,
                     signals_1h=carried.signals_1h,
                     filter_4h=carried.filter_4h,
@@ -702,6 +750,15 @@ def enrich_ticks_from_snapshots(
                 scanner_analyzed=parsed.scanner_analyzed
                 if parsed.scanner_analyzed is not None
                 else existing.scanner_analyzed,
+                scanner_regime=parsed.scanner_regime
+                if parsed.scanner_regime is not None
+                else existing.scanner_regime,
+                natr_floor_used=parsed.natr_floor_used
+                if parsed.natr_floor_used is not None
+                else existing.natr_floor_used,
+                best_score=parsed.best_score
+                if parsed.best_score is not None
+                else existing.best_score,
                 queue_total=parsed.queue_total or existing.queue_total,
                 signals_1h=parsed.signals_1h or existing.signals_1h,
                 filter_4h={**existing.filter_4h, **parsed.filter_4h},

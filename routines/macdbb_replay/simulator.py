@@ -11,6 +11,11 @@ from routines.macdbb_replay.models import (
     TickMeta,
     compute_return_pct,
 )
+from routines.macdbb_replay.dynamic_policy import (
+    DynamicReplayPolicy,
+    EntryPolicyResult,
+    resolve_fixed_entry_policy,
+)
 from routines.macdbb_replay.reports import ReportMeta
 from routines.macdbb_replay.hl_prices import HlCandleCache, scan_barriers_between
 from routines.macdbb_replay.signals import (
@@ -31,8 +36,92 @@ def _adaptive_4h_allows(
     return filter_4h_allows(side, trend, passed)
 
 
-def _adaptive_notional(config: StrategyReplayConfig) -> float:
-    return config.formal_notional_quote / 2.0
+
+def _position_barriers(position: OpenPosition, config: StrategyReplayConfig) -> tuple[float, float]:
+    sl_pct = position.sl_pct if position.sl_pct > 0 else config.sl_pct
+    tp_pct = position.tp_pct if position.tp_pct > 0 else config.tp_pct
+    return sl_pct, tp_pct
+
+
+def _resolve_entry_policy(
+    *,
+    pair: str,
+    side: str,
+    entry_class: str,
+    metrics: dict[str, float | bool],
+    meta: TickMeta,
+    entry_streak: int,
+    config: StrategyReplayConfig,
+    entry_time: dt.datetime,
+    replay_policy: DynamicReplayPolicy | None,
+    journal_signal: JournalSignal1h | None = None,
+    hl_candle_cache: HlCandleCache | None = None,
+) -> EntryPolicyResult:
+    if replay_policy is None:
+        return resolve_fixed_entry_policy(entry_class=entry_class, config=config)
+    return replay_policy.resolve_entry(
+        pair=pair,
+        side=side,
+        entry_class=entry_class,
+        metrics=metrics,
+        meta=meta,
+        entry_streak=entry_streak,
+        journal_signal=journal_signal,
+        hl_candle_cache=hl_candle_cache,
+        entry_time=entry_time,
+    )
+
+
+def _open_position(
+    *,
+    entry_tick: int,
+    entry_time: dt.datetime,
+    pair: str,
+    side: str,
+    entry_price: float,
+    entry_class: str,
+    entry_trigger: str,
+    metrics: dict[str, float | bool],
+    meta: TickMeta,
+    entry_streak: int,
+    config: StrategyReplayConfig,
+    replay_policy: DynamicReplayPolicy | None,
+    entry_bb_pos_pct: float,
+    journal_signal: JournalSignal1h | None = None,
+    hl_candle_cache: HlCandleCache | None = None,
+) -> OpenPosition:
+    policy_result = _resolve_entry_policy(
+        pair=pair,
+        side=side,
+        entry_class=entry_class,
+        metrics=metrics,
+        meta=meta,
+        entry_streak=entry_streak,
+        config=config,
+        entry_time=entry_time,
+        replay_policy=replay_policy,
+        journal_signal=journal_signal,
+        hl_candle_cache=hl_candle_cache,
+    )
+    return OpenPosition(
+        entry_tick=entry_tick,
+        entry_time=entry_time,
+        pair=pair,
+        side=side,
+        entry_price=entry_price,
+        entry_class=entry_class,
+        entry_trigger=entry_trigger,
+        notional_quote=policy_result.notional_quote,
+        entry_score_long=float(metrics["adaptive_strength_long"]),
+        entry_score_short=float(metrics["adaptive_strength_short"]),
+        entry_adaptive_activation_streak=entry_streak,
+        entry_bb_pos_pct=entry_bb_pos_pct,
+        entry_price_trusted=True,
+        sl_pct=policy_result.sl_pct,
+        tp_pct=policy_result.tp_pct,
+        volatility_proxy_pct=policy_result.volatility_proxy_pct,
+        sizing_multiplier=policy_result.sizing_multiplier,
+    )
 
 
 def _thesis_decay_reasons(
@@ -138,6 +227,10 @@ def _close_trade(
         entry_score_long=position.entry_score_long,
         entry_score_short=position.entry_score_short,
         entry_adaptive_activation_streak=position.entry_adaptive_activation_streak,
+        sl_pct_used=position.sl_pct,
+        tp_pct_used=position.tp_pct,
+        volatility_proxy_pct=position.volatility_proxy_pct,
+        sizing_multiplier=position.sizing_multiplier,
     )
 
 
@@ -267,7 +360,10 @@ def _apply_journal_barrier_closes(
     closes_this_tick: list[str],
     sl_cooldown_until: dict[str, int],
     config: StrategyReplayConfig,
+    replay_policy: DynamicReplayPolicy | None = None,
 ) -> None:
+    if replay_policy is not None and replay_policy.skip_journal_barriers():
+        return
     for event in meta.barrier_closes:
         position = open_positions.get(event.pair)
         if position is None:
@@ -281,14 +377,16 @@ def _apply_journal_barrier_closes(
         if event.pnl_quote is not None:
             exit_price = _exit_price_from_pnl(position, event.pnl_quote)
         elif exit_reason == "stop_loss_close_proxy":
-            sl = config.sl_pct / 100.0
+            sl_pct, _ = _position_barriers(position, config)
+            sl = sl_pct / 100.0
             exit_price = (
                 position.entry_price * (1.0 - sl)
                 if position.side == "long"
                 else position.entry_price * (1.0 + sl)
             )
         else:
-            tp = config.tp_pct / 100.0
+            _, tp_pct = _position_barriers(position, config)
+            tp = tp_pct / 100.0
             exit_price = (
                 position.entry_price * (1.0 + tp)
                 if position.side == "long"
@@ -331,14 +429,15 @@ def _apply_intrabar_barriers(
         scan_start = max(window_start, position.entry_time)
         if scan_start >= window_end:
             continue
+        sl_pct, tp_pct = _position_barriers(position, config)
         hit = scan_barriers_between(
             candles,
             scan_start,
             window_end,
             position.side,
             position.entry_price,
-            config.sl_pct,
-            config.tp_pct,
+            sl_pct,
+            tp_pct,
         )
         if hit is None:
             continue
@@ -388,6 +487,7 @@ def simulate_strategy_session(
     config: StrategyReplayConfig,
     hl_price_cache: dict[tuple[str, int], float] | None = None,
     hl_candle_cache: HlCandleCache | None = None,
+    replay_policy: DynamicReplayPolicy | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[SimTrade], dict[str, Any]]:
     if config.require_price_data and not session_has_trusted_prices(
         tick_meta_map,
@@ -409,9 +509,6 @@ def simulate_strategy_session(
     last_seen_by_pair: dict[str, tuple[int, float]] = {}
     simulated_streak = 0
 
-    sl_threshold = config.sl_pct / 100.0
-    tp_threshold = config.tp_pct / 100.0
-    adaptive_notional = _adaptive_notional(config)
     sorted_ticks = sorted(tick_meta_map)
 
     for tick_index, tick in enumerate(sorted_ticks):
@@ -459,6 +556,7 @@ def simulate_strategy_session(
                 closes_this_tick,
                 sl_cooldown_until,
                 config,
+                replay_policy,
             )
             _apply_intrabar_barriers(
                 session_num,
@@ -482,6 +580,7 @@ def simulate_strategy_session(
                 closes_this_tick,
                 sl_cooldown_until,
                 config,
+                replay_policy,
             )
 
         # Step 5 + barriers on RUNNING legs
@@ -520,6 +619,9 @@ def simulate_strategy_session(
             )
             exit_reason = ""
 
+            sl_pct, tp_pct = _position_barriers(position, config)
+            sl_threshold = sl_pct / 100.0
+            tp_threshold = tp_pct / 100.0
             if current_return_pct <= -sl_threshold:
                 exit_reason = "stop_loss_close_proxy"
             elif current_return_pct >= tp_threshold:
@@ -587,7 +689,7 @@ def simulate_strategy_session(
                         reverse_trigger = (
                             f"flip_reverse_{reverse_side}"
                         )
-                        open_positions[pair] = OpenPosition(
+                        open_positions[pair] = _open_position(
                             entry_tick=tick,
                             entry_time=meta.timestamp,
                             pair=pair,
@@ -595,12 +697,14 @@ def simulate_strategy_session(
                             entry_price=mark_price,
                             entry_class="formal",
                             entry_trigger=reverse_trigger,
-                            notional_quote=config.formal_notional_quote,
-                            entry_score_long=float(metrics["adaptive_strength_long"]),
-                            entry_score_short=float(metrics["adaptive_strength_short"]),
-                            entry_adaptive_activation_streak=entry_streak,
+                            metrics=metrics,
+                            meta=meta,
+                            entry_streak=entry_streak,
+                            config=config,
+                            replay_policy=replay_policy,
                             entry_bb_pos_pct=_entry_bb_pos_pct(snapshot),
-                            entry_price_trusted=True,
+                            journal_signal=meta.signals_1h.get(pair),
+                            hl_candle_cache=hl_candle_cache,
                         )
                         opens_this_tick.append(reverse_trigger)
 
@@ -719,7 +823,7 @@ def simulate_strategy_session(
                     break
                 metrics = snapshot.metrics
                 trigger = f"formal_{side}"
-                open_positions[pair] = OpenPosition(
+                open_positions[pair] = _open_position(
                     entry_tick=tick,
                     entry_time=meta.timestamp,
                     pair=pair,
@@ -727,12 +831,14 @@ def simulate_strategy_session(
                     entry_price=snapshot.price,
                     entry_class="formal",
                     entry_trigger=trigger,
-                    notional_quote=config.formal_notional_quote,
-                    entry_score_long=float(metrics["adaptive_strength_long"]),
-                    entry_score_short=float(metrics["adaptive_strength_short"]),
-                    entry_adaptive_activation_streak=entry_streak,
+                    metrics=metrics,
+                    meta=meta,
+                    entry_streak=entry_streak,
+                    config=config,
+                    replay_policy=replay_policy,
                     entry_bb_pos_pct=_entry_bb_pos_pct(snapshot),
-                    entry_price_trusted=True,
+                    journal_signal=meta.signals_1h.get(pair),
+                    hl_candle_cache=hl_candle_cache,
                 )
                 opens_this_tick.append(trigger)
 
@@ -749,7 +855,7 @@ def simulate_strategy_session(
                 pair, side, snapshot = ranked[0]
                 metrics = snapshot.metrics
                 trigger = f"adaptive_{side}"
-                open_positions[pair] = OpenPosition(
+                open_positions[pair] = _open_position(
                     entry_tick=tick,
                     entry_time=meta.timestamp,
                     pair=pair,
@@ -757,12 +863,14 @@ def simulate_strategy_session(
                     entry_price=snapshot.price,
                     entry_class="regime_adaptive_half_size",
                     entry_trigger=trigger,
-                    notional_quote=adaptive_notional,
-                    entry_score_long=float(metrics["adaptive_strength_long"]),
-                    entry_score_short=float(metrics["adaptive_strength_short"]),
-                    entry_adaptive_activation_streak=entry_streak,
+                    metrics=metrics,
+                    meta=meta,
+                    entry_streak=entry_streak,
+                    config=config,
+                    replay_policy=replay_policy,
                     entry_bb_pos_pct=_entry_bb_pos_pct(snapshot),
-                    entry_price_trusted=True,
+                    journal_signal=meta.signals_1h.get(pair),
+                    hl_candle_cache=hl_candle_cache,
                 )
                 opens_this_tick.append(trigger)
         else:
