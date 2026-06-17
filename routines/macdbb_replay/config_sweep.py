@@ -50,7 +50,7 @@ SESSIONS_37_58 = (
 HL_SWEEP_BEST: dict[str, Any] = {
     "preset": "custom",
     "strategy_slug": "macdbb_scanner_aggressive_hl",
-    "session_nums": SESSIONS_37_58,
+    "session_nums": "all",
     "data_source": "journal_recompute",
     "write_csv": False,
     "price_source": "auto",
@@ -1082,6 +1082,7 @@ async def _load_sessions(
     dict[int, dict[tuple[str, int], float]],
     dict[str, list[dict[str, float]]],
     dict[str, list[dict[str, float]]],
+    dict[str, list[dict[str, float]]],
     list[int],
 ]:
     strategy_dir = TRADING_AGENTS_DIR / config.strategy_slug
@@ -1103,8 +1104,9 @@ async def _load_sessions(
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]] = {}
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
+    hl_vol_candle_cache: dict[str, list[dict[str, float]]] = {}
     if parsed_sessions:
-        hl_caches_by_session, hl_candle_cache, hl_barrier_candle_cache = (
+        hl_caches_by_session, hl_candle_cache, hl_barrier_candle_cache, hl_vol_candle_cache = (
             await prefetch_replay_hl_prices(
                 parsed_sessions,
                 settings=hl_prefetch_settings_from_config(config),
@@ -1116,6 +1118,7 @@ async def _load_sessions(
         hl_caches_by_session,
         hl_candle_cache,
         hl_barrier_candle_cache,
+        hl_vol_candle_cache,
         selected_sessions,
     )
 
@@ -1127,6 +1130,7 @@ def _run_config(
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]],
     hl_candle_cache: dict[str, list[dict[str, float]]],
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]],
+    hl_vol_candle_cache: dict[str, list[dict[str, float]]],
     reports_by_pair: dict[str, list[ReportMeta]],
 ) -> SweepResult:
     config = resolve_config_with_preset(StrategyReplayConfig(**overrides))
@@ -1148,6 +1152,7 @@ def _run_config(
             hl_price_cache=hl_price_cache,
             hl_candle_cache=hl_candle_cache,
             hl_barrier_candle_cache=hl_barrier_candle_cache,
+            hl_vol_candle_cache=hl_vol_candle_cache,
         )
         if summary.get("status") == "skipped_no_price_data":
             continue
@@ -1195,6 +1200,7 @@ def _run_dynamic_config(
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]],
     hl_candle_cache: dict[str, list[dict[str, float]]],
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]],
+    hl_vol_candle_cache: dict[str, list[dict[str, float]]],
     reports_by_pair: dict[str, list[ReportMeta]],
 ) -> SweepResult:
     config = resolve_config_with_preset(DynamicStrategyReplayConfig(**overrides))
@@ -1220,6 +1226,7 @@ def _run_dynamic_config(
             hl_price_cache=hl_price_cache,
             hl_candle_cache=hl_candle_cache,
             hl_barrier_candle_cache=hl_barrier_candle_cache,
+            hl_vol_candle_cache=hl_vol_candle_cache,
             replay_policy=policy,
         )
         if summary.get("status") == "skipped_no_price_data":
@@ -1376,7 +1383,7 @@ async def run_sweep(
     write_json: bool = True,
 ) -> tuple[list[SweepResult], str]:
     load_config = StrategyReplayConfig(**HL_SWEEP_BEST)
-    parsed_sessions, hl_caches, hl_candle_cache, hl_barrier_candle_cache, selected = (
+    parsed_sessions, hl_caches, hl_candle_cache, hl_barrier_candle_cache, hl_vol_candle_cache, selected = (
         await _load_sessions(load_config)
     )
     reports = load_reports_index()
@@ -1392,6 +1399,7 @@ async def run_sweep(
                 hl_caches,
                 hl_candle_cache,
                 hl_barrier_candle_cache,
+                hl_vol_candle_cache,
                 reports_by_pair,
             )
         )
@@ -1424,7 +1432,7 @@ async def run_dynamic_sweep(
     config_builder: Callable[[], list[tuple[str, dict[str, Any]]]] | None = None,
 ) -> tuple[list[SweepResult], str, float]:
     load_config = DynamicStrategyReplayConfig(**_dynamic_sweep_base(dynamic_mode))
-    parsed_sessions, hl_caches, hl_candle_cache, hl_barrier_candle_cache, _selected = (
+    parsed_sessions, hl_caches, hl_candle_cache, hl_barrier_candle_cache, hl_vol_candle_cache, _selected = (
         await _load_sessions(load_config)
     )
     reports = load_reports_index()
@@ -1458,6 +1466,7 @@ async def run_dynamic_sweep(
             hl_caches,
             hl_candle_cache,
             hl_barrier_candle_cache,
+            hl_vol_candle_cache,
             reports_by_pair,
         )
         results.append(

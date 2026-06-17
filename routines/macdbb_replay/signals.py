@@ -317,6 +317,10 @@ def build_tick_snapshots(
         for pair in meta.queue_total:
             if pair not in pairs:
                 pairs.append(pair)
+    if meta.signals_1h:
+        for pair in meta.signals_1h:
+            if pair not in pairs:
+                pairs.append(pair)
     monitor_pairs: set[str] = set(extra_pairs or [])
     if extra_pairs:
         for pair in extra_pairs:

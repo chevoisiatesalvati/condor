@@ -172,10 +172,7 @@ PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
 # Dynamic replay only — both_on v3 refine winner (sessions 37-58, cap-norm +$362).
 DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
     "hl_dynamic_mega_sweep_best": {
-        "session_nums": (
-            "37,38,39,40,41,42,43,44,45,46,47,48,49,50,"
-            "51,52,53,54,55,56,57,58"
-        ),
+        "session_nums": "all",
         "data_source": "journal_recompute",
         "formal_notional_quote": 500.0,
         "price_source": "auto",

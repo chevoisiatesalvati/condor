@@ -59,6 +59,19 @@ class BarrierCloseEvent:
     pnl_quote: float | None = None
 
 
+@dataclass(frozen=True)
+class JournalCreatePlan:
+    pair: str
+    side: str | None = None
+    entry_class: str | None = None
+    notional_req: float | None = None
+    notional_cap: float | None = None
+    eff_sl: float | None = None
+    eff_tp: float | None = None
+    vol: float | None = None
+    size_mult: float | None = None
+
+
 @dataclass
 class TickMeta:
     tick: int
@@ -78,6 +91,7 @@ class TickMeta:
     monitored_pair: str | None = None
     position_pnl_snapshot: float | None = None
     barrier_closes: list[BarrierCloseEvent] = field(default_factory=list)
+    create_plans: dict[str, JournalCreatePlan] = field(default_factory=dict)
 
 
 @dataclass
@@ -209,7 +223,7 @@ class ReplayConfigBase(BaseModel):
         description="Strategy folder under trading_agents/",
     )
     session_nums: str = Field(
-        default="38",
+        default="all",
         description="Session selector: 'all' or comma-separated values like '35,36'",
     )
     time_window_min: int = Field(
@@ -309,6 +323,13 @@ class ReplayConfigBase(BaseModel):
         description=(
             "Skip sessions (and entries) without trusted prices from price_source. "
             "Journal-only replay cannot compute PnL."
+        ),
+    )
+    scanner_lookback_hours: int = Field(
+        default=6,
+        description=(
+            "1m candle lookback hours for scanner-compatible NATR in dynamic replay "
+            "(matches hyperliquid_market_scanner default)."
         ),
     )
 

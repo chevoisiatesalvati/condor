@@ -5,12 +5,20 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
-from routines.macdbb_replay.models import Filter4h, JournalSignal1h, TickMeta, BarrierCloseEvent
+from routines.macdbb_replay.models import (
+    BarrierCloseEvent,
+    Filter4h,
+    JournalCreatePlan,
+    JournalSignal1h,
+    TickMeta,
+)
 
 _TICK_RE = re.compile(r"- tick#(\d+)\s+\|\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s+\|")
 _DECISION_RE = re.compile(r"- \*\*#(\d+)\*\*.*")
 _DECISION_TICK_RE = re.compile(r"tick=(\d+)")
-_MACD_PAIRS_RE = re.compile(r"macd_pairs=([A-Z0-9:-]+(?:,[A-Z0-9:-]+)*)")
+_PAIR_TOKEN = r"[A-Za-z0-9:-]+"
+_CREATE_PLAN_RE = re.compile(r"create_plan=([^:\s]+):([^|\s]+)")
+_MACD_PAIRS_RE = re.compile(rf"macd_pairs=({_PAIR_TOKEN}(?:,{_PAIR_TOKEN})*)")
 _ADAPTIVE_ACTIVATION_STREAK_RE = re.compile(
     r"(?:adaptive_activation_streak|neutral_pressure_streak)=(\d+)"
 )
@@ -23,7 +31,7 @@ _SCANNER_ANALYZED_RE = re.compile(r"scanner_analyzed=(\d+)")
 _SCANNER_REGIME_RE = re.compile(r"scanner_regime=(mature|degen)", re.IGNORECASE)
 _NATR_FLOOR_USED_RE = re.compile(r"natr_floor_used=([0-9.]+)")
 _BEST_SCORE_RE = re.compile(r"best_score=([0-9.]+)")
-_QUEUE_TOTAL_RE = re.compile(r"queue_total=([A-Z0-9:-]+(?:,[A-Z0-9:-]+)*)")
+_QUEUE_TOTAL_RE = re.compile(rf"queue_total=({_PAIR_TOKEN}(?:,{_PAIR_TOKEN})*)")
 _SIGNALS_1H_RE = re.compile(r"signals_1h=([^\s]+)")
 _FILTER_4H_RE = re.compile(r"filter_4h=([^\s]+)")
 _REVIEWED_MACD_LIST_RE = re.compile(
@@ -62,13 +70,13 @@ _OPENED_PAIR_RE = re.compile(
 )
 
 _SIGNAL_TUPLE_RE = re.compile(
-    r"([A-Z0-9:-]+):bb=([^,]+),macd=([^,]+),sig=([^,]+),hist=([^,]+),"
+    rf"(?:^|[|])({_PAIR_TOKEN}):bb=([^,]+),macd=([^,]+),sig=([^,]+),hist=([^,]+),"
     r"gap=([^,]+),hr=([^,]+),tr=([^,]+),mom=([^,]+),"
     r"fL=([^,]+),fS=([^,]+),aL=([^,]+),aS=([^,]+),sL=([^,]+),sS=([^,|;\s]+)"
     r"(?:,mid=([^,]+),up=([^,]+)(?:,lo=([^,]+))?(?:,bX=([^,]+),sX=([^,]+),p=([^,|;\s]+))?)?"
 )
 _FILTER_4H_TUPLE_RE = re.compile(
-    r"([A-Z0-9:-]+):tr=([^,]+)(?:,bb=([^,]+))?(?:,macd=([^,]+))?"
+    rf"(?:^|[|])({_PAIR_TOKEN}):tr=([^,]+)(?:,bb=([^,]+))?(?:,macd=([^,]+))?"
     r"(?:,sig=([^,]+))?(?:,hist=([^,]+))?,pass=([01])"
 )
 _MONITORED_PAIR_RE = re.compile(r"pair=([A-Z0-9:-]+)")
@@ -445,6 +453,59 @@ def _parse_scanner_regime(raw: str | None) -> str | None:
     return None
 
 
+def _parse_create_plan(raw: str) -> JournalCreatePlan | None:
+    match = _CREATE_PLAN_RE.search(raw)
+    if not match:
+        return None
+    pair = _normalize_journal_pair_token(match.group(1))
+    side: str | None = None
+    entry_class: str | None = None
+    notional_req: float | None = None
+    notional_cap: float | None = None
+    eff_sl: float | None = None
+    eff_tp: float | None = None
+    vol: float | None = None
+    size_mult: float | None = None
+    for token in match.group(2).split(","):
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key == "side":
+            side = value
+        elif key == "entry_class":
+            entry_class = value
+        else:
+            try:
+                parsed = float(value)
+            except ValueError:
+                continue
+            if key == "notional_req":
+                notional_req = parsed
+            elif key == "notional_cap":
+                notional_cap = parsed
+            elif key == "eff_sl":
+                eff_sl = parsed
+            elif key == "eff_tp":
+                eff_tp = parsed
+            elif key == "vol":
+                vol = parsed
+            elif key == "size_mult":
+                size_mult = parsed
+    return JournalCreatePlan(
+        pair=pair,
+        side=side,
+        entry_class=entry_class,
+        notional_req=notional_req,
+        notional_cap=notional_cap,
+        eff_sl=eff_sl,
+        eff_tp=eff_tp,
+        vol=vol,
+        size_mult=size_mult,
+    )
+
+
 def _parse_decision_line(line: str, tick_time_map: dict[int, dt.datetime]) -> TickMeta | None:
     decision_match = _DECISION_RE.match(line)
     if not decision_match:
@@ -479,6 +540,8 @@ def _parse_decision_line(line: str, tick_time_map: dict[int, dt.datetime]) -> Ti
         if monitored_match
         else None
     )
+    create_plan = _parse_create_plan(line)
+    create_plans = {create_plan.pair: create_plan} if create_plan else {}
     return TickMeta(
         tick=tick_number,
         timestamp=tick_time_map[tick_number],
@@ -505,6 +568,7 @@ def _parse_decision_line(line: str, tick_time_map: dict[int, dt.datetime]) -> Ti
         if pnl_snapshot_match
         else None,
         barrier_closes=_parse_barrier_events(line),
+        create_plans=create_plans,
     )
 
 

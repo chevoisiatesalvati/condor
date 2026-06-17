@@ -273,6 +273,7 @@ async def fetch_hl_candles_between_cached(
     refresh_cache: bool = False,
     coverage_end_ms: int | None = None,
     fill_gaps: bool = True,
+    ignore_api_skip: bool = False,
 ) -> list[dict[str, float]]:
     """Load candles from disk cache, fetching and merging only missing ranges."""
     interval_ms = hl_candles._INTERVAL_MS.get(interval)
@@ -317,7 +318,7 @@ async def fetch_hl_candles_between_cached(
     )
 
     parquet_path = cache_path(trading_pair, interval, cache_dir=cache_dir)
-    if _should_skip_api_fetch(parquet_path):
+    if not ignore_api_skip and _should_skip_api_fetch(parquet_path):
         return _filter_candles_in_range(cached, start_ms, end_ms)
 
     if not gaps:

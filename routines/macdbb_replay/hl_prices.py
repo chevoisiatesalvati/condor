@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 
+from condor.trading_agent.policies.macdbb_dynamic import (
+    SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,
+    SCANNER_NATR_MIN_BARS,
+)
+
 if TYPE_CHECKING:
     from routines.macdbb_replay.models import TickMeta
 
@@ -19,7 +24,15 @@ logger = logging.getLogger(__name__)
 
 HlPriceCache = dict[tuple[str, int], float]
 HlCandleCache = dict[str, list[dict[str, float]]]
-ReplayHlPrefetch = tuple[dict[int, HlPriceCache], HlCandleCache, HlCandleCache]
+ReplayHlPrefetch = tuple[
+    dict[int, HlPriceCache],
+    HlCandleCache,
+    HlCandleCache,
+    HlCandleCache,
+]
+
+# Hyperliquid 1m candleSnapshot retention is short; skip 1m API for older sessions.
+HL_1M_API_MAX_AGE_DAYS = 4
 
 _INTERVAL_MAX_DELTA_MS: dict[str, int] = {
     "1m": 45 * 60 * 1000,
@@ -35,6 +48,7 @@ class HlPrefetchSettings:
     interval: str = "5m"
     barrier_interval: str = "1m"
     buffer_hours: int = 1
+    vol_lookback_hours: int = SCANNER_NATR_LOOKBACK_HOURS_DEFAULT
     max_concurrent: int = 1
     request_interval_ms: int = 400
     max_retries: int = 6
@@ -49,6 +63,9 @@ def hl_prefetch_settings_from_config(config: object) -> HlPrefetchSettings:
     return HlPrefetchSettings(
         interval=getattr(config, "hl_price_interval", "5m"),
         barrier_interval=getattr(config, "hl_barrier_interval", "1m"),
+        vol_lookback_hours=getattr(
+            config, "scanner_lookback_hours", SCANNER_NATR_LOOKBACK_HOURS_DEFAULT
+        ),
         max_concurrent=getattr(config, "hl_max_concurrent", 1),
         request_interval_ms=getattr(config, "hl_request_interval_ms", 400),
         max_retries=getattr(config, "hl_max_retries", 6),
@@ -83,6 +100,61 @@ def _canonical_trading_pair(pair: str) -> str:
     if "-" in pair:
         return pair
     return f"{pair}-USD"
+
+
+def _ensure_utc(value: dt.datetime) -> dt.datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=dt.timezone.utc)
+    return value
+
+
+def _filter_candles_in_range(
+    candles: list[dict[str, float]],
+    start: dt.datetime,
+    end: dt.datetime,
+) -> list[dict[str, float]]:
+    start_ms = int(_ensure_utc(start).timestamp() * 1000)
+    end_ms = int(_ensure_utc(end).timestamp() * 1000)
+    filtered = [
+        candle
+        for candle in candles
+        if "timestamp_ms" in candle
+        and start_ms <= int(candle["timestamp_ms"]) <= end_ms
+    ]
+    filtered.sort(key=lambda candle: int(candle["timestamp_ms"]))
+    return filtered
+
+
+def _vol_bars_in_lookback(
+    candles: list[dict[str, float]],
+    tick_times: list[dt.datetime],
+    lookback_hours: int,
+) -> int:
+    if not candles or not tick_times:
+        return 0
+    end_ms = int(_ensure_utc(max(tick_times)).timestamp() * 1000)
+    start_ms = end_ms - lookback_hours * 3600 * 1000
+    return sum(
+        1
+        for candle in candles
+        if start_ms <= int(candle.get("timestamp_ms", -1)) <= end_ms
+    )
+
+
+def _vol_series_usable(
+    candles: list[dict[str, float]],
+    tick_times: list[dt.datetime],
+    lookback_hours: int,
+) -> bool:
+    return _vol_bars_in_lookback(candles, tick_times, lookback_hours) >= SCANNER_NATR_MIN_BARS
+
+
+def _within_1m_api_window(tick_times: list[dt.datetime]) -> bool:
+    if not tick_times:
+        return False
+    latest = max(_ensure_utc(tick_time) for tick_time in tick_times)
+    age = dt.datetime.now(dt.timezone.utc) - latest
+    return age <= dt.timedelta(days=HL_1M_API_MAX_AGE_DAYS)
 
 
 def _tick_pairs(meta: TickMeta) -> set[str]:
@@ -193,9 +265,9 @@ async def prefetch_replay_hl_prices(
     *,
     settings: HlPrefetchSettings | None = None,
 ) -> ReplayHlPrefetch:
-    """Fetch tick-close prices and OHLC series for replay (price + barrier intervals)."""
+    """Fetch tick-close prices and OHLC series for replay (price + barrier + vol)."""
     if not session_tick_maps:
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
     opts = settings or HlPrefetchSettings()
     _configure_hl_throttle(opts)
@@ -210,13 +282,14 @@ async def prefetch_replay_hl_prices(
 
     pair_requests = _aggregate_pair_requests(session_tick_maps)
     if not pair_requests:
-        return {session_num: {} for session_num in session_tick_maps}, {}, {}
+        return {session_num: {} for session_num in session_tick_maps}, {}, {}, {}
 
     session_caches: dict[int, HlPriceCache] = {
         session_num: {} for session_num in session_tick_maps
     }
     pair_candles: HlCandleCache = {}
     pair_barrier_candles: HlCandleCache = {}
+    pair_vol_candles: HlCandleCache = {}
     semaphore = asyncio.Semaphore(max(1, opts.max_concurrent))
     pairs_sorted = sorted(pair_requests)
     load_barrier_series = opts.barrier_interval != opts.interval
@@ -230,10 +303,13 @@ async def prefetch_replay_hl_prices(
             coverage_ms: int,
             *,
             fill_gaps: bool = True,
+            history_hours: int | None = None,
+            ignore_api_skip: bool = False,
         ) -> list[dict[str, float]]:
             requests = pair_requests[pair]
             tick_times = [tick_time for _, _, tick_time, _ in requests]
-            start = min(tick_times) - dt.timedelta(hours=opts.buffer_hours)
+            back_hours = history_hours if history_hours is not None else opts.buffer_hours
+            start = min(tick_times) - dt.timedelta(hours=back_hours)
             end = max(tick_times) + dt.timedelta(hours=opts.buffer_hours)
             async with semaphore:
                 try:
@@ -248,6 +324,7 @@ async def prefetch_replay_hl_prices(
                         refresh_cache=opts.refresh_cache,
                         coverage_end_ms=coverage_ms,
                         fill_gaps=fill_gaps,
+                        ignore_api_skip=ignore_api_skip,
                     )
                 except Exception as error:
                     hl_candle_cache.mark_api_fetch_failed(
@@ -264,6 +341,112 @@ async def prefetch_replay_hl_prices(
                     )
                     return []
 
+        async def _load_cached_only(
+            pair: str,
+            interval: str,
+            tick_times: list[dt.datetime],
+            history_hours: int,
+        ) -> list[dict[str, float]]:
+            if not opts.use_cache or opts.refresh_cache:
+                return []
+            cached = hl_candle_cache.load_candles(
+                pair,
+                interval,
+                cache_dir=opts.cache_dir,
+            )
+            if not cached:
+                return []
+            start = min(tick_times) - dt.timedelta(hours=history_hours)
+            end = max(tick_times) + dt.timedelta(hours=opts.buffer_hours)
+            return _filter_candles_in_range(cached, start, end)
+
+        async def _resolve_vol_candles(
+            pair: str,
+            tick_times: list[dt.datetime],
+            price_candles: list[dict[str, float]],
+            *,
+            vol_history_hours: int,
+            price_coverage_end_ms: int,
+        ) -> tuple[list[dict[str, float]], str]:
+            skip_1m_api = (
+                not _within_1m_api_window(tick_times)
+                or hl_candle_cache.is_api_fetch_skipped(
+                    pair,
+                    opts.barrier_interval,
+                    cache_dir=opts.cache_dir,
+                )
+            )
+
+            cached_1m = await _load_cached_only(
+                pair,
+                opts.barrier_interval,
+                tick_times,
+                vol_history_hours,
+            )
+            if _vol_series_usable(cached_1m, tick_times, vol_history_hours):
+                return cached_1m, opts.barrier_interval
+
+            if not skip_1m_api:
+                fetched_1m = await _fetch_series(
+                    pair,
+                    opts.barrier_interval,
+                    price_coverage_end_ms,
+                    fill_gaps=True,
+                    history_hours=vol_history_hours,
+                    ignore_api_skip=False,
+                )
+                if _vol_series_usable(fetched_1m, tick_times, vol_history_hours):
+                    return fetched_1m, opts.barrier_interval
+
+            skip_5m_api = hl_candle_cache.is_api_fetch_skipped(
+                pair,
+                opts.interval,
+                cache_dir=opts.cache_dir,
+            )
+            cached_5m = await _load_cached_only(
+                pair,
+                opts.interval,
+                tick_times,
+                vol_history_hours,
+            )
+            if _vol_series_usable(cached_5m, tick_times, vol_history_hours):
+                if skip_1m_api:
+                    logger.info(
+                        "HL vol %s cache for %s (1m unavailable — scanner NATR on %s)",
+                        opts.interval,
+                        pair,
+                        opts.interval,
+                    )
+                return cached_5m, opts.interval
+
+            if not skip_5m_api:
+                fetched_5m = await _fetch_series(
+                    pair,
+                    opts.interval,
+                    price_coverage_end_ms,
+                    fill_gaps=True,
+                    history_hours=vol_history_hours,
+                    ignore_api_skip=False,
+                )
+                if _vol_series_usable(fetched_5m, tick_times, vol_history_hours):
+                    if skip_1m_api:
+                        logger.info(
+                            "HL vol %s for %s (1m unavailable — scanner NATR on %s)",
+                            opts.interval,
+                            pair,
+                            opts.interval,
+                        )
+                    return fetched_5m, opts.interval
+
+            fallback = cached_5m or price_candles
+            if skip_1m_api and fallback:
+                logger.info(
+                    "HL vol partial %s for %s (1m unavailable — best-effort scanner NATR)",
+                    opts.interval,
+                    pair,
+                )
+            return fallback, opts.interval
+
         async def load_pair(pair: str) -> None:
             requests = pair_requests[pair]
             tick_times = [tick_time for _, _, tick_time, _ in requests]
@@ -275,46 +458,46 @@ async def prefetch_replay_hl_prices(
                 return
             pair_candles[pair] = candles
 
-            if not load_barrier_series:
-                pair_barrier_candles[pair] = candles
-                return
-
-            if hl_candle_cache.is_api_fetch_skipped(
+            vol_history_hours = max(opts.buffer_hours, opts.vol_lookback_hours)
+            vol_candles, vol_interval = await _resolve_vol_candles(
                 pair,
-                opts.barrier_interval,
-                cache_dir=opts.cache_dir,
-            ):
-                logger.info(
-                    "HL barrier %s skipped for %s — using %s",
-                    opts.barrier_interval,
-                    pair,
-                    opts.interval,
-                )
-                pair_barrier_candles[pair] = candles
-                return
-
-            barrier_coverage_end_ms = latest_tick_ms + (barrier_interval_ms or 60_000)
-            barrier_candles = await _fetch_series(
-                pair,
-                opts.barrier_interval,
-                barrier_coverage_end_ms,
-                fill_gaps=False,
+                tick_times,
+                candles,
+                vol_history_hours=vol_history_hours,
+                price_coverage_end_ms=price_coverage_end_ms,
             )
-            if barrier_candles:
-                pair_barrier_candles[pair] = barrier_candles
-            else:
-                hl_candle_cache.mark_api_fetch_failed(
+            pair_vol_candles[pair] = vol_candles
+
+            if not load_barrier_series:
+                pair_barrier_candles[pair] = vol_candles
+                return
+
+            if vol_interval == opts.barrier_interval:
+                pair_barrier_candles[pair] = vol_candles
+                return
+
+            skip_1m_api = (
+                not _within_1m_api_window(tick_times)
+                or hl_candle_cache.is_api_fetch_skipped(
                     pair,
                     opts.barrier_interval,
                     cache_dir=opts.cache_dir,
                 )
-                logger.warning(
-                    "HL barrier prefetch empty for %s %s — falling back to %s",
-                    pair,
-                    opts.barrier_interval,
-                    opts.interval,
-                )
-                pair_barrier_candles[pair] = candles
+            )
+            if skip_1m_api:
+                pair_barrier_candles[pair] = vol_candles
+                return
+
+            barrier_coverage_end_ms = latest_tick_ms + (barrier_interval_ms or 60_000)
+            barrier_1m = await _fetch_series(
+                pair,
+                opts.barrier_interval,
+                barrier_coverage_end_ms,
+                fill_gaps=False,
+                history_hours=vol_history_hours,
+                ignore_api_skip=False,
+            )
+            pair_barrier_candles[pair] = barrier_1m or vol_candles
 
         await asyncio.gather(
             *[load_pair(pair) for pair in pairs_sorted],
@@ -337,14 +520,15 @@ async def prefetch_replay_hl_prices(
     total_prices = sum(len(cache) for cache in session_caches.values())
     logger.info(
         "HL replay prefetch: %d prices across %d sessions "
-        "(%d unique pairs, %d price series, %d barrier series)",
+        "(%d unique pairs, %d price series, %d barrier series, %d vol series)",
         total_prices,
         len(session_tick_maps),
         len(pair_requests),
         len(pair_candles),
         len(pair_barrier_candles),
+        len(pair_vol_candles),
     )
-    return session_caches, pair_candles, pair_barrier_candles
+    return session_caches, pair_candles, pair_barrier_candles, pair_vol_candles
 
 
 async def prefetch_session_hl_prices(
@@ -364,5 +548,5 @@ async def prefetch_session_hl_prices(
         request_interval_ms=request_interval_ms,
         max_retries=max_retries,
     )
-    caches, _, _ = await prefetch_replay_hl_prices({0: tick_meta_map}, settings=settings)
+    caches, _, _, _ = await prefetch_replay_hl_prices({0: tick_meta_map}, settings=settings)
     return caches.get(0, {})

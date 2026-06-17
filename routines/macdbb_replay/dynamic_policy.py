@@ -7,6 +7,7 @@ import datetime as dt
 from condor.trading_agent.policies.macdbb_dynamic import (
     NATR_LOOKBACK_PERIODS,
     NATR_MIN_CANDLES,
+    SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,
     STATIC_TIER_VOL_PCT,
     EntryPolicyResult,
     bb_width_pct,
@@ -17,6 +18,7 @@ from condor.trading_agent.policies.macdbb_dynamic import (
     natr_from_candles,
     resolve_entry_policy,
     resolve_fixed_entry_policy,
+    scanner_natr_mean_from_candles,
     static_tier_volatility_pct,
 )
 from routines.macdbb_replay.models import (
@@ -29,6 +31,7 @@ from routines.macdbb_replay.models import (
 __all__ = [
     "NATR_LOOKBACK_PERIODS",
     "NATR_MIN_CANDLES",
+    "SCANNER_NATR_LOOKBACK_HOURS_DEFAULT",
     "STATIC_TIER_VOL_PCT",
     "DynamicReplayPolicy",
     "EntryPolicyResult",
@@ -41,6 +44,7 @@ __all__ = [
     "natr_from_candles",
     "resolve_entry_policy",
     "resolve_fixed_entry_policy",
+    "scanner_natr_mean_from_candles",
     "static_tier_volatility_pct",
 ]
 
@@ -62,6 +66,7 @@ class DynamicReplayPolicy:
         entry_streak: int,
         journal_signal: JournalSignal1h | None = None,
         hl_candle_cache: dict[str, list[dict[str, float]]] | None = None,
+        hl_vol_candle_cache: dict[str, list[dict[str, float]]] | None = None,
         entry_time: dt.datetime | None = None,
     ) -> EntryPolicyResult:
         if (
@@ -72,6 +77,7 @@ class DynamicReplayPolicy:
                 entry_class=entry_class,
                 config=self.config,
             )
+
         return resolve_entry_policy(
             pair=pair,
             side=side,
@@ -82,6 +88,7 @@ class DynamicReplayPolicy:
             config=self.config,
             journal_signal=journal_signal,
             hl_candle_cache=hl_candle_cache,
+            hl_vol_candle_cache=hl_vol_candle_cache,
             entry_time=entry_time,
         )
 

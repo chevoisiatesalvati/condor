@@ -56,6 +56,7 @@ def _resolve_entry_policy(
     replay_policy: DynamicReplayPolicy | None,
     journal_signal: JournalSignal1h | None = None,
     hl_candle_cache: HlCandleCache | None = None,
+    hl_vol_candle_cache: HlCandleCache | None = None,
 ) -> EntryPolicyResult:
     if replay_policy is None:
         return resolve_fixed_entry_policy(entry_class=entry_class, config=config)
@@ -68,6 +69,7 @@ def _resolve_entry_policy(
         entry_streak=entry_streak,
         journal_signal=journal_signal,
         hl_candle_cache=hl_candle_cache,
+        hl_vol_candle_cache=hl_vol_candle_cache,
         entry_time=entry_time,
     )
 
@@ -89,6 +91,7 @@ def _open_position(
     entry_bb_pos_pct: float,
     journal_signal: JournalSignal1h | None = None,
     hl_candle_cache: HlCandleCache | None = None,
+    hl_vol_candle_cache: HlCandleCache | None = None,
 ) -> OpenPosition:
     policy_result = _resolve_entry_policy(
         pair=pair,
@@ -102,6 +105,7 @@ def _open_position(
         replay_policy=replay_policy,
         journal_signal=journal_signal,
         hl_candle_cache=hl_candle_cache,
+        hl_vol_candle_cache=hl_vol_candle_cache,
     )
     return OpenPosition(
         entry_tick=entry_tick,
@@ -488,6 +492,7 @@ def simulate_strategy_session(
     hl_price_cache: dict[tuple[str, int], float] | None = None,
     hl_candle_cache: HlCandleCache | None = None,
     hl_barrier_candle_cache: HlCandleCache | None = None,
+    hl_vol_candle_cache: HlCandleCache | None = None,
     replay_policy: DynamicReplayPolicy | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[SimTrade], dict[str, Any]]:
     if config.require_price_data and not session_has_trusted_prices(
@@ -499,6 +504,11 @@ def simulate_strategy_session(
         return [], [], [], _skipped_summary("skipped_no_price_data")
 
     barrier_candles = hl_barrier_candle_cache if hl_barrier_candle_cache is not None else hl_candle_cache
+    vol_candles = (
+        hl_vol_candle_cache
+        if hl_vol_candle_cache is not None
+        else barrier_candles
+    )
 
     per_pair_rows: list[dict[str, Any]] = []
     per_tick_rows: list[dict[str, Any]] = []
@@ -708,6 +718,7 @@ def simulate_strategy_session(
                             entry_bb_pos_pct=_entry_bb_pos_pct(snapshot),
                             journal_signal=meta.signals_1h.get(pair),
                             hl_candle_cache=hl_candle_cache,
+                            hl_vol_candle_cache=vol_candles,
                         )
                         opens_this_tick.append(reverse_trigger)
 
@@ -843,6 +854,7 @@ def simulate_strategy_session(
                     entry_bb_pos_pct=_entry_bb_pos_pct(snapshot),
                     journal_signal=meta.signals_1h.get(pair),
                     hl_candle_cache=hl_candle_cache,
+                    hl_vol_candle_cache=vol_candles,
                 )
                 opens_this_tick.append(trigger)
 
@@ -875,6 +887,7 @@ def simulate_strategy_session(
                     entry_bb_pos_pct=_entry_bb_pos_pct(snapshot),
                     journal_signal=meta.signals_1h.get(pair),
                     hl_candle_cache=hl_candle_cache,
+                    hl_vol_candle_cache=vol_candles,
                 )
                 opens_this_tick.append(trigger)
         else:

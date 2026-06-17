@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 from routines.macdbb_replay.dynamic_policy import (
+    DynamicReplayPolicy,
     bb_width_pct,
     compute_dynamic_barriers,
     compute_conviction_multiplier,
@@ -204,3 +205,80 @@ def test_strategy_replay_config_still_works_without_dynamic_fields():
     config = StrategyReplayConfig(preset="custom", formal_notional_quote=200.0)
     fixed = resolve_fixed_entry_policy(entry_class="formal", config=config)
     assert fixed.notional_quote == 200.0
+
+
+def test_scanner_natr_mean_matches_market_scanner_analyze_pair():
+    import numpy as np
+
+    from routines.market_scanner import analyze_pair
+
+    rng = np.random.default_rng(42)
+    candles: list[dict[str, float]] = []
+    price = 0.17
+    for index in range(400):
+        shock = float(rng.normal(0, 0.0004))
+        price = max(0.01, price + shock)
+        candles.append(
+            {
+                "timestamp_ms": index * 60_000,
+                "open": price,
+                "high": price * 1.001,
+                "low": price * 0.999,
+                "close": price,
+                "volume": 1000.0,
+            }
+        )
+    pair_info = {
+        "trading_pair": "ADA-USD",
+        "price": price,
+        "price_change_pct": 0.0,
+        "volume_24h_usd": 10_000_000.0,
+    }
+    analyzed = analyze_pair(candles, pair_info)
+    assert analyzed is not None
+    from condor.trading_agent.policies.macdbb_dynamic import scanner_natr_mean_from_candles
+
+    shared = scanner_natr_mean_from_candles(candles, entry_time=None)
+    assert shared is not None
+    assert abs(shared - analyzed["natr_mean"]) < 1e-4
+
+
+def test_estimate_pair_volatility_uses_scanner_natr_from_1m_cache():
+    from condor.trading_agent.policies.macdbb_dynamic import (
+        estimate_pair_volatility,
+        scanner_natr_mean_from_candles,
+    )
+
+    config = DynamicStrategyReplayConfig(
+        preset="hl_dynamic_mega_sweep_best",
+        volatility_source="natr",
+    )
+    entry_time = dt.datetime(2026, 6, 17, 20, 32, tzinfo=dt.timezone.utc)
+    candles: list[dict[str, float]] = []
+    price = 0.17
+    start_ms = int(entry_time.timestamp() * 1000) - 6 * 3600 * 1000
+    for index in range(360):
+        candles.append(
+            {
+                "timestamp_ms": start_ms + index * 60_000,
+                "open": price,
+                "high": price * 1.002,
+                "low": price * 0.998,
+                "close": price,
+                "volume": 1000.0,
+            }
+        )
+    expected = scanner_natr_mean_from_candles(
+        candles,
+        entry_time,
+        lookback_hours=config.scanner_lookback_hours,
+    )
+    assert expected is not None
+    vol = estimate_pair_volatility(
+        pair="ADA-USD",
+        journal_signal=None,
+        config=config,
+        hl_vol_candle_cache={"ADA-USD": candles},
+        entry_time=entry_time,
+    )
+    assert abs(vol - expected) < 1e-9

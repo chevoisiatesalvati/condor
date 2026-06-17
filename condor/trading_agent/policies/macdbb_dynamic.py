@@ -21,9 +21,12 @@ STATIC_TIER_VOL_PCT: dict[str, float] = {
 
 NATR_LOOKBACK_PERIODS = 14
 NATR_MIN_CANDLES = NATR_LOOKBACK_PERIODS * 2
+SCANNER_NATR_MIN_BARS = 30
+SCANNER_NATR_LOOKBACK_HOURS_DEFAULT = 6
 
 # Live strategy_params keys mapped to DynamicStrategyReplayConfig fields.
 _LIVE_PARAM_KEYS: tuple[str, ...] = (
+    "scanner_lookback_hours",
     "enable_dynamic_sizing",
     "enable_dynamic_barriers",
     "sl_pct",
@@ -149,6 +152,75 @@ def natr_from_candles(
     return (atr / last_close) * 100.0
 
 
+def _candle_timestamp_ms(candle: dict[str, float]) -> int | None:
+    if "timestamp_ms" in candle:
+        return int(candle["timestamp_ms"])
+    if "timestamp" in candle:
+        return int(candle["timestamp"])
+    return None
+
+
+def scanner_natr_mean_from_candles(
+    candles: list[dict[str, float]],
+    entry_time: dt.datetime | None = None,
+    *,
+    lookback_hours: int = SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,
+    natr_period: int = NATR_LOOKBACK_PERIODS,
+) -> float | None:
+    """Mean rolling NATR (%%) — matches hyperliquid_market_scanner analyze_pair."""
+    if not candles:
+        return None
+
+    window = list(candles)
+    if entry_time is not None:
+        end_ms = int(entry_time.timestamp() * 1000)
+        start_ms = end_ms - lookback_hours * 3600 * 1000
+        filtered: list[dict[str, float]] = []
+        for candle in candles:
+            timestamp_ms = _candle_timestamp_ms(candle)
+            if timestamp_ms is None:
+                continue
+            if start_ms <= timestamp_ms <= end_ms:
+                filtered.append(candle)
+        window = filtered
+
+    if len(window) < SCANNER_NATR_MIN_BARS:
+        return None
+
+    window.sort(key=lambda candle: _candle_timestamp_ms(candle) or 0)
+    try:
+        closes = [float(candle["close"]) for candle in window]
+        highs = [float(candle["high"]) for candle in window]
+        lows = [float(candle["low"]) for candle in window]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if closes[-1] <= 0:
+        return None
+
+    true_ranges: list[float] = []
+    for index in range(len(window)):
+        prev_close = closes[index - 1] if index > 0 else closes[0]
+        high_low = highs[index] - lows[index]
+        high_prev = abs(highs[index] - prev_close)
+        low_prev = abs(lows[index] - prev_close)
+        true_ranges.append(max(high_low, high_prev, low_prev))
+
+    if len(true_ranges) >= natr_period * 2:
+        natr_values: list[float] = []
+        for index in range(natr_period, len(true_ranges)):
+            atr = sum(true_ranges[index - natr_period : index]) / natr_period
+            close_i = closes[index]
+            if close_i > 0:
+                natr_values.append((atr / close_i) * 100.0)
+        if not natr_values:
+            return None
+        return sum(natr_values) / len(natr_values)
+
+    atr = sum(true_ranges) / len(true_ranges)
+    return (atr / closes[-1]) * 100.0
+
+
 def static_tier_volatility_pct(pair: str) -> float | None:
     return STATIC_TIER_VOL_PCT.get(_canonical_trading_pair(pair))
 
@@ -159,11 +231,17 @@ def estimate_pair_volatility(
     journal_signal: JournalSignal1h | None,
     config: DynamicStrategyReplayConfig,
     hl_candle_cache: dict[str, list[dict[str, float]]] | None = None,
+    hl_vol_candle_cache: dict[str, list[dict[str, float]]] | None = None,
     entry_time: dt.datetime | None = None,
     pair_vol_override: float | None = None,
 ) -> float:
     source = config.volatility_source
     ref_vol = config.ref_volatility_pct
+    lookback_hours = getattr(
+        config,
+        "scanner_lookback_hours",
+        SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,
+    )
 
     if pair_vol_override is not None and pair_vol_override > 0:
         if source in ("natr", "auto"):
@@ -172,13 +250,18 @@ def estimate_pair_volatility(
     def _bb() -> float | None:
         return bb_width_pct(journal_signal)
 
-    def _natr() -> float | None:
-        if hl_candle_cache is None or entry_time is None:
+    def _scanner_natr() -> float | None:
+        vol_cache = hl_vol_candle_cache or hl_candle_cache
+        if vol_cache is None:
             return None
-        candles = hl_candle_cache.get(_canonical_trading_pair(pair))
+        candles = vol_cache.get(_canonical_trading_pair(pair))
         if not candles:
             return None
-        return natr_from_candles(candles, entry_time)
+        return scanner_natr_mean_from_candles(
+            candles,
+            entry_time,
+            lookback_hours=lookback_hours,
+        )
 
     def _static() -> float | None:
         return static_tier_volatility_pct(pair)
@@ -186,11 +269,11 @@ def estimate_pair_volatility(
     if source == "bb_width":
         candidates = [_bb()]
     elif source == "natr":
-        candidates = [_natr()]
+        candidates = [_scanner_natr()]
     elif source == "static_tier":
         candidates = [_static()]
     else:
-        candidates = [_natr(), _bb(), _static()]
+        candidates = [_scanner_natr(), _bb(), _static()]
 
     for candidate in candidates:
         if candidate is not None and candidate > 0:
@@ -293,6 +376,7 @@ def resolve_entry_policy(
     config: DynamicStrategyReplayConfig,
     journal_signal: JournalSignal1h | None = None,
     hl_candle_cache: dict[str, list[dict[str, float]]] | None = None,
+    hl_vol_candle_cache: dict[str, list[dict[str, float]]] | None = None,
     entry_time: dt.datetime | None = None,
     pair_vol_override: float | None = None,
 ) -> EntryPolicyResult:
@@ -302,6 +386,7 @@ def resolve_entry_policy(
         journal_signal=journal_signal,
         config=config,
         hl_candle_cache=hl_candle_cache,
+        hl_vol_candle_cache=hl_vol_candle_cache,
         entry_time=entry_time,
         pair_vol_override=pair_vol_override,
     )
