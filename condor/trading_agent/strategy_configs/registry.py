@@ -21,6 +21,8 @@ STRATEGY_CONFIG_REGISTRY: dict[str, Type[BaseModel]] = {
 def duration_to_ticks(hours: float, frequency_sec: int) -> int:
     """Convert wall-clock hours to agent tick count."""
     freq = max(1, int(frequency_sec))
+    if float(hours) <= 0:
+        return 0
     return max(1, round(float(hours) * 3600 / freq))
 
 

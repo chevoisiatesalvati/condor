@@ -269,6 +269,120 @@ class MacdbbScannerAggressiveHlParams(BaseModel):
         json_schema_extra={"group": "Entry barriers"},
     )
 
+    # Dynamic sizing
+    enable_dynamic_sizing: bool | None = Field(
+        default=None,
+        description="Scale notional by conviction and volatility factors",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    min_notional_quote: float | None = Field(
+        default=None,
+        description="Minimum position notional USD after dynamic sizing",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    max_notional_quote: float | None = Field(
+        default=None,
+        description="Maximum position notional USD after dynamic sizing",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    min_conviction_mult: float | None = Field(
+        default=None,
+        description="Floor on conviction sizing multiplier",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    max_conviction_mult: float | None = Field(
+        default=None,
+        description="Cap on conviction sizing multiplier",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    strength_mult_per_unit: float | None = Field(
+        default=None,
+        description="Notional bump per 1.0 adaptive strength above open threshold",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    extreme_displacement_mult: float | None = Field(
+        default=None,
+        description="Multiplier when BB is at extreme displacement",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    activation_streak_mult_per_tick: float | None = Field(
+        default=None,
+        description="Extra size per agent tick above activation_ticks (adaptive only)",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    thin_universe_mult: float | None = Field(
+        default=None,
+        description="Multiplier when tradeable_count <= 2",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    mature_tape_low_vol_mult: float | None = Field(
+        default=None,
+        description="Size reduction on mature tape when pair vol is below ref",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    vol_inverse_sizing: bool | None = Field(
+        default=None,
+        description="High volatility pairs receive smaller notional",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    min_vol_mult: float | None = Field(
+        default=None,
+        description="Floor on vol-inverse sizing multiplier",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+    max_vol_mult: float | None = Field(
+        default=None,
+        description="Cap on vol-inverse sizing multiplier",
+        json_schema_extra={"group": "Dynamic sizing"},
+    )
+
+    # Dynamic barriers
+    enable_dynamic_barriers: bool | None = Field(
+        default=None,
+        description="Scale SL/TP by pair volatility proxy",
+        json_schema_extra={"group": "Dynamic barriers"},
+    )
+    ref_volatility_pct: float | None = Field(
+        default=None,
+        description="Anchor volatility % for sizing and barriers",
+        json_schema_extra={"group": "Dynamic barriers"},
+    )
+    sl_vol_exponent: float | None = Field(
+        default=None,
+        description="SL scaling exponent vs vol ratio",
+        json_schema_extra={"group": "Dynamic barriers"},
+    )
+    tp_vol_exponent: float | None = Field(
+        default=None,
+        description="TP scaling exponent vs vol ratio",
+        json_schema_extra={"group": "Dynamic barriers"},
+    )
+    sl_min_pct: float | None = Field(
+        default=None,
+        description="Minimum dynamic stop-loss %",
+        json_schema_extra={"group": "Dynamic barriers"},
+    )
+    sl_max_pct: float | None = Field(
+        default=None,
+        description="Maximum dynamic stop-loss %",
+        json_schema_extra={"group": "Dynamic barriers"},
+    )
+    tp_min_pct: float | None = Field(
+        default=None,
+        description="Minimum dynamic take-profit %",
+        json_schema_extra={"group": "Dynamic barriers"},
+    )
+    tp_max_pct: float | None = Field(
+        default=None,
+        description="Maximum dynamic take-profit %",
+        json_schema_extra={"group": "Dynamic barriers"},
+    )
+    volatility_source: str | None = Field(
+        default=None,
+        description="Volatility proxy: auto, bb_width, natr, or static_tier",
+        json_schema_extra={"group": "Dynamic barriers"},
+    )
+
     # Position monitor (duration-primary)
     thesis_decay_exit_hours: float | None = Field(
         default=None,
