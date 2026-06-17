@@ -226,12 +226,11 @@ def test_fetch_cached_refresh_ignores_disk(tmp_path):
     assert {candle["close"] for candle in loaded} == {99.0, 100.0}
 
 
-def test_fetch_cached_retries_when_api_skip_set_but_gap_exists(tmp_path):
+def test_fetch_cached_skips_gap_fetch_when_api_skip_set(tmp_path):
     interval_ms = 300_000
     start = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
     end = dt.datetime(2026, 1, 1, 2, tzinfo=dt.UTC)
     start_ms = int(start.timestamp() * 1000)
-    end_ms = int(end.timestamp() * 1000)
     hl_candle_cache.save_candles(
         "FARTCOIN-USD",
         "5m",
@@ -241,9 +240,7 @@ def test_fetch_cached_retries_when_api_skip_set_but_gap_exists(tmp_path):
     parquet_path = hl_candle_cache.cache_path("FARTCOIN-USD", "5m", cache_dir=tmp_path)
     hl_candle_cache._mark_api_fetch_failed(parquet_path)
 
-    gap_start_ms = start_ms + interval_ms
-    fetched = [_make_candle(gap_start_ms, 2.0), _make_candle(end_ms, 3.0)]
-    fetch_mock = AsyncMock(return_value=fetched)
+    fetch_mock = AsyncMock(return_value=[])
 
     with patch("routines.lib.hl_candle_cache.hl_candles.fetch_hl_candles_between", fetch_mock):
         result = asyncio.run(
@@ -256,6 +253,44 @@ def test_fetch_cached_retries_when_api_skip_set_but_gap_exists(tmp_path):
             )
         )
 
-    fetch_mock.assert_awaited_once()
-    assert len(result) == 3
-    assert not hl_candle_cache._api_skip_path(parquet_path).is_file()
+    fetch_mock.assert_not_called()
+    assert len(result) == 1
+    assert result[0]["close"] == 1.0
+
+
+def test_fetch_cached_partial_without_gap_fetch_when_fill_gaps_false(tmp_path):
+    interval_ms = 300_000
+    start = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+    end = dt.datetime(2026, 1, 1, 2, tzinfo=dt.UTC)
+    start_ms = int(start.timestamp() * 1000)
+    hl_candle_cache.save_candles(
+        "ETH-USD",
+        "1m",
+        [_make_candle(start_ms, 10.0)],
+        cache_dir=tmp_path,
+    )
+
+    fetch_mock = AsyncMock(return_value=[])
+
+    with patch("routines.lib.hl_candle_cache.hl_candles.fetch_hl_candles_between", fetch_mock):
+        result = asyncio.run(
+            hl_candle_cache.fetch_hl_candles_between_cached(
+                "ETH-USD",
+                "1m",
+                start,
+                end,
+                cache_dir=tmp_path,
+                fill_gaps=False,
+            )
+        )
+
+    fetch_mock.assert_not_called()
+    assert len(result) == 1
+    assert result[0]["close"] == 10.0
+
+
+def test_is_api_fetch_skipped_reflects_marker(tmp_path):
+    path = hl_candle_cache.cache_path("ARB-USD", "1m", cache_dir=tmp_path)
+    assert not hl_candle_cache.is_api_fetch_skipped("ARB-USD", "1m", cache_dir=tmp_path)
+    hl_candle_cache._mark_api_fetch_failed(path)
+    assert hl_candle_cache.is_api_fetch_skipped("ARB-USD", "1m", cache_dir=tmp_path)

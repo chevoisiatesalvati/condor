@@ -222,7 +222,15 @@ async def prefetch_replay_hl_prices(
     load_barrier_series = opts.barrier_interval != opts.interval
 
     async with aiohttp.ClientSession() as session:
-        async def _fetch_series(pair: str, interval: str, coverage_ms: int) -> list[dict[str, float]]:
+        hl_candle_cache = _load_hl_candle_cache()
+
+        async def _fetch_series(
+            pair: str,
+            interval: str,
+            coverage_ms: int,
+            *,
+            fill_gaps: bool = True,
+        ) -> list[dict[str, float]]:
             requests = pair_requests[pair]
             tick_times = [tick_time for _, _, tick_time, _ in requests]
             start = min(tick_times) - dt.timedelta(hours=opts.buffer_hours)
@@ -239,11 +247,10 @@ async def prefetch_replay_hl_prices(
                         use_cache=opts.use_cache,
                         refresh_cache=opts.refresh_cache,
                         coverage_end_ms=coverage_ms,
+                        fill_gaps=fill_gaps,
                     )
                 except Exception as error:
-                    from routines.lib import hl_candle_cache as cache_mod
-
-                    cache_mod.mark_api_fetch_failed(
+                    hl_candle_cache.mark_api_fetch_failed(
                         pair,
                         interval,
                         cache_dir=opts.cache_dir,
@@ -272,15 +279,35 @@ async def prefetch_replay_hl_prices(
                 pair_barrier_candles[pair] = candles
                 return
 
+            if hl_candle_cache.is_api_fetch_skipped(
+                pair,
+                opts.barrier_interval,
+                cache_dir=opts.cache_dir,
+            ):
+                logger.info(
+                    "HL barrier %s skipped for %s — using %s",
+                    opts.barrier_interval,
+                    pair,
+                    opts.interval,
+                )
+                pair_barrier_candles[pair] = candles
+                return
+
             barrier_coverage_end_ms = latest_tick_ms + (barrier_interval_ms or 60_000)
             barrier_candles = await _fetch_series(
                 pair,
                 opts.barrier_interval,
                 barrier_coverage_end_ms,
+                fill_gaps=False,
             )
             if barrier_candles:
                 pair_barrier_candles[pair] = barrier_candles
             else:
+                hl_candle_cache.mark_api_fetch_failed(
+                    pair,
+                    opts.barrier_interval,
+                    cache_dir=opts.cache_dir,
+                )
                 logger.warning(
                     "HL barrier prefetch empty for %s %s — falling back to %s",
                     pair,

@@ -47,6 +47,16 @@ def _should_skip_api_fetch(parquet_path: Path) -> bool:
         return False
 
 
+def is_api_fetch_skipped(
+    trading_pair: str,
+    interval: str,
+    *,
+    cache_dir: Path | None = None,
+) -> bool:
+    """Return True when a recent API failure marker exists for this pair/interval."""
+    return _should_skip_api_fetch(cache_path(trading_pair, interval, cache_dir=cache_dir))
+
+
 def _mark_api_fetch_failed(parquet_path: Path) -> None:
     skip_path = _api_skip_path(parquet_path)
     skip_path.parent.mkdir(parents=True, exist_ok=True)
@@ -262,6 +272,7 @@ async def fetch_hl_candles_between_cached(
     use_cache: bool = True,
     refresh_cache: bool = False,
     coverage_end_ms: int | None = None,
+    fill_gaps: bool = True,
 ) -> list[dict[str, float]]:
     """Load candles from disk cache, fetching and merging only missing ranges."""
     interval_ms = hl_candles._INTERVAL_MS.get(interval)
@@ -305,6 +316,10 @@ async def fetch_hl_candles_between_cached(
         )
     )
 
+    parquet_path = cache_path(trading_pair, interval, cache_dir=cache_dir)
+    if _should_skip_api_fetch(parquet_path):
+        return _filter_candles_in_range(cached, start_ms, end_ms)
+
     if not gaps:
         logger.info(
             "HL candle cache hit for %s %s (%d bars in range)",
@@ -328,11 +343,16 @@ async def fetch_hl_candles_between_cached(
             interval,
         )
 
-    fetched: list[dict[str, float]] = []
-    parquet_path = cache_path(trading_pair, interval, cache_dir=cache_dir)
-    if _should_skip_api_fetch(parquet_path) and not gaps:
+    if not fill_gaps and cached:
+        logger.info(
+            "HL candle cache partial for %s %s (%d gaps) — using cached bars without gap fetch",
+            trading_pair,
+            interval,
+            len(gaps),
+        )
         return _filter_candles_in_range(cached, start_ms, end_ms)
 
+    fetched: list[dict[str, float]] = []
     for gap_start_ms, gap_end_ms in gaps:
         gap_start = dt.datetime.fromtimestamp(gap_start_ms / 1000, tz=dt.UTC)
         gap_end = dt.datetime.fromtimestamp(gap_end_ms / 1000, tz=dt.UTC)
@@ -363,6 +383,7 @@ __all__ = [
     "cache_path",
     "coverage_gaps",
     "fetch_hl_candles_between_cached",
+    "is_api_fetch_skipped",
     "load_candles",
     "mark_api_fetch_failed",
     "save_candles",
