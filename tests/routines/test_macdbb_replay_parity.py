@@ -228,3 +228,25 @@ def test_parse_barrier_events_ignores_open_pair_on_barrier_open_decision():
     assert len(events) == 1
     assert events[0].pair == "WLD-USD"
     assert events[0].pnl_quote == -6.69
+
+
+def test_parse_snapshot_barrier_closes_from_barrier_section():
+    from pathlib import Path
+    from routines.macdbb_replay.journal import (
+        _parse_snapshot_barrier_closes,
+        parse_journal_ticks,
+    )
+
+    session_dir = Path("trading_agents/macdbb_scanner_aggressive_hl/sessions/session_58")
+    snapshot_text = (session_dir / "snapshots" / "snapshot_59.md").read_text()
+    events = _parse_snapshot_barrier_closes(snapshot_text)
+    assert len(events) == 1
+    assert events[0].pair == "FARTCOIN-USD"
+    assert events[0].close_type == "take_profit"
+    assert events[0].pnl_quote == 25.61
+
+    tick_map = parse_journal_ticks(
+        (session_dir / "journal.md").read_text(),
+        session_dir=session_dir,
+    )
+    assert tick_map[59].barrier_closes == events

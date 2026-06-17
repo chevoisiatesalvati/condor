@@ -330,7 +330,7 @@ async def fetch_hl_candles_between_cached(
 
     fetched: list[dict[str, float]] = []
     parquet_path = cache_path(trading_pair, interval, cache_dir=cache_dir)
-    if _should_skip_api_fetch(parquet_path):
+    if _should_skip_api_fetch(parquet_path) and not gaps:
         return _filter_candles_in_range(cached, start_ms, end_ms)
 
     for gap_start_ms, gap_end_ms in gaps:
@@ -351,6 +351,9 @@ async def fetch_hl_candles_between_cached(
         return _filter_candles_in_range(cached, start_ms, end_ms)
 
     save_candles(trading_pair, interval, fetched, cache_dir=cache_dir)
+    skip_path = _api_skip_path(parquet_path)
+    if skip_path.is_file():
+        skip_path.unlink(missing_ok=True)
     merged = load_candles(trading_pair, interval, cache_dir=cache_dir)
     return _filter_candles_in_range(merged, start_ms, end_ms)
 

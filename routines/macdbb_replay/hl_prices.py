@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 HlPriceCache = dict[tuple[str, int], float]
 HlCandleCache = dict[str, list[dict[str, float]]]
-ReplayHlPrefetch = tuple[dict[int, HlPriceCache], HlCandleCache]
+ReplayHlPrefetch = tuple[dict[int, HlPriceCache], HlCandleCache, HlCandleCache]
 
 _INTERVAL_MAX_DELTA_MS: dict[str, int] = {
     "1m": 45 * 60 * 1000,
@@ -33,6 +33,7 @@ _INTERVAL_MAX_DELTA_MS: dict[str, int] = {
 @dataclass(frozen=True)
 class HlPrefetchSettings:
     interval: str = "5m"
+    barrier_interval: str = "1m"
     buffer_hours: int = 1
     max_concurrent: int = 1
     request_interval_ms: int = 400
@@ -47,6 +48,7 @@ def hl_prefetch_settings_from_config(config: object) -> HlPrefetchSettings:
     cache_dir = Path(cache_dir_raw) if cache_dir_raw else None
     return HlPrefetchSettings(
         interval=getattr(config, "hl_price_interval", "5m"),
+        barrier_interval=getattr(config, "hl_barrier_interval", "1m"),
         max_concurrent=getattr(config, "hl_max_concurrent", 1),
         request_interval_ms=getattr(config, "hl_request_interval_ms", 400),
         max_retries=getattr(config, "hl_max_retries", 6),
@@ -191,9 +193,9 @@ async def prefetch_replay_hl_prices(
     *,
     settings: HlPrefetchSettings | None = None,
 ) -> ReplayHlPrefetch:
-    """Fetch each unique pair once and fan out prices to per-session caches."""
+    """Fetch tick-close prices and OHLC series for replay (price + barrier intervals)."""
     if not session_tick_maps:
-        return {}, {}
+        return {}, {}, {}
 
     opts = settings or HlPrefetchSettings()
     _configure_hl_throttle(opts)
@@ -203,59 +205,89 @@ async def prefetch_replay_hl_prices(
     hl_close_nearest = hl_candles.hl_close_nearest
     trading_pair_to_hl_coin = hl_candles.trading_pair_to_hl_coin
     interval_ms = hl_candles._INTERVAL_MS.get(opts.interval)
+    barrier_interval_ms = hl_candles._INTERVAL_MS.get(opts.barrier_interval)
     max_delta_ms = _max_nearest_delta_ms(opts.interval, interval_ms)
 
     pair_requests = _aggregate_pair_requests(session_tick_maps)
     if not pair_requests:
-        return {session_num: {} for session_num in session_tick_maps}, {}
+        return {session_num: {} for session_num in session_tick_maps}, {}, {}
 
     session_caches: dict[int, HlPriceCache] = {
         session_num: {} for session_num in session_tick_maps
     }
     pair_candles: HlCandleCache = {}
+    pair_barrier_candles: HlCandleCache = {}
     semaphore = asyncio.Semaphore(max(1, opts.max_concurrent))
     pairs_sorted = sorted(pair_requests)
+    load_barrier_series = opts.barrier_interval != opts.interval
 
     async with aiohttp.ClientSession() as session:
-        async def load_pair(pair: str) -> None:
+        async def _fetch_series(pair: str, interval: str, coverage_ms: int) -> list[dict[str, float]]:
             requests = pair_requests[pair]
             tick_times = [tick_time for _, _, tick_time, _ in requests]
             start = min(tick_times) - dt.timedelta(hours=opts.buffer_hours)
             end = max(tick_times) + dt.timedelta(hours=opts.buffer_hours)
-            latest_tick_ms = int(max(tick_times).timestamp() * 1000)
-            coverage_end_ms = latest_tick_ms + (interval_ms or 300_000)
             async with semaphore:
                 try:
-                    candles = await fetch_hl_candles_between_cached(
+                    return await fetch_hl_candles_between_cached(
                         pair,
-                        opts.interval,
+                        interval,
                         start,
                         end,
                         session=session,
                         cache_dir=opts.cache_dir,
                         use_cache=opts.use_cache,
                         refresh_cache=opts.refresh_cache,
-                        coverage_end_ms=coverage_end_ms,
+                        coverage_end_ms=coverage_ms,
                     )
                 except Exception as error:
                     from routines.lib import hl_candle_cache as cache_mod
 
                     cache_mod.mark_api_fetch_failed(
                         pair,
-                        opts.interval,
+                        interval,
                         cache_dir=opts.cache_dir,
                     )
                     logger.warning(
-                        "HL price prefetch failed for %s (%s): %s",
+                        "HL price prefetch failed for %s %s (%s): %s",
                         pair,
+                        interval,
                         trading_pair_to_hl_coin(pair),
                         error,
                     )
-                    return
+                    return []
+
+        async def load_pair(pair: str) -> None:
+            requests = pair_requests[pair]
+            tick_times = [tick_time for _, _, tick_time, _ in requests]
+            latest_tick_ms = int(max(tick_times).timestamp() * 1000)
+            price_coverage_end_ms = latest_tick_ms + (interval_ms or 300_000)
+            candles = await _fetch_series(pair, opts.interval, price_coverage_end_ms)
             if not candles:
-                logger.warning("HL price prefetch empty for %s", pair)
+                logger.warning("HL price prefetch empty for %s %s", pair, opts.interval)
                 return
             pair_candles[pair] = candles
+
+            if not load_barrier_series:
+                pair_barrier_candles[pair] = candles
+                return
+
+            barrier_coverage_end_ms = latest_tick_ms + (barrier_interval_ms or 60_000)
+            barrier_candles = await _fetch_series(
+                pair,
+                opts.barrier_interval,
+                barrier_coverage_end_ms,
+            )
+            if barrier_candles:
+                pair_barrier_candles[pair] = barrier_candles
+            else:
+                logger.warning(
+                    "HL barrier prefetch empty for %s %s — falling back to %s",
+                    pair,
+                    opts.barrier_interval,
+                    opts.interval,
+                )
+                pair_barrier_candles[pair] = candles
 
         await asyncio.gather(
             *[load_pair(pair) for pair in pairs_sorted],
@@ -277,13 +309,15 @@ async def prefetch_replay_hl_prices(
 
     total_prices = sum(len(cache) for cache in session_caches.values())
     logger.info(
-        "HL replay prefetch: %d prices across %d sessions (%d unique pairs, %d candle series)",
+        "HL replay prefetch: %d prices across %d sessions "
+        "(%d unique pairs, %d price series, %d barrier series)",
         total_prices,
         len(session_tick_maps),
         len(pair_requests),
         len(pair_candles),
+        len(pair_barrier_candles),
     )
-    return session_caches, pair_candles
+    return session_caches, pair_candles, pair_barrier_candles
 
 
 async def prefetch_session_hl_prices(
@@ -303,5 +337,5 @@ async def prefetch_session_hl_prices(
         request_interval_ms=request_interval_ms,
         max_retries=max_retries,
     )
-    caches, _ = await prefetch_replay_hl_prices({0: tick_meta_map}, settings=settings)
+    caches, _, _ = await prefetch_replay_hl_prices({0: tick_meta_map}, settings=settings)
     return caches.get(0, {})

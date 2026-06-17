@@ -61,6 +61,34 @@ export function applyPresetOverrides(
   return { ...values, ...overrides };
 }
 
+function configValuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (typeof a === "boolean" && typeof b === "boolean") {
+    return a === b;
+  }
+  if (typeof a === "number" && typeof b === "number") {
+    return a === b;
+  }
+  const stringA = String(a ?? "");
+  const stringB = String(b ?? "");
+  if (stringA === stringB) {
+    return true;
+  }
+  const numberA = Number(a);
+  const numberB = Number(b);
+  if (
+    stringA !== "" &&
+    stringB !== "" &&
+    !Number.isNaN(numberA) &&
+    !Number.isNaN(numberB)
+  ) {
+    return numberA === numberB;
+  }
+  return false;
+}
+
 /** Apply a single field change; when preset changes, refresh overridden fields. */
 export function updateConfigValues(
   prev: Record<string, unknown>,
@@ -68,9 +96,22 @@ export function updateConfigValues(
   value: unknown,
   presetOverrides?: Record<string, Record<string, unknown>>,
 ): Record<string, unknown> {
+  if (key === "preset") {
+    const next = { ...prev, preset: value };
+    if (value !== "custom") {
+      return applyPresetOverrides(next, presetOverrides);
+    }
+    return next;
+  }
+
   const next = { ...prev, [key]: value };
-  if (key === "preset" && value !== "custom") {
-    return applyPresetOverrides(next, presetOverrides);
+  const activePreset = prev.preset;
+  if (
+    activePreset &&
+    activePreset !== "custom" &&
+    !configValuesEqual(value, prev[key])
+  ) {
+    next.preset = "custom";
   }
   return next;
 }

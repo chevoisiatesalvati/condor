@@ -120,7 +120,7 @@ export function RoutineDetail({ routine, instances, onOpenReport }: RoutineDetai
 
       {/* Config Form */}
       {Object.keys(routine.fields).length > 0 && (
-        <div>
+        <div className="max-h-[min(50vh,28rem)] overflow-y-auto scrollbar-thin">
           <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)]">
             Configuration
           </h3>

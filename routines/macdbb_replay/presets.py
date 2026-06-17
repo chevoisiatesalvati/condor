@@ -4,7 +4,22 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-PresetValue = float | int | bool
+PresetValue = float | int | bool | str
+
+# Fixed-strategy avg position size on sessions 37-58 (HL_SWEEP_BEST baseline).
+FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL = 278.41
+
+
+def capital_normalized_pnl(
+    raw_pnl: float,
+    avg_notional: float,
+    benchmark_avg_notional: float = FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
+) -> float:
+    """Scale raw PnL to fixed-strategy avg position size for capital-at-risk comparison."""
+    if avg_notional <= 0 or benchmark_avg_notional <= 0:
+        return raw_pnl
+    return raw_pnl * (benchmark_avg_notional / avg_notional)
+
 
 PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
     "safe": {
@@ -151,6 +166,45 @@ PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
     },
 }
 
+# Dynamic replay only — includes strategy + sizing_only dynamic params (sweep rank #1, 37-58).
+DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
+    "hl_dynamic_mega_sweep_best": {
+        **PRESET_OVERRIDES["hl_mega_sweep_best"],
+        "session_nums": (
+            "37,38,39,40,41,42,43,44,45,46,47,48,49,50,"
+            "51,52,53,54,55,56,57,58"
+        ),
+        "data_source": "journal_recompute",
+        "formal_notional_quote": 500.0,
+        "price_source": "auto",
+        "hl_use_cache": True,
+        "require_price_data": True,
+        "enable_dynamic_sizing": True,
+        "enable_dynamic_barriers": False,
+        "min_notional_quote": 75.0,
+        "max_notional_quote": 750.0,
+        "min_conviction_mult": 0.75,
+        "max_conviction_mult": 1.35,
+        "strength_mult_per_unit": 0.08,
+        "extreme_displacement_mult": 1.10,
+        "activation_streak_mult_per_tick": 0.0,
+        "thin_universe_mult": 0.85,
+        "mature_tape_low_vol_mult": 0.95,
+        "vol_inverse_sizing": True,
+        "min_vol_mult": 0.60,
+        "max_vol_mult": 1.25,
+        "ref_volatility_pct": 0.50,
+        "sl_vol_exponent": 0.70,
+        "tp_vol_exponent": 1.00,
+        "sl_min_pct": 0.8,
+        "sl_max_pct": 4.0,
+        "tp_min_pct": 3.0,
+        "tp_max_pct": 15.0,
+        "volatility_source": "auto",
+        "ignore_journal_barriers_when_dynamic": True,
+    },
+}
+
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
 
 
@@ -165,8 +219,10 @@ def resolve_config_with_preset(config: ConfigT) -> ConfigT:
     preset = getattr(config, "preset", "custom")
     if preset == "custom":
         return config
-    overrides = PRESET_OVERRIDES.get(preset)
+    overrides = PRESET_OVERRIDES.get(preset) or DYNAMIC_PRESET_OVERRIDES.get(preset)
     if not overrides:
         return config
     config_type = type(config)
-    return config_type(**{**config.model_dump(), **overrides, "preset": preset})
+    allowed = set(config_type.model_fields)
+    filtered = {key: value for key, value in overrides.items() if key in allowed}
+    return config_type(**{**config.model_dump(), **filtered, "preset": preset})

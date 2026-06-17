@@ -27,7 +27,7 @@ from routines.macdbb_replay.models import (
     parse_session_selector,
 )
 from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.presets import PRESET_OVERRIDES, resolve_config_with_preset
+from routines.macdbb_replay.presets import PRESET_OVERRIDES, capital_normalized_pnl, resolve_config_with_preset
 from routines.macdbb_replay.reports import (
     ReportMeta,
     build_reports_by_pair,
@@ -219,26 +219,11 @@ def _barrier_grid_for_version(grid_version: str) -> dict[str, tuple[Any, ...]]:
     return MEGA_BARRIER_GRID
 
 
-def _capital_normalized_pnl(
-    raw_pnl: float,
-    avg_notional: float,
-    benchmark_avg_notional: float,
-) -> float:
-    """Scale PnL to benchmark avg position size (equal capital-at-risk comparison).
-
-    Example: dynamic +$190 at avg $200 vs fixed +$200 at avg $300 →
-    normalized = 190 * (300/200) = $285 (dynamic was more capital-efficient).
-    """
-    if avg_notional <= 0 or benchmark_avg_notional <= 0:
-        return raw_pnl
-    return raw_pnl * (benchmark_avg_notional / avg_notional)
-
-
 def _apply_capital_metrics(
     result: SweepResult,
     benchmark_avg_notional: float,
 ) -> SweepResult:
-    result.capital_normalized_pnl = _capital_normalized_pnl(
+    result.capital_normalized_pnl = capital_normalized_pnl(
         result.pnl,
         result.avg_notional,
         benchmark_avg_notional,
@@ -739,6 +724,7 @@ async def _load_sessions(
     dict[int, dict[int, Any]],
     dict[int, dict[tuple[str, int], float]],
     dict[str, list[dict[str, float]]],
+    dict[str, list[dict[str, float]]],
     list[int],
 ]:
     strategy_dir = TRADING_AGENTS_DIR / config.strategy_slug
@@ -759,13 +745,22 @@ async def _load_sessions(
 
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]] = {}
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
+    hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
     if parsed_sessions:
-        hl_caches_by_session, hl_candle_cache = await prefetch_replay_hl_prices(
-            parsed_sessions,
-            settings=hl_prefetch_settings_from_config(config),
+        hl_caches_by_session, hl_candle_cache, hl_barrier_candle_cache = (
+            await prefetch_replay_hl_prices(
+                parsed_sessions,
+                settings=hl_prefetch_settings_from_config(config),
+            )
         )
 
-    return parsed_sessions, hl_caches_by_session, hl_candle_cache, selected_sessions
+    return (
+        parsed_sessions,
+        hl_caches_by_session,
+        hl_candle_cache,
+        hl_barrier_candle_cache,
+        selected_sessions,
+    )
 
 
 def _run_config(
@@ -774,6 +769,7 @@ def _run_config(
     parsed_sessions: dict[int, dict[int, Any]],
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]],
     hl_candle_cache: dict[str, list[dict[str, float]]],
+    hl_barrier_candle_cache: dict[str, list[dict[str, float]]],
     reports_by_pair: dict[str, list[ReportMeta]],
 ) -> SweepResult:
     config = resolve_config_with_preset(StrategyReplayConfig(**overrides))
@@ -794,6 +790,7 @@ def _run_config(
             config=config,
             hl_price_cache=hl_price_cache,
             hl_candle_cache=hl_candle_cache,
+            hl_barrier_candle_cache=hl_barrier_candle_cache,
         )
         if summary.get("status") == "skipped_no_price_data":
             continue
@@ -840,6 +837,7 @@ def _run_dynamic_config(
     parsed_sessions: dict[int, dict[int, Any]],
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]],
     hl_candle_cache: dict[str, list[dict[str, float]]],
+    hl_barrier_candle_cache: dict[str, list[dict[str, float]]],
     reports_by_pair: dict[str, list[ReportMeta]],
 ) -> SweepResult:
     config = resolve_config_with_preset(DynamicStrategyReplayConfig(**overrides))
@@ -864,6 +862,7 @@ def _run_dynamic_config(
             config=config,
             hl_price_cache=hl_price_cache,
             hl_candle_cache=hl_candle_cache,
+            hl_barrier_candle_cache=hl_barrier_candle_cache,
             replay_policy=policy,
         )
         if summary.get("status") == "skipped_no_price_data":
@@ -1020,8 +1019,8 @@ async def run_sweep(
     write_json: bool = True,
 ) -> tuple[list[SweepResult], str]:
     load_config = StrategyReplayConfig(**HL_SWEEP_BEST)
-    parsed_sessions, hl_caches, hl_candle_cache, selected = await _load_sessions(
-        load_config
+    parsed_sessions, hl_caches, hl_candle_cache, hl_barrier_candle_cache, selected = (
+        await _load_sessions(load_config)
     )
     reports = load_reports_index()
     reports_by_pair = build_reports_by_pair(reports)
@@ -1035,6 +1034,7 @@ async def run_sweep(
                 parsed_sessions,
                 hl_caches,
                 hl_candle_cache,
+                hl_barrier_candle_cache,
                 reports_by_pair,
             )
         )
@@ -1066,8 +1066,8 @@ async def run_dynamic_sweep(
     rank_by_normalized: bool = True,
 ) -> tuple[list[SweepResult], str, float]:
     load_config = DynamicStrategyReplayConfig(**_dynamic_sweep_base(dynamic_mode))
-    parsed_sessions, hl_caches, hl_candle_cache, _selected = await _load_sessions(
-        load_config
+    parsed_sessions, hl_caches, hl_candle_cache, hl_barrier_candle_cache, _selected = (
+        await _load_sessions(load_config)
     )
     reports = load_reports_index()
     reports_by_pair = build_reports_by_pair(reports)
@@ -1085,6 +1085,7 @@ async def run_dynamic_sweep(
         parsed_sessions,
         hl_caches,
         hl_candle_cache,
+        hl_barrier_candle_cache,
         reports_by_pair,
     )
     benchmark_avg_notional = fixed_benchmark.avg_notional
@@ -1105,6 +1106,7 @@ async def run_dynamic_sweep(
             parsed_sessions,
             hl_caches,
             hl_candle_cache,
+            hl_barrier_candle_cache,
             reports_by_pair,
         )
         results.append(

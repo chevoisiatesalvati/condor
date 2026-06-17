@@ -64,9 +64,31 @@ def test_v2_grid_differs_from_v1():
 
 
 def test_capital_normalized_pnl_scales_by_avg_notional():
-    from routines.macdbb_replay.config_sweep import _capital_normalized_pnl
+    from routines.macdbb_replay.presets import capital_normalized_pnl
 
     # Dynamic: $190 raw at avg $200 vs fixed benchmark avg $300 → $285
-    assert _capital_normalized_pnl(190.0, 200.0, 300.0) == 285.0
+    assert capital_normalized_pnl(190.0, 200.0, 300.0) == 285.0
     # Fixed at benchmark avg → unchanged
-    assert _capital_normalized_pnl(200.0, 300.0, 300.0) == 200.0
+    assert capital_normalized_pnl(200.0, 300.0, 300.0) == 200.0
+
+
+def test_hl_dynamic_mega_sweep_best_preset_matches_rank_one_base():
+    from routines.macdbb_replay.config_sweep import _dynamic_sweep_base, _merge
+    from routines.macdbb_replay.models import DynamicStrategyReplayConfig
+    from routines.macdbb_replay.presets import (
+        DYNAMIC_PRESET_OVERRIDES,
+        resolve_config_with_preset,
+    )
+
+    expected = _merge(
+        _dynamic_sweep_base("sizing_only"),
+        **DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"],
+        preset="hl_dynamic_mega_sweep_best",
+    )
+    resolved = resolve_config_with_preset(
+        DynamicStrategyReplayConfig(preset="hl_dynamic_mega_sweep_best")
+    ).model_dump()
+    skip = {"write_csv", "report_label", "compare_journal_flags"}
+    for key, value in expected.items():
+        if key in resolved and key not in skip:
+            assert resolved[key] == value, f"mismatch on {key}: {resolved[key]!r} != {value!r}"

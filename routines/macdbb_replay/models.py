@@ -190,6 +190,7 @@ class ReplayConfigBase(BaseModel):
         "hl_sweep_best",
         "hl_bb_loose_best",
         "hl_mega_sweep_best",
+        "hl_dynamic_mega_sweep_best",
     ] = (
         Field(
             default="hl_mega_sweep_best",
@@ -198,7 +199,8 @@ class ReplayConfigBase(BaseModel):
                 "at run time (overrides those form fields). Use custom to tune manually. "
                 "hl_sweep_best = sessions 36-48 sweep winner (sl2.4/tp10/ne32). "
                 "hl_bb_loose_best = sessions 36-50 refine winner (loose BB gates). "
-                "hl_mega_sweep_best = sessions 36-50 mega sweep winner (+$199)."
+                "hl_mega_sweep_best = sessions 36-50 mega sweep winner (+$199). "
+                "hl_dynamic_mega_sweep_best = dynamic sizing_only rank #1 (37-58 sweep)."
             ),
         )
     )
@@ -271,6 +273,13 @@ class ReplayConfigBase(BaseModel):
             "(5m recommended; 1m retention is short on HL)"
         ),
     )
+    hl_barrier_interval: str = Field(
+        default="1m",
+        description=(
+            "HL candle interval for intrabar SL/TP scans between journal ticks "
+            "(1m catches wicks missed by coarser tick prices)"
+        ),
+    )
     hl_max_concurrent: int = Field(
         default=1,
         description="Max parallel HL candleSnapshot pair requests during replay",
@@ -337,6 +346,24 @@ class StrategyReplayConfig(ReplayConfigBase):
 
 class DynamicStrategyReplayConfig(StrategyReplayConfig):
     """Strategy replay with dynamic position sizing and volatility-aware barriers."""
+
+    preset: Literal[
+        "custom",
+        "safe",
+        "balanced",
+        "opportunistic",
+        "replay_probe",
+        "hl_sweep_best",
+        "hl_bb_loose_best",
+        "hl_mega_sweep_best",
+        "hl_dynamic_mega_sweep_best",
+    ] = Field(
+        default="hl_dynamic_mega_sweep_best",
+        description=(
+            "hl_dynamic_mega_sweep_best = dynamic sizing_only sweep winner "
+            "(hl_mega strategy + dynamic sizing, sessions 37-58)."
+        ),
+    )
 
     enable_dynamic_sizing: bool = Field(
         default=True,

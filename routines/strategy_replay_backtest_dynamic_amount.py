@@ -24,7 +24,11 @@ from routines.macdbb_replay.models import (
 )
 from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
 from routines.macdbb_replay import presets
-from routines.macdbb_replay.presets import resolve_config_with_preset
+from routines.macdbb_replay.presets import (
+    FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
+    capital_normalized_pnl,
+    resolve_config_with_preset,
+)
 from routines.macdbb_replay.reports import build_reports_by_pair, load_reports_index
 from routines.macdbb_replay.simulator import simulate_strategy_session
 
@@ -33,7 +37,10 @@ logger = logging.getLogger(__name__)
 Config = DynamicStrategyReplayConfig
 
 # Re-exported for routine discovery — UI reads this to sync form fields on preset change.
-PRESET_OVERRIDES = presets.PRESET_OVERRIDES
+PRESET_OVERRIDES = {
+    **presets.PRESET_OVERRIDES,
+    **presets.DYNAMIC_PRESET_OVERRIDES,
+}
 
 
 PER_PAIR_COLUMNS = [
@@ -143,16 +150,15 @@ def _dynamic_summary_stats(trades: list[Any]) -> dict[str, float]:
             "avg_sl_pct": 0.0,
             "avg_tp_pct": 0.0,
             "avg_sizing_multiplier": 0.0,
+            "pnl_per_exposure": 0.0,
+            "capital_normalized_pnl": 0.0,
         }
+    total_exposure = sum(trade.notional_quote for trade in trades)
+    total_pnl = sum(trade.pnl_quote for trade in trades)
+    avg_notional = total_exposure / len(trades)
     return {
-        "avg_notional_quote": round(
-            sum(trade.notional_quote for trade in trades) / len(trades),
-            2,
-        ),
-        "total_entry_exposure": round(
-            sum(trade.notional_quote for trade in trades),
-            2,
-        ),
+        "avg_notional_quote": round(avg_notional, 2),
+        "total_entry_exposure": round(total_exposure, 2),
         "avg_sl_pct": round(
             sum(trade.sl_pct_used for trade in trades) / len(trades),
             3,
@@ -164,6 +170,18 @@ def _dynamic_summary_stats(trades: list[Any]) -> dict[str, float]:
         "avg_sizing_multiplier": round(
             sum(trade.sizing_multiplier for trade in trades) / len(trades),
             4,
+        ),
+        "pnl_per_exposure": round(
+            total_pnl / total_exposure if total_exposure > 0 else 0.0,
+            6,
+        ),
+        "capital_normalized_pnl": round(
+            capital_normalized_pnl(
+                total_pnl,
+                avg_notional,
+                FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
+            ),
+            2,
         ),
     }
 
@@ -227,10 +245,13 @@ async def run(
 
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]] = {}
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
+    hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
     if config.price_source in ("auto", "hl_candles") and parsed_sessions:
-        hl_caches_by_session, hl_candle_cache = await prefetch_replay_hl_prices(
-            parsed_sessions,
-            settings=hl_prefetch_settings_from_config(config),
+        hl_caches_by_session, hl_candle_cache, hl_barrier_candle_cache = (
+            await prefetch_replay_hl_prices(
+                parsed_sessions,
+                settings=hl_prefetch_settings_from_config(config),
+            )
         )
 
     for session_num, tick_meta_map in parsed_sessions.items():
@@ -243,6 +264,7 @@ async def run(
             config=config,
             hl_price_cache=hl_price_cache,
             hl_candle_cache=hl_candle_cache,
+            hl_barrier_candle_cache=hl_barrier_candle_cache,
             replay_policy=replay_policy,
         )
         status = summary.get("status", "ok")
@@ -353,6 +375,11 @@ async def run(
             f"Win rate: {total_win_rate:.1%} | Sim PnL: ${total_pnl:+.2f}"
         ),
         (
+            f"Capital-norm PnL: ${dynamic_stats['capital_normalized_pnl']:+.2f} "
+            f"(benchmark avg ${FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL:.0f}) | "
+            f"PnL/exposure: {dynamic_stats['pnl_per_exposure']:.4f}"
+        ),
+        (
             f"Avg notional: ${dynamic_stats['avg_notional_quote']:.2f} | "
             f"Avg SL/TP: {dynamic_stats['avg_sl_pct']:.2f}% / {dynamic_stats['avg_tp_pct']:.2f}% | "
             f"Avg size mult: {dynamic_stats['avg_sizing_multiplier']:.3f}"
@@ -411,6 +438,18 @@ async def run(
         },
         {
             "type": "kpi",
+            "label": "Capital-norm PnL",
+            "value": f"${dynamic_stats['capital_normalized_pnl']:+.2f}",
+            "trend": (
+                "positive"
+                if dynamic_stats["capital_normalized_pnl"] > 0
+                else "negative"
+                if dynamic_stats["capital_normalized_pnl"] < 0
+                else "neutral"
+            ),
+        },
+        {
+            "type": "kpi",
             "label": "Avg Notional",
             "value": f"${dynamic_stats['avg_notional_quote']:.2f}",
         },
@@ -442,6 +481,21 @@ async def run(
         builder.kpi("Formal", str(formal_trades))
         builder.kpi("Adaptive", str(adaptive_trades))
         builder.kpi("Sim PnL", f"${total_pnl:+.2f}", trend=pnl_trend)
+        builder.kpi(
+            "Capital-norm PnL",
+            f"${dynamic_stats['capital_normalized_pnl']:+.2f}",
+            trend=(
+                "positive"
+                if dynamic_stats["capital_normalized_pnl"] > 0
+                else "negative"
+                if dynamic_stats["capital_normalized_pnl"] < 0
+                else "neutral"
+            ),
+        )
+        builder.kpi(
+            "PnL / exposure",
+            f"{dynamic_stats['pnl_per_exposure']:.4f}",
+        )
         builder.kpi("Avg Notional", f"${dynamic_stats['avg_notional_quote']:.2f}")
         builder.kpi(
             "Avg SL/TP",

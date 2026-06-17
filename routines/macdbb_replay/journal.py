@@ -109,6 +109,8 @@ _BARRIER_PAIR_HIT_BOLD_RE = re.compile(
     r"\b(?P<pair>[A-Z][A-Z0-9]{2,10}-USD)\s+(?:LONG|SHORT)\s+hit\s+\*\*(?P<close>STOP_LOSS|TAKE_PROFIT)\*\*",
     re.IGNORECASE,
 )
+_SNAPSHOT_FILENAME_RE = re.compile(r"snapshot_(\d+)\.md$", re.IGNORECASE)
+_BARRIER_CLOSES_SECTION_HEADER = "[BARRIER CLOSES SINCE LAST TICK]"
 
 
 def parse_dt(value: str) -> dt.datetime:
@@ -386,6 +388,50 @@ def _parse_barrier_events(line: str) -> list[BarrierCloseEvent]:
                 match.group("close"),
                 _barrier_pnl_from_tail(tail),
             )
+
+    return events
+
+
+def _merge_barrier_events(
+    existing: list[BarrierCloseEvent],
+    incoming: list[BarrierCloseEvent],
+) -> list[BarrierCloseEvent]:
+    merged = list(existing)
+    seen = {(event.pair, event.close_type) for event in merged}
+    for event in incoming:
+        key = (event.pair, event.close_type)
+        if key in seen:
+            if event.pnl_quote is not None:
+                for index, current in enumerate(merged):
+                    if (
+                        current.pair == event.pair
+                        and current.close_type == event.close_type
+                        and current.pnl_quote is None
+                    ):
+                        merged[index] = event
+                        break
+            continue
+        merged.append(event)
+        seen.add(key)
+    return merged
+
+
+def _parse_snapshot_barrier_closes(snapshot_text: str) -> list[BarrierCloseEvent]:
+    """Parse [BARRIER CLOSES SINCE LAST TICK] rows from a tick snapshot file."""
+    events: list[BarrierCloseEvent] = []
+    in_section = False
+
+    for line in snapshot_text.splitlines():
+        stripped = line.strip()
+        if stripped.upper() == _BARRIER_CLOSES_SECTION_HEADER:
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            break
+        if stripped.startswith("-"):
+            events = _merge_barrier_events(events, _parse_barrier_events(line))
 
     return events
 
@@ -670,15 +716,10 @@ def parse_journal_ticks(
         header_barriers = _parse_barrier_events(line)
         if not header_barriers:
             continue
-        merged = list(meta.barrier_closes)
-        seen = {(event.pair, event.close_type) for event in merged}
-        for event in header_barriers:
-            key = (event.pair, event.close_type)
-            if key in seen:
-                continue
-            merged.append(event)
-            seen.add(key)
-        tick_meta_map[tick_number] = replace(meta, barrier_closes=merged)
+        tick_meta_map[tick_number] = replace(
+            meta,
+            barrier_closes=_merge_barrier_events(meta.barrier_closes, header_barriers),
+        )
 
     return tick_meta_map
 
@@ -696,7 +737,22 @@ def enrich_ticks_from_snapshots(
     enriched = dict(tick_meta_map)
 
     for snapshot_path in sorted(snapshots_dir.glob("snapshot_*.md")):
-        for line in snapshot_path.read_text(encoding="utf-8").splitlines():
+        snapshot_text = snapshot_path.read_text(encoding="utf-8")
+        filename_match = _SNAPSHOT_FILENAME_RE.search(snapshot_path.name)
+        if filename_match is not None:
+            snapshot_tick = int(filename_match.group(1))
+            snapshot_barriers = _parse_snapshot_barrier_closes(snapshot_text)
+            if snapshot_barriers and snapshot_tick in enriched:
+                existing = enriched[snapshot_tick]
+                enriched[snapshot_tick] = replace(
+                    existing,
+                    barrier_closes=_merge_barrier_events(
+                        existing.barrier_closes,
+                        snapshot_barriers,
+                    ),
+                )
+
+        for line in snapshot_text.splitlines():
             parsed = _parse_decision_line(line, tick_time_map)
             if parsed is None:
                 continue
@@ -725,14 +781,10 @@ def enrich_ticks_from_snapshots(
             )
             if not use_snapshot:
                 continue
-            merged_barriers = list(existing.barrier_closes)
-            seen = {(event.pair, event.close_type) for event in merged_barriers}
-            for event in parsed.barrier_closes:
-                key = (event.pair, event.close_type)
-                if key in seen:
-                    continue
-                merged_barriers.append(event)
-                seen.add(key)
+            merged_barriers = _merge_barrier_events(
+                existing.barrier_closes,
+                parsed.barrier_closes,
+            )
             enriched[parsed.tick] = TickMeta(
                 tick=parsed.tick,
                 timestamp=existing.timestamp,

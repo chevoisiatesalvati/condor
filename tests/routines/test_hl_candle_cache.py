@@ -224,3 +224,38 @@ def test_fetch_cached_refresh_ignores_disk(tmp_path):
     assert {candle["close"] for candle in result} == {99.0, 100.0}
     loaded = hl_candle_cache.load_candles("SOL-USD", "5m", cache_dir=tmp_path)
     assert {candle["close"] for candle in loaded} == {99.0, 100.0}
+
+
+def test_fetch_cached_retries_when_api_skip_set_but_gap_exists(tmp_path):
+    interval_ms = 300_000
+    start = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+    end = dt.datetime(2026, 1, 1, 2, tzinfo=dt.UTC)
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+    hl_candle_cache.save_candles(
+        "FARTCOIN-USD",
+        "5m",
+        [_make_candle(start_ms, 1.0)],
+        cache_dir=tmp_path,
+    )
+    parquet_path = hl_candle_cache.cache_path("FARTCOIN-USD", "5m", cache_dir=tmp_path)
+    hl_candle_cache._mark_api_fetch_failed(parquet_path)
+
+    gap_start_ms = start_ms + interval_ms
+    fetched = [_make_candle(gap_start_ms, 2.0), _make_candle(end_ms, 3.0)]
+    fetch_mock = AsyncMock(return_value=fetched)
+
+    with patch("routines.lib.hl_candle_cache.hl_candles.fetch_hl_candles_between", fetch_mock):
+        result = asyncio.run(
+            hl_candle_cache.fetch_hl_candles_between_cached(
+                "FARTCOIN-USD",
+                "5m",
+                start,
+                end,
+                cache_dir=tmp_path,
+            )
+        )
+
+    fetch_mock.assert_awaited_once()
+    assert len(result) == 3
+    assert not hl_candle_cache._api_skip_path(parquet_path).is_file()

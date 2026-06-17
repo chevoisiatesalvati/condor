@@ -108,7 +108,7 @@ function RoutineCard({ routine }: { routine: RoutineInfo }) {
 
       {/* Expanded config */}
       {expanded && hasFields && (
-        <div className="border-t border-[var(--color-border)] px-4 py-3">
+        <div className="max-h-[min(50vh,28rem)] overflow-y-auto border-t border-[var(--color-border)] px-4 py-3 scrollbar-thin">
           <RoutineConfigForm
             fields={routine.fields}
             values={configValues}

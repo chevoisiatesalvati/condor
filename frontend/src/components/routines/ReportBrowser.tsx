@@ -774,7 +774,7 @@ export function ReportBrowser({
 
         {/* Config panel (collapsible) */}
         {showConfigPanel && activeRoutine && (
-          <div className="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
+          <div className="max-h-[min(50vh,28rem)] overflow-y-auto border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 scrollbar-thin">
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)]">
                 Configuration

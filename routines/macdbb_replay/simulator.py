@@ -417,13 +417,13 @@ def _apply_intrabar_barriers(
     closes_this_tick: list[str],
     sl_cooldown_until: dict[str, int],
     config: StrategyReplayConfig,
-    hl_candle_cache: HlCandleCache | None,
+    hl_barrier_candle_cache: HlCandleCache | None,
 ) -> None:
-    if not hl_candle_cache:
+    if not hl_barrier_candle_cache:
         return
     for pair in list(open_positions.keys()):
         position = open_positions[pair]
-        candles = hl_candle_cache.get(_canonical_trading_pair(pair))
+        candles = hl_barrier_candle_cache.get(_canonical_trading_pair(pair))
         if not candles:
             continue
         scan_start = max(window_start, position.entry_time)
@@ -487,6 +487,7 @@ def simulate_strategy_session(
     config: StrategyReplayConfig,
     hl_price_cache: dict[tuple[str, int], float] | None = None,
     hl_candle_cache: HlCandleCache | None = None,
+    hl_barrier_candle_cache: HlCandleCache | None = None,
     replay_policy: DynamicReplayPolicy | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[SimTrade], dict[str, Any]]:
     if config.require_price_data and not session_has_trusted_prices(
@@ -496,6 +497,8 @@ def simulate_strategy_session(
         hl_price_cache=hl_price_cache,
     ):
         return [], [], [], _skipped_summary("skipped_no_price_data")
+
+    barrier_candles = hl_barrier_candle_cache if hl_barrier_candle_cache is not None else hl_candle_cache
 
     per_pair_rows: list[dict[str, Any]] = []
     per_tick_rows: list[dict[str, Any]] = []
@@ -568,7 +571,7 @@ def simulate_strategy_session(
                 closes_this_tick,
                 sl_cooldown_until,
                 config,
-                hl_candle_cache,
+                barrier_candles,
             )
         elif meta.barrier_closes:
             _apply_journal_barrier_closes(
@@ -774,7 +777,8 @@ def simulate_strategy_session(
                     for token in closes_this_tick
                 )
                 adaptive_streak_ok = (
-                    entry_streak >= config.activation_ticks
+                    len(open_positions) > 0
+                    or entry_streak >= config.activation_ticks
                     or barrier_reentry_this_tick
                 )
                 if (
