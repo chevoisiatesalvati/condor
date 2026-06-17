@@ -6,8 +6,11 @@ from pydantic import BaseModel
 
 PresetValue = float | int | bool | str
 
-# Fixed-strategy avg position size on sessions 37-58 (HL_SWEEP_BEST baseline).
-FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL = 278.41
+# Standard capital-at-risk reference for cap-norm PnL (sweep + routine).
+# HL_SWEEP_BEST fixed replay, sessions 37-58: avg $ notional per trade.
+# cap_norm_pnl = raw_pnl × (FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL / avg_notional).
+# Re-measure after the session window or HL_SWEEP_BEST baseline changes.
+FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL = 266.45
 
 
 def capital_normalized_pnl(
@@ -166,10 +169,9 @@ PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
     },
 }
 
-# Dynamic replay only — includes strategy + sizing_only dynamic params (sweep rank #1, 37-58).
+# Dynamic replay only — both_on v3 refine winner (sessions 37-58, cap-norm +$362).
 DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
     "hl_dynamic_mega_sweep_best": {
-        **PRESET_OVERRIDES["hl_mega_sweep_best"],
         "session_nums": (
             "37,38,39,40,41,42,43,44,45,46,47,48,49,50,"
             "51,52,53,54,55,56,57,58"
@@ -180,28 +182,52 @@ DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
         "hl_use_cache": True,
         "require_price_data": True,
         "enable_dynamic_sizing": True,
-        "enable_dynamic_barriers": False,
-        "min_notional_quote": 75.0,
-        "max_notional_quote": 750.0,
-        "min_conviction_mult": 0.75,
-        "max_conviction_mult": 1.35,
-        "strength_mult_per_unit": 0.08,
-        "extreme_displacement_mult": 1.10,
-        "activation_streak_mult_per_tick": 0.0,
-        "thin_universe_mult": 0.85,
-        "mature_tape_low_vol_mult": 0.95,
-        "vol_inverse_sizing": True,
-        "min_vol_mult": 0.60,
-        "max_vol_mult": 1.25,
-        "ref_volatility_pct": 0.50,
-        "sl_vol_exponent": 0.70,
-        "tp_vol_exponent": 1.00,
-        "sl_min_pct": 0.8,
-        "sl_max_pct": 4.0,
-        "tp_min_pct": 3.0,
-        "tp_max_pct": 15.0,
-        "volatility_source": "auto",
+        "enable_dynamic_barriers": True,
         "ignore_journal_barriers_when_dynamic": True,
+        "activation_ticks": 0,
+        "sl_pct": 3.2,
+        "tp_pct": 6.2,
+        "thesis_decay_exit_ticks": 28,
+        "thesis_bb_drift_pts": 38.0,
+        "adaptive_long_bb_pos_max": 48.0,
+        "adaptive_short_bb_pos_min": 92.0,
+        "adaptive_strong_long_bb_pos_max": 20.0,
+        "adaptive_strong_short_bb_pos_min": 91.0,
+        "adaptive_min_macd_gap_ratio": 0.09,
+        "adaptive_min_hist_ratio": 0.19,
+        "adaptive_score_open_min": 0.8,
+        "adaptive_score_open_min_extreme": 2.8,
+        "adaptive_hist_sign_bonus": 0.48,
+        "adaptive_hist_sign_penalty": 0.28,
+        "adaptive_momentum_bonus": 0.38,
+        "adaptive_momentum_penalty": 0.06,
+        "bb_proximity_epsilon_pct": 0.18,
+        "ignore_adaptive_4h_filter": True,
+        "adaptive_requires_flat": False,
+        "max_open_executors": 3,
+        "min_tradeable_count": 1,
+        "sl_cooldown_ticks": 2,
+        "flip_cooldown_ticks": 8,
+        "min_notional_quote": 40.0,
+        "max_notional_quote": 550.0,
+        "min_conviction_mult": 0.58,
+        "max_conviction_mult": 1.9,
+        "strength_mult_per_unit": 0.24,
+        "extreme_displacement_mult": 1.65,
+        "activation_streak_mult_per_tick": 0.0,
+        "thin_universe_mult": 0.96,
+        "mature_tape_low_vol_mult": 0.92,
+        "vol_inverse_sizing": False,
+        "min_vol_mult": 0.58,
+        "max_vol_mult": 1.22,
+        "ref_volatility_pct": 0.75,
+        "sl_vol_exponent": 0.65,
+        "tp_vol_exponent": 1.35,
+        "sl_min_pct": 1.4,
+        "sl_max_pct": 4.5,
+        "tp_min_pct": 6.5,
+        "tp_max_pct": 7.5,
+        "volatility_source": "natr",
     },
 }
 

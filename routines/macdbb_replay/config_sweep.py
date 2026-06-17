@@ -27,7 +27,12 @@ from routines.macdbb_replay.models import (
     parse_session_selector,
 )
 from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.presets import PRESET_OVERRIDES, capital_normalized_pnl, resolve_config_with_preset
+from routines.macdbb_replay.presets import (
+    FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
+    PRESET_OVERRIDES,
+    capital_normalized_pnl,
+    resolve_config_with_preset,
+)
 from routines.macdbb_replay.reports import (
     ReportMeta,
     build_reports_by_pair,
@@ -200,23 +205,239 @@ MEGA_BARRIER_GRID_V2: dict[str, tuple[Any, ...]] = {
     "volatility_source": ("auto", "bb_width", "natr"),
 }
 
+# v3: act=0 fixed, 4h filter always on, tighter SL/TP + thesis decay from TP-lock findings.
+MEGA_SWEEP_GRID_V3: dict[str, tuple[Any, ...]] = {
+    "adaptive_long_bb_pos_max": (45.0, 52.0, 60.0, 72.0, 88.0),
+    "adaptive_short_bb_pos_min": (76.0, 84.0, 86.0, 90.0),
+    "adaptive_strong_long_bb_pos_max": (18.0, 24.0, 32.0, 42.0),
+    "adaptive_strong_short_bb_pos_min": (78.0, 86.0, 93.0, 98.0),
+    "adaptive_min_macd_gap_ratio": (0.02, 0.05, 0.12, 0.18),
+    "adaptive_min_hist_ratio": (0.04, 0.08, 0.14, 0.22),
+    "adaptive_score_open_min": (0.5, 1.2, 2.6, 3.4),
+    "adaptive_score_open_min_extreme": (0.4, 1.25, 2.5, 3.2),
+    "adaptive_hist_sign_bonus": (0.15, 0.28, 0.42, 0.55),
+    "adaptive_hist_sign_penalty": (0.15, 0.35, 0.50, 0.65),
+    "adaptive_momentum_bonus": (0.05, 0.18, 0.32, 0.48),
+    "adaptive_momentum_penalty": (0.02, 0.12, 0.22, 0.35),
+    "sl_pct": (1.0, 1.4, 2.2, 2.8, 3.0, 3.6, 4.2),
+    "tp_pct": (4.0, 6.0, 7.0, 7.5, 8.0, 8.5, 9.0, 11.0, 14.0),
+    "thesis_decay_exit_ticks": (4, 8, 12, 20, 36, 56),
+    "thesis_bb_drift_pts": (10.0, 22.0, 42.0, 62.0, 85.0),
+    "bb_proximity_epsilon_pct": (0.03, 0.08, 0.14, 0.22, 0.30),
+}
+
+MEGA_SIZING_GRID_V3: dict[str, tuple[Any, ...]] = dict(MEGA_SIZING_GRID_V2)
+
+MEGA_BARRIER_GRID_V3: dict[str, tuple[Any, ...]] = {
+    "sl_vol_exponent": (0.30, 0.55, 0.85, 1.25),
+    "tp_vol_exponent": (0.50, 0.85, 1.15, 1.55),
+    "sl_min_pct": (0.5, 1.0, 1.8),
+    "sl_max_pct": (2.5, 3.8, 6.0, 8.5),
+    "tp_min_pct": (2.0, 6.0, 7.0, 8.0),
+    "tp_max_pct": (8.0, 8.5, 9.0, 13.0, 18.0),
+    "ignore_journal_barriers_when_dynamic": (True, False),
+    "volatility_source": ("auto", "bb_width", "natr"),
+}
+
+# v4: both_on exploration — values disjoint from v1/v2/v3 union; act=0 + 4h ignored fixed.
+MEGA_SWEEP_GRID_V4: dict[str, tuple[Any, ...]] = {
+    "adaptive_long_bb_pos_max": (48.0, 58.0, 64.0, 68.0, 82.0),
+    "adaptive_short_bb_pos_min": (80.0, 82.0, 88.0, 92.0, 94.0),
+    "adaptive_strong_long_bb_pos_max": (20.0, 26.0, 36.0, 38.0),
+    "adaptive_strong_short_bb_pos_min": (82.0, 88.0, 91.0, 95.0),
+    "adaptive_min_macd_gap_ratio": (0.03, 0.07, 0.09, 0.11, 0.15, 0.20),
+    "adaptive_min_hist_ratio": (0.07, 0.11, 0.17, 0.19, 0.26),
+    "adaptive_score_open_min": (0.8, 1.8, 3.0),
+    "adaptive_score_open_min_extreme": (0.6, 0.85, 1.8, 2.8),
+    "adaptive_hist_sign_bonus": (0.20, 0.32, 0.38, 0.48),
+    "adaptive_hist_sign_penalty": (0.20, 0.28, 0.42, 0.58),
+    "adaptive_momentum_bonus": (0.11, 0.22, 0.38, 0.42),
+    "adaptive_momentum_penalty": (0.06, 0.16, 0.18, 0.28),
+    "sl_pct": (1.6, 2.5, 3.2, 3.4, 3.8, 4.5, 5.0),
+    "tp_pct": (5.0, 5.5, 6.2, 6.8, 7.8, 8.2, 8.8, 9.2, 10.5, 13.0, 17.0),
+    "thesis_decay_exit_ticks": (6, 14, 28, 44, 64),
+    "thesis_bb_drift_pts": (18.0, 28.0, 38.0, 55.0, 72.0, 78.0),
+    "bb_proximity_epsilon_pct": (0.04, 0.06, 0.11, 0.18, 0.25, 0.28),
+}
+
+MEGA_SIZING_GRID_V4: dict[str, tuple[Any, ...]] = {
+    "min_conviction_mult": (0.58, 0.70, 0.92),
+    "max_conviction_mult": (1.40, 1.65, 1.90, 2.15),
+    "strength_mult_per_unit": (0.02, 0.16, 0.24, 0.32, 0.42),
+    "extreme_displacement_mult": (0.95, 1.15, 1.35, 1.55, 1.65),
+    "thin_universe_mult": (0.72, 0.82, 0.88, 0.96),
+    "mature_tape_low_vol_mult": (0.78, 0.92, 0.99, 1.08, 1.12),
+    "ref_volatility_pct": (0.28, 0.45, 0.48, 0.68, 0.75, 0.95),
+    "min_vol_mult": (0.42, 0.58, 0.65, 0.82, 0.88),
+    "max_vol_mult": (1.05, 1.22, 1.48, 1.55, 1.75),
+    "vol_inverse_sizing": (True, False),
+    "min_notional_quote": (40.0, 60.0, 125.0, 150.0, 200.0),
+    "max_notional_quote": (550.0, 700.0, 850.0, 1100.0, 1400.0),
+}
+
+MEGA_BARRIER_GRID_V4: dict[str, tuple[Any, ...]] = {
+    "sl_vol_exponent": (0.40, 0.65, 0.95, 1.05, 1.15),
+    "tp_vol_exponent": (0.60, 0.75, 1.35, 1.45),
+    "sl_min_pct": (0.6, 1.4, 2.0, 2.2),
+    "sl_max_pct": (3.2, 4.5, 5.5, 7.0, 7.5),
+    "tp_min_pct": (3.5, 5.5, 6.5, 7.5, 7.8),
+    "tp_max_pct": (7.5, 11.0, 20.0, 22.0),
+    "ignore_journal_barriers_when_dynamic": (True, False),
+    "volatility_source": ("auto", "bb_width", "natr"),
+}
+
+# Applied to every v3/v4 mega sample (not swept).
+MEGA_GRID_FIXED_OVERRIDES: dict[str, dict[str, Any]] = {
+    "v3": {
+        "activation_ticks": 0,
+        "ignore_adaptive_4h_filter": True,
+    },
+    "v4": {
+        "activation_ticks": 0,
+        "ignore_adaptive_4h_filter": True,
+    },
+}
+
+# TP-lock best (act=0 routine validation neighborhood).
+TP_LOCK_BEST_ANCHOR_V3: dict[str, Any] = {
+    "sl_pct": 3.0,
+    "tp_pct": 8.0,
+    "tp_min_pct": 8.0,
+    "tp_max_pct": 8.0,
+    "adaptive_long_bb_pos_max": 60.0,
+    "adaptive_short_bb_pos_min": 90.0,
+}
+
+# v5 both_on mega winner (sessions 37-58, grid v3).
+BOTH_ON_V5_TOP_ANCHOR_V4: dict[str, Any] = {
+    "adaptive_hist_sign_bonus": 0.55,
+    "adaptive_hist_sign_penalty": 0.65,
+    "adaptive_long_bb_pos_max": 72.0,
+    "adaptive_min_hist_ratio": 0.22,
+    "adaptive_min_macd_gap_ratio": 0.18,
+    "adaptive_momentum_bonus": 0.05,
+    "adaptive_momentum_penalty": 0.02,
+    "adaptive_score_open_min": 0.5,
+    "adaptive_score_open_min_extreme": 0.4,
+    "adaptive_short_bb_pos_min": 76.0,
+    "adaptive_strong_long_bb_pos_max": 18.0,
+    "adaptive_strong_short_bb_pos_min": 78.0,
+    "bb_proximity_epsilon_pct": 0.22,
+    "extreme_displacement_mult": 1.45,
+    "ignore_journal_barriers_when_dynamic": False,
+    "mature_tape_low_vol_mult": 0.86,
+    "max_conviction_mult": 1.25,
+    "max_notional_quote": 950.0,
+    "max_vol_mult": 1.62,
+    "min_conviction_mult": 0.65,
+    "min_notional_quote": 100.0,
+    "min_vol_mult": 0.52,
+    "ref_volatility_pct": 0.38,
+    "sl_max_pct": 8.5,
+    "sl_min_pct": 0.5,
+    "sl_pct": 3.0,
+    "sl_vol_exponent": 0.55,
+    "strength_mult_per_unit": 0.2,
+    "thesis_bb_drift_pts": 62.0,
+    "thesis_decay_exit_ticks": 56,
+    "thin_universe_mult": 0.92,
+    "tp_max_pct": 13.0,
+    "tp_min_pct": 8.0,
+    "tp_pct": 9.0,
+    "tp_vol_exponent": 0.5,
+    "vol_inverse_sizing": False,
+}
+
+# v5 barriers_only top profile carried into both_on.
+BARRIERS_V5_BEST_BOTH_ON_V4: dict[str, Any] = {
+    "adaptive_hist_sign_bonus": 0.55,
+    "adaptive_hist_sign_penalty": 0.15,
+    "adaptive_long_bb_pos_max": 52.0,
+    "adaptive_min_hist_ratio": 0.22,
+    "adaptive_min_macd_gap_ratio": 0.12,
+    "adaptive_momentum_bonus": 0.32,
+    "adaptive_momentum_penalty": 0.35,
+    "adaptive_score_open_min": 1.2,
+    "adaptive_score_open_min_extreme": 3.2,
+    "adaptive_short_bb_pos_min": 90.0,
+    "adaptive_strong_long_bb_pos_max": 18.0,
+    "adaptive_strong_short_bb_pos_min": 93.0,
+    "bb_proximity_epsilon_pct": 0.03,
+    "sl_max_pct": 6.0,
+    "sl_min_pct": 1.8,
+    "sl_pct": 3.6,
+    "sl_vol_exponent": 0.85,
+    "thesis_bb_drift_pts": 22.0,
+    "thesis_decay_exit_ticks": 36,
+    "tp_max_pct": 13.0,
+    "tp_min_pct": 6.0,
+    "tp_pct": 7.0,
+    "tp_vol_exponent": 0.85,
+    "volatility_source": "bb_width",
+}
+
+
+def _prior_mega_grid_unions() -> dict[str, set[Any]]:
+    """Union of all swept values in v1–v3 (for disjoint v4 checks)."""
+    strategy_keys = set(MEGA_SWEEP_GRID) | set(MEGA_SWEEP_GRID_V2) | set(MEGA_SWEEP_GRID_V3)
+    sizing_keys = set(MEGA_SIZING_GRID) | set(MEGA_SIZING_GRID_V2)
+    barrier_keys = set(MEGA_BARRIER_GRID) | set(MEGA_BARRIER_GRID_V2) | set(MEGA_BARRIER_GRID_V3)
+    union: dict[str, set[Any]] = {}
+    for key in strategy_keys:
+        union[key] = set(MEGA_SWEEP_GRID.get(key, ()))
+        union[key] |= set(MEGA_SWEEP_GRID_V2.get(key, ()))
+        union[key] |= set(MEGA_SWEEP_GRID_V3.get(key, ()))
+    for key in sizing_keys:
+        union[key] = set(MEGA_SIZING_GRID.get(key, ()))
+        union[key] |= set(MEGA_SIZING_GRID_V2.get(key, ()))
+        union[key] |= set(MEGA_SIZING_GRID_V3.get(key, ()))
+    for key in barrier_keys:
+        union[key] = set(MEGA_BARRIER_GRID.get(key, ()))
+        union[key] |= set(MEGA_BARRIER_GRID_V2.get(key, ()))
+        union[key] |= set(MEGA_BARRIER_GRID_V3.get(key, ()))
+    return union
+
 
 def _strategy_grid_for_version(grid_version: str) -> dict[str, tuple[Any, ...]]:
+    if grid_version == "v4":
+        return MEGA_SWEEP_GRID_V4
+    if grid_version == "v3":
+        return MEGA_SWEEP_GRID_V3
     if grid_version == "v2":
         return MEGA_SWEEP_GRID_V2
     return MEGA_SWEEP_GRID
 
 
 def _sizing_grid_for_version(grid_version: str) -> dict[str, tuple[Any, ...]]:
+    if grid_version == "v4":
+        return MEGA_SIZING_GRID_V4
+    if grid_version == "v3":
+        return MEGA_SIZING_GRID_V3
     if grid_version == "v2":
         return MEGA_SIZING_GRID_V2
     return MEGA_SIZING_GRID
 
 
 def _barrier_grid_for_version(grid_version: str) -> dict[str, tuple[Any, ...]]:
+    if grid_version == "v4":
+        return MEGA_BARRIER_GRID_V4
+    if grid_version == "v3":
+        return MEGA_BARRIER_GRID_V3
     if grid_version == "v2":
         return MEGA_BARRIER_GRID_V2
     return MEGA_BARRIER_GRID
+
+
+def _mega_grid_fixed_overrides(grid_version: str) -> dict[str, Any]:
+    return dict(MEGA_GRID_FIXED_OVERRIDES.get(grid_version, {}))
+
+
+def _finalize_mega_dynamic_config(
+    overrides: dict[str, Any],
+    grid_version: str,
+) -> dict[str, Any]:
+    """Re-apply version-fixed keys last so preset anchors cannot override them."""
+    return _merge(overrides, **_mega_grid_fixed_overrides(grid_version))
 
 
 def _apply_capital_metrics(
@@ -258,6 +479,28 @@ def _merge(base: dict[str, Any], **overrides: Any) -> dict[str, Any]:
     merged = dict(base)
     merged.update(overrides)
     return merged
+
+
+# Pairs where lower bound must not exceed upper bound for meaningful simulation.
+_SENSIBLE_MIN_MAX_PAIRS: tuple[tuple[str, str], ...] = (
+    ("sl_min_pct", "sl_max_pct"),
+    ("tp_min_pct", "tp_max_pct"),
+    ("min_notional_quote", "max_notional_quote"),
+    ("min_conviction_mult", "max_conviction_mult"),
+    ("min_vol_mult", "max_vol_mult"),
+)
+
+
+def is_sensible_replay_config(overrides: dict[str, Any]) -> bool:
+    """Reject parameter combos where a min bound exceeds its max (e.g. tp_min > tp_max)."""
+    for lo_key, hi_key in _SENSIBLE_MIN_MAX_PAIRS:
+        lo = overrides.get(lo_key)
+        hi = overrides.get(hi_key)
+        if lo is None or hi is None:
+            continue
+        if float(lo) > float(hi):
+            return False
+    return True
 
 
 def build_sweep_configs() -> list[tuple[str, dict[str, Any]]]:
@@ -519,6 +762,91 @@ def build_refine_sweep_configs() -> list[tuple[str, dict[str, Any]]]:
     return configs
 
 
+# both_on v3 mega winner (sessions 37-58, post-sim-fix sweep).
+BOTH_ON_V3_WINNER_OVERRIDES: dict[str, Any] = {
+    "activation_ticks": 10,
+    "adaptive_hist_sign_bonus": 0.28,
+    "adaptive_hist_sign_penalty": 0.5,
+    "adaptive_long_bb_pos_max": 52.0,
+    "adaptive_min_hist_ratio": 0.22,
+    "adaptive_min_macd_gap_ratio": 0.12,
+    "adaptive_momentum_bonus": 0.05,
+    "adaptive_momentum_penalty": 0.22,
+    "adaptive_score_open_min": 1.2,
+    "adaptive_score_open_min_extreme": 0.4,
+    "adaptive_short_bb_pos_min": 90.0,
+    "adaptive_strong_long_bb_pos_max": 32.0,
+    "adaptive_strong_short_bb_pos_min": 78.0,
+    "bb_proximity_epsilon_pct": 0.14,
+    "extreme_displacement_mult": 1.45,
+    "mature_tape_low_vol_mult": 0.72,
+    "max_conviction_mult": 1.25,
+    "max_notional_quote": 950.0,
+    "max_vol_mult": 1.12,
+    "min_conviction_mult": 0.5,
+    "min_notional_quote": 100.0,
+    "min_vol_mult": 0.52,
+    "ref_volatility_pct": 0.58,
+    "sl_max_pct": 8.5,
+    "sl_min_pct": 1.8,
+    "sl_pct": 3.6,
+    "sl_vol_exponent": 0.85,
+    "strength_mult_per_unit": 0.2,
+    "thesis_bb_drift_pts": 10.0,
+    "thesis_decay_exit_ticks": 36,
+    "thin_universe_mult": 1.0,
+    "tp_min_pct": 2.0,
+    "tp_max_pct": 18.0,
+    "tp_pct": 14.0,
+    "tp_vol_exponent": 0.85,
+    "vol_inverse_sizing": False,
+    "volatility_source": "natr",
+}
+
+
+def build_dynamic_refine_sweep_configs(
+    dynamic_mode: str = "both_on",
+) -> list[tuple[str, dict[str, Any]]]:
+    """Narrow grid around the v3 both_on winner (SL/TP/BB gates).
+
+    ``activation_ticks`` is fixed at 1 (minimum streak delay for adaptive entries).
+    Sweeps symmetrically above and below the anchor on SL/TP and BB gates.
+    All emitted configs pass ``is_sensible_replay_config`` (valid min/max pairs).
+    """
+    winner = {**BOTH_ON_V3_WINNER_OVERRIDES, "activation_ticks": 1}
+    base = _merge(_dynamic_sweep_base(dynamic_mode), **winner)
+    assert is_sensible_replay_config(base), "refine anchor has invalid min/max bounds"
+    configs: list[tuple[str, dict[str, Any]]] = [
+        ("refine_anchor_v3_winner", dict(base)),
+    ]
+
+    sl_values = (2.0, 2.4, 2.8, 3.2, 3.6, 4.0, 4.4, 4.8)
+    tp_values = (8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0)
+    long_max_values = (48.0, 52.0, 56.0, 60.0)
+    short_min_values = (86.0, 90.0, 94.0, 98.0)
+
+    for sl_pct in sl_values:
+        for tp_pct in tp_values:
+            for long_max in long_max_values:
+                for short_min in short_min_values:
+                    overrides = _merge(
+                        base,
+                        sl_pct=sl_pct,
+                        tp_pct=tp_pct,
+                        adaptive_long_bb_pos_max=long_max,
+                        adaptive_short_bb_pos_min=short_min,
+                    )
+                    if not is_sensible_replay_config(overrides):
+                        continue
+                    name = (
+                        f"refine_sl{sl_pct}_tp{int(tp_pct)}"
+                        f"_L{int(long_max)}_S{int(short_min)}"
+                    )
+                    configs.append((name, overrides))
+
+    return configs
+
+
 MEGA_SWEEP_GRID: dict[str, tuple[Any, ...]] = {
     "adaptive_long_bb_pos_max": (55.0, 65.0, 75.0, 80.0),
     "adaptive_short_bb_pos_min": (60.0, 65.0, 72.0, 78.0),
@@ -678,7 +1006,7 @@ def iter_mega_dynamic_sweep_configs(
     grid_version: str = "v1",
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield dynamic mega configs; strategy grid + mode-specific dynamic params."""
-    base = _dynamic_sweep_base(mode)
+    base = _merge(_dynamic_sweep_base(mode), **_mega_grid_fixed_overrides(grid_version))
     anchors: list[tuple[str, dict[str, Any]]] = [
         (f"dyn_{mode}_baseline_hl_sweep_best", dict(base)),
         (
@@ -694,8 +1022,35 @@ def iter_mega_dynamic_sweep_configs(
             ),
         ),
     ]
+    if grid_version == "v3":
+        anchors.append(
+            (
+                f"dyn_{mode}_anchor_tp_lock_best",
+                _merge(base, **TP_LOCK_BEST_ANCHOR_V3),
+            )
+        )
+    if grid_version == "v4":
+        anchors.extend(
+            [
+                (
+                    f"dyn_{mode}_anchor_tp_lock_best",
+                    _merge(base, **TP_LOCK_BEST_ANCHOR_V3),
+                ),
+                (
+                    f"dyn_{mode}_anchor_v5_both_on_top",
+                    _merge(base, **BOTH_ON_V5_TOP_ANCHOR_V4),
+                ),
+                (
+                    f"dyn_{mode}_anchor_v5_barriers_best",
+                    _merge(base, **BARRIERS_V5_BEST_BOTH_ON_V4),
+                ),
+            ]
+        )
     for name, overrides in anchors:
-        yield name, overrides
+        finalized = _finalize_mega_dynamic_config(overrides, grid_version)
+        if not is_sensible_replay_config(finalized):
+            raise ValueError(f"mega sweep anchor failed sanity check: {name}")
+        yield name, finalized
 
     rng = random.Random(seed)
     seen_names: set[str] = {name for name, _ in anchors}
@@ -707,7 +1062,9 @@ def iter_mega_dynamic_sweep_configs(
     while emitted < target and attempts < max_attempts:
         attempts += 1
         combo = _random_dynamic_mega_combo(rng, mode, grid_version)
-        merged = _merge(base, **combo)
+        merged = _finalize_mega_dynamic_config(_merge(base, **combo), grid_version)
+        if not is_sensible_replay_config(merged):
+            continue
         name = _mega_dynamic_config_name(merged, mode)
         if name in seen_names:
             name = f"{name}_n{emitted}"
@@ -1064,6 +1421,7 @@ async def run_dynamic_sweep(
     gc_every: int = 25,
     write_json: bool = False,
     rank_by_normalized: bool = True,
+    config_builder: Callable[[], list[tuple[str, dict[str, Any]]]] | None = None,
 ) -> tuple[list[SweepResult], str, float]:
     load_config = DynamicStrategyReplayConfig(**_dynamic_sweep_base(dynamic_mode))
     parsed_sessions, hl_caches, hl_candle_cache, hl_barrier_candle_cache, _selected = (
@@ -1078,27 +1436,20 @@ async def run_dynamic_sweep(
         or f"strategy_replay_dynamic_{dynamic_mode}_mega_37_58{grid_tag}"
     )
     baseline = baseline_name or f"dyn_{dynamic_mode}_baseline_hl_sweep_best"
+    benchmark_avg_notional = FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
 
-    fixed_benchmark = _run_config(
-        "__fixed_capital_benchmark__",
-        HL_SWEEP_BEST,
-        parsed_sessions,
-        hl_caches,
-        hl_candle_cache,
-        hl_barrier_candle_cache,
-        reports_by_pair,
-    )
-    benchmark_avg_notional = fixed_benchmark.avg_notional
-
-    results: list[SweepResult] = []
-    for index, (name, overrides) in enumerate(
-        iter_mega_dynamic_sweep_configs(
+    if config_builder is None:
+        config_iter: Iterator[tuple[str, dict[str, Any]]] = iter_mega_dynamic_sweep_configs(
             dynamic_mode,
             min_configs=min_configs,
             seed=seed,
             grid_version=grid_version,
         )
-    ):
+    else:
+        config_iter = iter(config_builder())
+
+    results: list[SweepResult] = []
+    for index, (name, overrides) in enumerate(config_iter):
         result = _run_dynamic_config(
             name,
             overrides,
@@ -1196,6 +1547,11 @@ def main() -> None:
         help="Run refine grid around adaptive_bb_loose + SL/TP (sessions 36-50)",
     )
     parser.add_argument(
+        "--refine-dynamic",
+        action="store_true",
+        help="Run narrow refine grid around v3 both_on winner (sessions 37-58)",
+    )
+    parser.add_argument(
         "--mega",
         action="store_true",
         help="Run large factorial sample sweep (560+ combos, sessions 36-50)",
@@ -1230,9 +1586,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--grid-version",
-        choices=("v1", "v2"),
+        choices=("v1", "v2", "v3", "v4"),
         default="v1",
-        help="Parameter grid version for --mega-dynamic (v2 = wider shifted ranges)",
+        help=(
+            "Parameter grid for --mega-dynamic "
+            "(v2=wider shifted; v3=act=0 tight SL/TP; v4=both_on novel values)"
+        ),
     )
     parser.add_argument(
         "--top",
@@ -1301,6 +1660,46 @@ def main() -> None:
                 f"  {mode:<20} cap=${winner.capital_normalized_pnl:+9.2f}  "
                 f"raw=${winner.pnl:+9.2f}  {winner.trades:>3} trades  "
                 f"avg$={winner.avg_notional:>6.0f}  top={winner.name[:40]}  -> {output_file.name}"
+            )
+        return
+
+    if args.refine_dynamic:
+        dynamic_mode = args.dynamic_mode if args.dynamic_mode != "sizing_only" else "both_on"
+        stem = f"strategy_replay_dynamic_{dynamic_mode}_refine_v3_37_58"
+        results, baseline_name, benchmark_avg = asyncio.run(
+            run_dynamic_sweep(
+                dynamic_mode=dynamic_mode,
+                output_dir=args.output_dir,
+                output_stem=stem,
+                baseline_name="refine_anchor_v3_winner",
+                gc_every=25,
+                write_json=False,
+                rank_by_normalized=True,
+                config_builder=lambda: build_dynamic_refine_sweep_configs(dynamic_mode),
+            )
+        )
+        output_file = args.output_dir / f"{stem}.csv"
+        baseline = next(
+            (row for row in results if row.name == baseline_name),
+            results[-1],
+        )
+        _print_table(
+            results,
+            baseline.pnl,
+            top_n=args.top,
+            dynamic=True,
+            benchmark_avg_notional=benchmark_avg,
+            baseline_capital_normalized_pnl=baseline.capital_normalized_pnl,
+            rank_by_normalized=True,
+        )
+        print(f"\nWrote {output_file}")
+        if results:
+            winner = results[0]
+            print(
+                f"\nTop config: {winner.name}  CapNorm=${winner.capital_normalized_pnl:+.2f}  "
+                f"RawPnL=${winner.pnl:+.2f}  avg_notional=${winner.avg_notional:.0f}  "
+                f"pnl/exp={winner.pnl_per_exposure:.4f}  "
+                f"overrides={json.dumps(winner.overrides, sort_keys=True)}"
             )
         return
 

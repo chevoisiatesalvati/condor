@@ -1,9 +1,12 @@
 """Tests for dynamic strategy replay mega sweep helpers."""
 
 from routines.macdbb_replay.config_sweep import (
+    BOTH_ON_V3_WINNER_OVERRIDES,
     DYNAMIC_MODE_PRESETS,
     _dynamic_grid_for_mode,
     _dynamic_sweep_base,
+    build_dynamic_refine_sweep_configs,
+    is_sensible_replay_config,
     iter_mega_dynamic_sweep_configs,
 )
 
@@ -72,7 +75,98 @@ def test_capital_normalized_pnl_scales_by_avg_notional():
     assert capital_normalized_pnl(200.0, 300.0, 300.0) == 200.0
 
 
-def test_hl_dynamic_mega_sweep_best_preset_matches_rank_one_base():
+def test_sweep_and_routine_share_capital_benchmark_constant():
+    from routines.macdbb_replay.config_sweep import FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
+    from routines.macdbb_replay.presets import (
+        FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL as PRESET_BENCHMARK,
+    )
+
+    assert FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL == PRESET_BENCHMARK
+    assert PRESET_BENCHMARK > 0
+
+
+def test_is_sensible_replay_config_rejects_inverted_bounds():
+    assert is_sensible_replay_config({"tp_min_pct": 3.0, "tp_max_pct": 15.0})
+    assert not is_sensible_replay_config({"tp_min_pct": 7.0, "tp_max_pct": 6.0})
+    assert not is_sensible_replay_config({"sl_min_pct": 5.0, "sl_max_pct": 3.0})
+
+
+def test_both_on_v3_winner_anchor_has_sensible_barrier_bounds():
+    assert is_sensible_replay_config(BOTH_ON_V3_WINNER_OVERRIDES)
+    assert BOTH_ON_V3_WINNER_OVERRIDES["tp_min_pct"] < BOTH_ON_V3_WINNER_OVERRIDES["tp_max_pct"]
+
+
+def test_build_dynamic_refine_sweep_configs_grid_size():
+    configs = build_dynamic_refine_sweep_configs("both_on")
+    assert len(configs) == 897
+    names = {name for name, _ in configs}
+    assert len(names) == len(configs)
+    assert "refine_anchor_v3_winner" in names
+    for _name, overrides in configs:
+        assert overrides["enable_dynamic_sizing"] is True
+        assert overrides["enable_dynamic_barriers"] is True
+        assert overrides["activation_ticks"] == 1
+        assert is_sensible_replay_config(overrides)
+
+
+def test_v3_grid_fixed_overrides_and_no_swept_noise():
+    from routines.macdbb_replay.config_sweep import (
+        MEGA_SWEEP_GRID_V3,
+        _mega_grid_fixed_overrides,
+        _dynamic_grid_for_mode,
+    )
+
+    assert "activation_ticks" not in MEGA_SWEEP_GRID_V3
+    assert "ignore_adaptive_4h_filter" not in MEGA_SWEEP_GRID_V3
+    assert 3.0 in MEGA_SWEEP_GRID_V3["sl_pct"]
+    assert 8.0 in MEGA_SWEEP_GRID_V3["tp_pct"]
+    assert 4 in MEGA_SWEEP_GRID_V3["thesis_decay_exit_ticks"]
+    assert _mega_grid_fixed_overrides("v3") == {
+        "activation_ticks": 0,
+        "ignore_adaptive_4h_filter": True,
+    }
+    both_on = _dynamic_grid_for_mode("both_on", "v3")
+    assert "sl_vol_exponent" in both_on
+    assert "activation_ticks" not in both_on
+
+
+def test_v4_grid_values_disjoint_from_v1_v2_v3():
+    from routines.macdbb_replay.config_sweep import (
+        MEGA_BARRIER_GRID_V4,
+        MEGA_SIZING_GRID_V4,
+        MEGA_SWEEP_GRID_V4,
+        _prior_mega_grid_unions,
+    )
+
+    # Booleans / categorical toggles are intentionally re-swept each grid version.
+    skip_keys = {
+        "vol_inverse_sizing",
+        "ignore_journal_barriers_when_dynamic",
+        "volatility_source",
+    }
+    prior = _prior_mega_grid_unions()
+    for grid in (MEGA_SWEEP_GRID_V4, MEGA_SIZING_GRID_V4, MEGA_BARRIER_GRID_V4):
+        for key, values in grid.items():
+            if key in skip_keys:
+                continue
+            overlap = prior.get(key, set()) & set(values)
+            assert not overlap, f"v4 {key} overlaps prior grids: {overlap}"
+
+
+def test_mega_dynamic_v4_both_on_samples():
+    configs = list(
+        iter_mega_dynamic_sweep_configs("both_on", min_configs=30, seed=19, grid_version="v4")
+    )
+    assert len(configs) >= 34
+    assert any("anchor_v5_both_on_top" in name for name, _ in configs)
+    for _name, overrides in configs:
+        assert overrides["activation_ticks"] == 0
+        assert overrides["enable_dynamic_sizing"] is True
+        assert overrides["enable_dynamic_barriers"] is True
+        assert is_sensible_replay_config(overrides)
+
+
+def test_hl_dynamic_mega_sweep_best_preset_matches_v6_winner():
     from routines.macdbb_replay.config_sweep import _dynamic_sweep_base, _merge
     from routines.macdbb_replay.models import DynamicStrategyReplayConfig
     from routines.macdbb_replay.presets import (
@@ -81,7 +175,7 @@ def test_hl_dynamic_mega_sweep_best_preset_matches_rank_one_base():
     )
 
     expected = _merge(
-        _dynamic_sweep_base("sizing_only"),
+        _dynamic_sweep_base("both_on"),
         **DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"],
         preset="hl_dynamic_mega_sweep_best",
     )
