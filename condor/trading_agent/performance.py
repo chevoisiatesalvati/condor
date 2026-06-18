@@ -43,6 +43,16 @@ def _extract_executors_list(result: Any) -> list[dict]:
     return []
 
 
+def _executor_notional_quote(cfg: dict, entry_price: float) -> float:
+    quote = float(cfg.get("total_amount_quote") or 0)
+    if quote > 0:
+        return quote
+    base_amount = float(cfg.get("amount") or 0)
+    if base_amount > 0 and entry_price > 0:
+        return base_amount * entry_price
+    return base_amount
+
+
 def _executor_row(ex: dict) -> dict[str, Any]:
     from condor.fetchers.executors import (
         get_executor_fees,
@@ -64,6 +74,8 @@ def _executor_row(ex: dict) -> dict[str, Any]:
         log.warning("entry_price fell back to 0.0 for executor %s — PnL may be wrong",
                      ex.get("id") or ex.get("executor_id") or "?")
 
+    notional_quote = _executor_notional_quote(cfg, entry_price)
+
     # current_price / close_price: top-level > custom_info
     _top_cur = float(ex.get("current_price") or 0)
     _ci_close = float(custom_info.get("close_price") or 0)
@@ -81,9 +93,10 @@ def _executor_row(ex: dict) -> dict[str, Any]:
         "net_pnl_pct": float(ex.get("net_pnl_pct") or 0),
         "volume": get_executor_volume(ex),
         "fees": get_executor_fees(ex),
+        "notional_quote": notional_quote,
+        "amount": notional_quote,
         "entry_price": entry_price,
         "current_price": current_price,
-        "amount": float(cfg.get("total_amount_quote") or cfg.get("amount") or 0),
         "timestamp": float(cfg.get("timestamp") or ex.get("timestamp") or 0),
         "close_timestamp": float(ex.get("close_timestamp") or 0),
         "created_at": str(ex.get("created_at") or ""),

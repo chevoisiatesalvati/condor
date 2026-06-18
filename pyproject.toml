@@ -33,6 +33,7 @@ dev = ["pytest", "pytest-asyncio", "black", "isort", "pre-commit"]
 profile = "black"
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 markers = [
     "integration: live Telegram API tests (set RUN_TELEGRAM_INTEGRATION=1)",
 ]

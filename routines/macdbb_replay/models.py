@@ -86,10 +86,12 @@ class TickMeta:
     natr_floor_used: float | None = None
     best_score: float | None = None
     queue_total: list[str] = field(default_factory=list)
+    natr_by_pair: dict[str, float] = field(default_factory=dict)
     signals_1h: dict[str, JournalSignal1h] = field(default_factory=dict)
     filter_4h: dict[str, Filter4h] = field(default_factory=dict)
     monitored_pair: str | None = None
     position_pnl_snapshot: float | None = None
+    position_pnl_by_pair: dict[str, float] = field(default_factory=dict)
     barrier_closes: list[BarrierCloseEvent] = field(default_factory=list)
     create_plans: dict[str, JournalCreatePlan] = field(default_factory=dict)
 
@@ -205,6 +207,7 @@ class ReplayConfigBase(BaseModel):
         "hl_bb_loose_best",
         "hl_mega_sweep_best",
         "hl_dynamic_mega_sweep_best",
+        "hl_dynamic_session_parity",
     ] = (
         Field(
             default="hl_mega_sweep_best",
@@ -227,17 +230,57 @@ class ReplayConfigBase(BaseModel):
         description="Session selector: 'all' or comma-separated values like '35,36'",
     )
     time_window_min: int = Field(
-        default=25,
-        description="Max minutes for matching report file to tick/pair",
+        default=5,
+        description=(
+            "Max minutes for matching report file to tick/pair. "
+            "MACD/scanner routines run within a few minutes of each agent tick."
+        ),
     )
-    data_source: Literal["journal_first", "journal_recompute", "html_only"] = Field(
+    data_source: Literal[
+        "journal_first",
+        "journal_recompute",
+        "html_only",
+        "reports_only",
+    ] = Field(
         default="journal_first",
         description=(
             "journal_first: replay journal entry flags (fL/fS/aL/aS) as logged. "
             "journal_recompute: recompute entries from journal numerics + config "
             "(full formal when mid/up logged; else fL/fS fallback). "
-            "html_only: HTML report payloads only."
+            "html_only: HTML report payloads only. "
+            "reports_only: scanner + MACD reports + replay config (no journal signals)."
         ),
+    )
+    replay_mode: Literal["session_parity", "timeline_backtest"] = Field(
+        default="session_parity",
+        description=(
+            "session_parity: journal tick timestamps + optional session config.yml. "
+            "timeline_backtest: synthetic UTC range, no sessions/journal."
+        ),
+    )
+    tick_schedule: Literal["journal_ticks", "date_range"] | None = Field(
+        default=None,
+        description="Explicit tick schedule; inferred from replay_mode when unset.",
+    )
+    config_source: Literal["session", "preset", "override"] = Field(
+        default="preset",
+        description="session loads sessions/session_N/config.yml per session.",
+    )
+    range_start_utc: str | None = Field(
+        default=None,
+        description="ISO UTC start for timeline_backtest (inclusive).",
+    )
+    range_end_utc: str | None = Field(
+        default=None,
+        description="ISO UTC end for timeline_backtest (inclusive).",
+    )
+    frequency_sec: int = Field(
+        default=1800,
+        description="Agent tick interval for timeline_backtest synthetic ticks.",
+    )
+    use_journal_barriers: bool = Field(
+        default=True,
+        description="Apply journal barrier closes during replay (off for reports_only).",
     )
     activation_ticks: int = Field(
         default=6,
@@ -378,11 +421,12 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
         "hl_bb_loose_best",
         "hl_mega_sweep_best",
         "hl_dynamic_mega_sweep_best",
+        "hl_dynamic_session_parity",
     ] = Field(
         default="hl_dynamic_mega_sweep_best",
         description=(
-            "hl_dynamic_mega_sweep_best = dynamic sizing_only sweep winner "
-            "(hl_mega strategy + dynamic sizing, sessions 37-58)."
+            "hl_dynamic_mega_sweep_best = mega sweep v4 top1 "
+            "(exec=10, sessions 37-60 routine validation)."
         ),
     )
 

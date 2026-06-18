@@ -4,8 +4,10 @@ import datetime as dt
 from typing import Any
 
 from routines.macdbb_replay.models import (
+    DynamicStrategyReplayConfig,
     JournalSignal1h,
     OpenPosition,
+    ParsedReport,
     SimTrade,
     StrategyReplayConfig,
     TickMeta,
@@ -16,7 +18,14 @@ from routines.macdbb_replay.dynamic_policy import (
     EntryPolicyResult,
     resolve_fixed_entry_policy,
 )
-from routines.macdbb_replay.reports import ReportMeta
+from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_replay.reports import ReportMeta, ScannerReportMeta, load_scanner_reports_index
+from routines.macdbb_replay.session_builder import (
+    _default_strategy_params,
+    preserve_journal_queue_fields,
+    refresh_tick_meta_from_reports,
+)
+from routines.macdbb_replay.session_config import replay_config_from_session
 from routines.macdbb_replay.hl_prices import HlCandleCache, scan_barriers_between
 from routines.macdbb_replay.signals import (
     build_tick_snapshots,
@@ -35,6 +44,50 @@ def _adaptive_4h_allows(
         return True
     return filter_4h_allows(side, trend, passed)
 
+
+def _upper_band_formal_short(parsed: ParsedReport, epsilon: float) -> bool:
+    upper = parsed.bb_upper * (1.0 - epsilon / 100.0)
+    return (
+        parsed.price >= upper
+        and parsed.trend == "bearish"
+        and parsed.momentum == "decreasing"
+        and parsed.histogram < 0
+    )
+
+
+def _formal_short_entry_allowed(
+    parsed: ParsedReport | None,
+    prev_parsed: ParsedReport | None,
+    metrics: dict[str, float | bool],
+    *,
+    epsilon: float,
+    session_first_tick: int,
+    tick: int,
+) -> bool:
+    """Cross-based formal shorts require bearish_cross on the prior 1h report."""
+    if not bool(metrics["formal_short"]) or parsed is None:
+        return False
+    if _upper_band_formal_short(parsed, epsilon):
+        return True
+    cross_path = parsed.bearish_cross and parsed.macd < 0
+    if not cross_path:
+        return True
+    if prev_parsed is None:
+        return tick == session_first_tick
+    return prev_parsed.bearish_cross
+
+
+def _queue_rank(pair: str, meta: TickMeta) -> int:
+    try:
+        return meta.macd_pairs.index(pair)
+    except ValueError:
+        return 9999
+
+
+def _candidate_strength(side: str, metrics: dict[str, float | bool]) -> float:
+    if side == "long":
+        return float(metrics["adaptive_strength_long"])
+    return float(metrics["adaptive_strength_short"])
 
 
 def _position_barriers(position: OpenPosition, config: StrategyReplayConfig) -> tuple[float, float]:
@@ -328,6 +381,35 @@ def _advance_simulated_streak(
     return 0
 
 
+def _effective_adaptive_streak(meta: TickMeta, simulated_streak: int) -> int:
+    """Pre-entry streak for adaptive gating.
+
+    Journal ``adaptive_activation_streak`` is logged after the tick decision
+    (often reset to 0 on the same tick as an open). Simulated streak matches
+    live pre-entry state for parity replay.
+    """
+    return simulated_streak
+
+
+def _adaptive_entry_allowed(
+    *,
+    pair: str,
+    meta: TickMeta,
+    simulated_streak: int,
+    open_position_count: int,
+    adaptive_slot_fill_budget: int,
+    activation_ticks: int,
+) -> bool:
+    if pair in meta.create_plans:
+        return True
+    streak = _effective_adaptive_streak(meta, simulated_streak)
+    if open_position_count == 0:
+        return streak >= activation_ticks
+    if adaptive_slot_fill_budget > 0:
+        return True
+    return False
+
+
 def _canonical_trading_pair(pair: str) -> str:
     if "-" in pair:
         return pair
@@ -338,7 +420,15 @@ def _exit_price_from_pnl(position: OpenPosition, pnl_quote: float) -> float:
     return_pct = pnl_quote / position.notional_quote
     if position.side == "long":
         return position.entry_price * (1.0 + return_pct)
-    return position.entry_price * (1.0 - return_pct)
+    return position.entry_price / (1.0 + return_pct)
+
+
+def _position_pnl_for_pair(meta: TickMeta, pair: str) -> float | None:
+    if pair in meta.position_pnl_by_pair:
+        return meta.position_pnl_by_pair[pair]
+    if meta.monitored_pair == pair:
+        return meta.position_pnl_snapshot
+    return None
 
 
 def _monitor_mark_price(
@@ -346,12 +436,9 @@ def _monitor_mark_price(
     meta: TickMeta,
     snapshot_price: float,
 ) -> float:
-    if (
-        meta.monitored_pair == position.pair
-        and meta.position_pnl_snapshot is not None
-        and position.notional_quote > 0
-    ):
-        return _exit_price_from_pnl(position, meta.position_pnl_snapshot)
+    position_pnl = _position_pnl_for_pair(meta, position.pair)
+    if position_pnl is not None and position.notional_quote > 0:
+        return _exit_price_from_pnl(position, position_pnl)
     return snapshot_price
 
 
@@ -372,7 +459,7 @@ def _apply_journal_barrier_closes(
         position = open_positions.get(event.pair)
         if position is None:
             continue
-        if event.close_type == "stop_loss":
+        if event.close_type in {"stop_loss", "gone_leg"}:
             exit_reason = "stop_loss_close_proxy"
         elif event.close_type == "take_profit":
             exit_reason = "take_profit_close_proxy"
@@ -519,13 +606,52 @@ def simulate_strategy_session(
     flip_cooldown_until: dict[str, int] = {}
     last_price_by_pair: dict[str, float] = {}
     last_signal_by_pair: dict[str, JournalSignal1h] = {}
+    last_parsed_1h_by_pair: dict[str, ParsedReport] = {}
+    last_metrics_by_pair: dict[str, dict[str, float | bool]] = {}
     last_seen_by_pair: dict[str, tuple[int, float]] = {}
     simulated_streak = 0
+    adaptive_slot_fill_budget = 0
+
+    report_driven_params: dict[str, Any] | None = None
+    scanner_reports: list[ScannerReportMeta] | None = None
+    if config.data_source == "reports_only":
+        session_dir = TRADING_AGENTS_DIR / config.strategy_slug / f"sessions/session_{session_num}"
+        if session_dir.is_dir():
+            _, report_driven_params = replay_config_from_session(
+                session_dir,
+                config.strategy_slug,
+                base=config if isinstance(config, DynamicStrategyReplayConfig) else None,
+            )
+        else:
+            report_driven_params = _default_strategy_params(
+                config
+                if isinstance(config, DynamicStrategyReplayConfig)
+                else DynamicStrategyReplayConfig()
+            )
+        scanner_reports = load_scanner_reports_index()
 
     sorted_ticks = sorted(tick_meta_map)
+    session_first_tick = sorted_ticks[0] if sorted_ticks else 0
 
     for tick_index, tick in enumerate(sorted_ticks):
         meta = tick_meta_map[tick]
+        if config.data_source == "reports_only" and report_driven_params and scanner_reports:
+            journal_meta = meta
+            refreshed = refresh_tick_meta_from_reports(
+                journal_meta,
+                config,
+                report_driven_params,
+                reports_by_pair,
+                scanner_reports,
+                open_pairs=list(open_positions.keys()),
+            )
+            if (
+                isinstance(config, DynamicStrategyReplayConfig)
+                and config.replay_mode == "session_parity"
+            ):
+                meta = preserve_journal_queue_fields(journal_meta, refreshed)
+            else:
+                meta = refreshed
         entry_streak = simulated_streak
         extra_pairs = list(open_positions.keys())
         snapshots = build_tick_snapshots(
@@ -543,14 +669,11 @@ def simulate_strategy_session(
             if snapshot.price_trusted:
                 last_seen_by_pair[pair] = (tick, snapshot.price)
         for pair, position in open_positions.items():
-            if (
-                meta.monitored_pair == pair
-                and meta.position_pnl_snapshot is not None
-                and position.notional_quote > 0
-            ):
+            position_pnl = _position_pnl_for_pair(meta, pair)
+            if position_pnl is not None and position.notional_quote > 0:
                 last_seen_by_pair[pair] = (
                     tick,
-                    _exit_price_from_pnl(position, meta.position_pnl_snapshot),
+                    _exit_price_from_pnl(position, position_pnl),
                 )
 
         tick_actions: list[str] = []
@@ -601,10 +724,11 @@ def simulate_strategy_session(
             position = open_positions[pair]
             snapshot = snapshots.get(pair)
             mark_price: float | None = None
-            metrics = None
+            metrics: dict[str, float | bool] | None = None
             snapshot_signal = "NEUTRAL"
             filter_trend = None
             filter_pass = None
+            has_fresh_snapshot = snapshot is not None
 
             if snapshot is not None:
                 metrics = snapshot.metrics
@@ -614,18 +738,27 @@ def simulate_strategy_session(
                 if snapshot.price_trusted:
                     mark_price = _monitor_mark_price(position, meta, snapshot.price)
                 elif (
-                    meta.monitored_pair == pair
-                    and meta.position_pnl_snapshot is not None
+                    _position_pnl_for_pair(meta, pair) is not None
                     and position.notional_quote > 0
                 ):
                     mark_price = _monitor_mark_price(
                         position, meta, position.entry_price
                     )
+            elif pair in last_metrics_by_pair:
+                metrics = last_metrics_by_pair[pair]
+                carried_price = last_price_by_pair.get(pair, 0.0)
+                if carried_price <= 0:
+                    continue
+                mark_price = carried_price
             else:
                 continue
 
             if mark_price is None or metrics is None:
                 continue
+
+            last_seen_by_pair[pair] = (tick, mark_price)
+            if mark_price > 0:
+                last_price_by_pair[pair] = mark_price
 
             current_return_pct = compute_return_pct(
                 position.side, position.entry_price, mark_price
@@ -650,11 +783,11 @@ def simulate_strategy_session(
                     else:
                         position.monitor_state = "flip_pending"
                         position.flip_streak = 1
-                elif position.flip_streak >= 1:
+                elif has_fresh_snapshot and position.flip_streak >= 1:
                     position.flip_streak = 0
                     position.monitor_state = "thesis_intact"
 
-            if not exit_reason:
+            if not exit_reason and has_fresh_snapshot and snapshot is not None:
                 trend = snapshot.parsed.trend if snapshot.parsed else None
                 bb_pos_pct = snapshot.parsed.bb_pos_pct if snapshot.parsed else None
                 _update_thesis_decay_streak(
@@ -724,23 +857,37 @@ def simulate_strategy_session(
 
         # Step 4 entries
         entries_allowed = _scanner_allows_entries(meta, config)
+        open_before_entry = list(open_positions.keys())
+        if closes_this_tick:
+            adaptive_slot_fill_budget = 0
         if entries_allowed:
             formal_candidates: list[tuple[str, str, Any]] = []
             adaptive_candidates: list[tuple[str, str, Any]] = []
+            barrier_reentry_this_tick = any(
+                token.endswith(
+                    (
+                        ":stop_loss_close_proxy",
+                        ":take_profit_close_proxy",
+                    )
+                )
+                for token in closes_this_tick
+            )
 
             for pair, snapshot in snapshots.items():
                 if pair in open_positions:
                     continue
+                formal_blockers: list[str] = []
+                adaptive_blockers: list[str] = []
+                if tick <= flip_cooldown_until.get(pair, -1):
+                    formal_blockers.append("flip_cooldown")
+                    adaptive_blockers.append("flip_cooldown")
                 if tick <= sl_cooldown_until.get(pair, -1):
-                    blockers = ["sl_cooldown"]
-                elif tick <= flip_cooldown_until.get(pair, -1):
-                    blockers = ["flip_cooldown"]
-                else:
-                    blockers = []
+                    adaptive_blockers.append("sl_cooldown")
 
                 metrics = snapshot.metrics
                 if not snapshot.price_trusted:
-                    blockers.append("no_price_data")
+                    formal_blockers.append("no_price_data")
+                    adaptive_blockers.append("no_price_data")
                 if config.entry_modes in {"all", "formal"}:
                     if bool(metrics["formal_long"]):
                         if not filter_4h_allows(
@@ -748,24 +895,31 @@ def simulate_strategy_session(
                             snapshot.filter_4h_trend,
                             snapshot.filter_4h_pass,
                         ):
-                            blockers.append("4h_filter_block_long")
+                            formal_blockers.append("4h_filter_block_long")
                         elif (
                             snapshot.price_trusted
                             and len(open_positions) < config.max_open_executors
-                            and not blockers
+                            and not formal_blockers
                         ):
                             formal_candidates.append((pair, "long", snapshot))
-                    if bool(metrics["formal_short"]):
+                    if bool(metrics["formal_short"]) and _formal_short_entry_allowed(
+                        snapshot.parsed,
+                        last_parsed_1h_by_pair.get(pair),
+                        metrics,
+                        epsilon=config.bb_proximity_epsilon_pct,
+                        session_first_tick=session_first_tick,
+                        tick=tick,
+                    ):
                         if not filter_4h_allows(
                             "short",
                             snapshot.filter_4h_trend,
                             snapshot.filter_4h_pass,
                         ):
-                            blockers.append("4h_filter_block_short")
+                            formal_blockers.append("4h_filter_block_short")
                         elif (
                             snapshot.price_trusted
                             and len(open_positions) < config.max_open_executors
-                            and not blockers
+                            and not formal_blockers
                         ):
                             formal_candidates.append((pair, "short", snapshot))
 
@@ -778,99 +932,101 @@ def simulate_strategy_session(
                     meta.tradeable_count is None
                     or meta.tradeable_count >= config.min_tradeable_count
                 )
-                barrier_reentry_this_tick = any(
-                    token.endswith(
-                        (
-                            ":stop_loss_close_proxy",
-                            ":take_profit_close_proxy",
-                        )
-                    )
-                    for token in closes_this_tick
-                )
-                adaptive_streak_ok = (
-                    len(open_positions) > 0
-                    or entry_streak >= config.activation_ticks
-                    or barrier_reentry_this_tick
-                )
                 if (
                     config.entry_modes in {"all", "adaptive"}
                     and adaptive_flat_ok
-                    and adaptive_streak_ok
                     and tradeable_ok
                 ):
                     if bool(metrics["adaptive_long_open"]):
-                        if not _adaptive_4h_allows(
+                        if not _adaptive_entry_allowed(
+                            pair=pair,
+                            meta=meta,
+                            simulated_streak=entry_streak,
+                            open_position_count=len(open_positions),
+                            adaptive_slot_fill_budget=adaptive_slot_fill_budget,
+                            activation_ticks=config.activation_ticks,
+                        ):
+                            adaptive_blockers.append("activation_streak")
+                        elif not _adaptive_4h_allows(
                             "long",
                             snapshot.filter_4h_trend,
                             snapshot.filter_4h_pass,
                             config,
                         ):
-                            blockers.append("4h_filter_block_long")
-                        elif snapshot.price_trusted and not blockers:
+                            adaptive_blockers.append("4h_filter_block_long")
+                        elif snapshot.price_trusted and not adaptive_blockers:
                             adaptive_candidates.append((pair, "long", snapshot))
                     if bool(metrics["adaptive_short_open"]):
-                        if not _adaptive_4h_allows(
+                        if not _adaptive_entry_allowed(
+                            pair=pair,
+                            meta=meta,
+                            simulated_streak=entry_streak,
+                            open_position_count=len(open_positions),
+                            adaptive_slot_fill_budget=adaptive_slot_fill_budget,
+                            activation_ticks=config.activation_ticks,
+                        ):
+                            adaptive_blockers.append("activation_streak")
+                        elif not _adaptive_4h_allows(
                             "short",
                             snapshot.filter_4h_trend,
                             snapshot.filter_4h_pass,
                             config,
                         ):
-                            blockers.append("4h_filter_block_short")
-                        elif snapshot.price_trusted and not blockers:
+                            adaptive_blockers.append("4h_filter_block_short")
+                        elif snapshot.price_trusted and not adaptive_blockers:
                             adaptive_candidates.append((pair, "short", snapshot))
 
+                blockers = formal_blockers + [
+                    b for b in adaptive_blockers if b not in formal_blockers
+                ]
                 per_pair_rows.append(
                     _snapshot_row(session_num, tick, meta, pair, snapshot, blockers, config)
                 )
 
-            for pair, side, snapshot in sorted(
-                formal_candidates,
-                key=lambda item: (
-                    float(item[2].metrics["adaptive_strength_long"])
-                    if item[1] == "long"
-                    else float(item[2].metrics["adaptive_strength_short"])
-                ),
-                reverse=True,
-            ):
-                if pair in open_positions:
-                    continue
-                if len(open_positions) >= config.max_open_executors:
-                    break
-                metrics = snapshot.metrics
-                trigger = f"formal_{side}"
-                open_positions[pair] = _open_position(
-                    entry_tick=tick,
-                    entry_time=meta.timestamp,
-                    pair=pair,
-                    side=side,
-                    entry_price=snapshot.price,
-                    entry_class="formal",
-                    entry_trigger=trigger,
-                    metrics=metrics,
-                    meta=meta,
-                    entry_streak=entry_streak,
-                    config=config,
-                    replay_policy=replay_policy,
-                    entry_bb_pos_pct=_entry_bb_pos_pct(snapshot),
-                    journal_signal=meta.signals_1h.get(pair),
-                    hl_candle_cache=hl_candle_cache,
-                    hl_vol_candle_cache=vol_candles,
-                )
-                opens_this_tick.append(trigger)
+            if formal_candidates:
+                pair, side, snapshot = sorted(
+                    formal_candidates,
+                    key=lambda item: (
+                        -_candidate_strength(item[1], item[2].metrics),
+                        _queue_rank(item[0], meta),
+                    ),
+                )[0]
+                if pair not in open_positions and len(open_positions) < config.max_open_executors:
+                    metrics = snapshot.metrics
+                    trigger = f"formal_{side}"
+                    open_positions[pair] = _open_position(
+                        entry_tick=tick,
+                        entry_time=meta.timestamp,
+                        pair=pair,
+                        side=side,
+                        entry_price=snapshot.price,
+                        entry_class="formal",
+                        entry_trigger=trigger,
+                        metrics=metrics,
+                        meta=meta,
+                        entry_streak=entry_streak,
+                        config=config,
+                        replay_policy=replay_policy,
+                        entry_bb_pos_pct=_entry_bb_pos_pct(snapshot),
+                        journal_signal=meta.signals_1h.get(pair),
+                        hl_candle_cache=hl_candle_cache,
+                        hl_vol_candle_cache=vol_candles,
+                    )
+                    opens_this_tick.append(trigger)
 
             if not opens_this_tick and adaptive_candidates:
                 ranked = sorted(
                     adaptive_candidates,
                     key=lambda item: (
-                        float(item[2].metrics["adaptive_strength_long"])
-                        if item[1] == "long"
-                        else float(item[2].metrics["adaptive_strength_short"])
+                        -_candidate_strength(item[1], item[2].metrics),
+                        _queue_rank(item[0], meta),
                     ),
-                    reverse=True,
                 )
                 pair, side, snapshot = ranked[0]
                 metrics = snapshot.metrics
                 trigger = f"adaptive_{side}"
+                opened_from_flat = len(open_before_entry) == 0
+                opened_via_create_plan = pair in meta.create_plans
                 open_positions[pair] = _open_position(
                     entry_tick=tick,
                     entry_time=meta.timestamp,
@@ -890,6 +1046,19 @@ def simulate_strategy_session(
                     hl_vol_candle_cache=vol_candles,
                 )
                 opens_this_tick.append(trigger)
+                if opened_from_flat and entry_streak >= config.activation_ticks:
+                    adaptive_slot_fill_budget = max(
+                        0, config.max_open_executors - len(open_positions)
+                    )
+                elif (
+                    not opened_via_create_plan
+                    and adaptive_slot_fill_budget > 0
+                    and len(open_before_entry) > 0
+                ):
+                    adaptive_slot_fill_budget = max(
+                        0, adaptive_slot_fill_budget - 1
+                    )
+
         else:
             for pair, snapshot in snapshots.items():
                 per_pair_rows.append(
@@ -923,6 +1092,11 @@ def simulate_strategy_session(
             tick_actions.extend([f"close:{action}" for action in closes_this_tick])
         if not tick_actions:
             tick_actions = ["hold"]
+
+        for pair, snapshot in snapshots.items():
+            if snapshot.parsed is not None:
+                last_parsed_1h_by_pair[pair] = snapshot.parsed
+            last_metrics_by_pair[pair] = snapshot.metrics
 
         simulated_streak = _advance_simulated_streak(
             snapshots,

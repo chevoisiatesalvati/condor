@@ -13,7 +13,7 @@ from routines.macdbb_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_replay.presets import DYNAMIC_PRESET_OVERRIDES
 
 
-def _v6_strategy_params() -> dict:
+def _preset_strategy_params() -> dict:
     preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"]
     keys = (
         "enable_dynamic_sizing",
@@ -50,8 +50,18 @@ def test_duration_to_ticks_zero_hours():
     assert duration_to_ticks(0, 1800) == 0
 
 
-def test_live_policy_config_from_params_matches_v6():
-    params = _v6_strategy_params()
+def test_live_policy_config_from_params_defaults_fixed_when_flags_absent():
+    config = live_policy_config_from_params(
+        {"sl_pct": 1.8, "tp_pct": 10.0},
+        formal_notional_quote=500.0,
+    )
+    assert config.enable_dynamic_sizing is False
+    assert config.enable_dynamic_barriers is False
+    assert config.sl_pct == 1.8
+
+
+def test_live_policy_config_from_params_matches_preset():
+    params = _preset_strategy_params()
     config = live_policy_config_from_params(params, formal_notional_quote=500.0)
     preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"]
 
@@ -63,7 +73,7 @@ def test_live_policy_config_from_params_matches_v6():
     assert config.max_notional_quote == preset["max_notional_quote"]
     assert config.tp_min_pct == preset["tp_min_pct"]
     assert config.tp_max_pct == preset["tp_max_pct"]
-    assert config.volatility_source == "natr"
+    assert config.volatility_source == preset["volatility_source"]
 
 
 def test_pair_vol_override_used_for_natr_source():
@@ -82,7 +92,7 @@ def test_pair_vol_override_used_for_natr_source():
 
 
 def test_resolve_live_entry_policy_returns_clamped_barriers():
-    params = _v6_strategy_params()
+    params = _preset_strategy_params()
     metrics = {
         "adaptive_strength_long": 2.5,
         "adaptive_strength_short": 0.5,
@@ -106,7 +116,7 @@ def test_resolve_live_entry_policy_returns_clamped_barriers():
     assert params["min_notional_quote"] <= result.notional_quote <= params["max_notional_quote"]
     assert params["sl_min_pct"] <= result.sl_pct <= params["sl_max_pct"]
     assert params["tp_min_pct"] <= result.tp_pct <= params["tp_max_pct"]
-    assert result.volatility_proxy_pct == 0.9
+    assert result.volatility_proxy_pct == params["ref_volatility_pct"]
     assert result.sizing_multiplier > 0
     assert result.stop_loss_decimal == result.sl_pct / 100.0
     assert result.take_profit_decimal == result.tp_pct / 100.0

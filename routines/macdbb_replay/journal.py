@@ -32,8 +32,14 @@ _SCANNER_REGIME_RE = re.compile(r"scanner_regime=(mature|degen)", re.IGNORECASE)
 _NATR_FLOOR_USED_RE = re.compile(r"natr_floor_used=([0-9.]+)")
 _BEST_SCORE_RE = re.compile(r"best_score=([0-9.]+)")
 _QUEUE_TOTAL_RE = re.compile(rf"queue_total=({_PAIR_TOKEN}(?:,{_PAIR_TOKEN})*)")
-_SIGNALS_1H_RE = re.compile(r"signals_1h=([^\s]+)")
-_FILTER_4H_RE = re.compile(r"filter_4h=([^\s]+)")
+_JOURNAL_BLOB_NEXT_FIELD = (
+    r"(?:\s(?:filter_4h|best_candidate|near_miss|create_plan|position_pnl_snapshot|"
+    r"monitor_state|thesis_decay_streak|flip_streak|cooldown_remaining_ticks|"
+    r"queue_primary|macd_reviewed|entry_class|pair|trigger|position_action|"
+    r"hold_reason|strictness_mode|adaptive_activation_streak)=|$)"
+)
+_SIGNALS_1H_RE = re.compile(rf"signals_1h=(.+?){_JOURNAL_BLOB_NEXT_FIELD}")
+_FILTER_4H_RE = re.compile(rf"filter_4h=(.+?){_JOURNAL_BLOB_NEXT_FIELD}")
 _REVIEWED_MACD_LIST_RE = re.compile(
     r"reviewed 5 MACD 1h(?: pairs)?:\s*([A-Za-z0-9,\sk]+?)\s*(?:—| - |\.|$)",
     re.IGNORECASE,
@@ -70,17 +76,20 @@ _OPENED_PAIR_RE = re.compile(
 )
 
 _SIGNAL_TUPLE_RE = re.compile(
-    rf"(?:^|[|])({_PAIR_TOKEN}):bb=([^,]+),macd=([^,]+),sig=([^,]+),hist=([^,]+),"
+    rf"(?:^|\s*\|\s*)({_PAIR_TOKEN}):bb=([^,]+),macd=([^,]+),sig=([^,]+),hist=([^,]+),"
     r"gap=([^,]+),hr=([^,]+),tr=([^,]+),mom=([^,]+),"
     r"fL=([^,]+),fS=([^,]+),aL=([^,]+),aS=([^,]+),sL=([^,]+),sS=([^,|;\s]+)"
     r"(?:,mid=([^,]+),up=([^,]+)(?:,lo=([^,]+))?(?:,bX=([^,]+),sX=([^,]+),p=([^,|;\s]+))?)?"
 )
 _FILTER_4H_TUPLE_RE = re.compile(
-    rf"(?:^|[|])({_PAIR_TOKEN}):tr=([^,]+)(?:,bb=([^,]+))?(?:,macd=([^,]+))?"
+    rf"(?:^|\s*\|\s*)({_PAIR_TOKEN}):tr=([^,]+)(?:,bb=([^,]+))?(?:,macd=([^,]+))?"
     r"(?:,sig=([^,]+))?(?:,hist=([^,]+))?,pass=([01])"
 )
 _MONITORED_PAIR_RE = re.compile(r"pair=([A-Z0-9:-]+)")
 _POSITION_PNL_RE = re.compile(r"position_pnl_snapshot=([-+]?[0-9.]+)")
+_POSITION_PNL_PAIR_RE = re.compile(
+    r"position_pnl_snapshot=([A-Z0-9]+:[-+]?[0-9.]+(?:,[A-Z0-9]+:[-+]?[0-9.]+)*)"
+)
 _BARRIER_CLOSE_TYPE_RE = re.compile(r"close_type=(STOP_LOSS|TAKE_PROFIT)", re.IGNORECASE)
 _BARRIER_PNL_RE = re.compile(r"pnl=([-+]?[0-9.]+)")
 _BOGUS_BARRIER_PAIR_BASES = frozenset(
@@ -119,6 +128,18 @@ _BARRIER_PAIR_HIT_BOLD_RE = re.compile(
 )
 _SNAPSHOT_FILENAME_RE = re.compile(r"snapshot_(\d+)\.md$", re.IGNORECASE)
 _BARRIER_CLOSES_SECTION_HEADER = "[BARRIER CLOSES SINCE LAST TICK]"
+_SESSION_PNL_RE = re.compile(
+    r"Session PnL \*\*(-?\$?[0-9.]+)\*\*",
+    re.IGNORECASE,
+)
+_GONE_LEG_RE = re.compile(
+    r"([A-Z0-9]+)(?:-USD)?(?:\s+(?:adaptive|formal))?\s+leg\s+from\s+tick\s+#\d+\s+(?:is\s+gone|gone\b)",
+    re.IGNORECASE,
+)
+
+
+def _parse_session_pnl_token(raw: str) -> float:
+    return float(raw.replace("$", ""))
 
 
 def parse_dt(value: str) -> dt.datetime:
@@ -145,6 +166,32 @@ def _normalize_journal_pair_list(raw: str) -> list[str]:
         if normalized and normalized not in pairs:
             pairs.append(normalized)
     return pairs
+
+
+def _parse_position_pnl_fields(
+    line: str,
+    monitored_pair: str | None,
+) -> tuple[float | None, dict[str, float]]:
+    pair_match = _POSITION_PNL_PAIR_RE.search(line)
+    if pair_match:
+        by_pair: dict[str, float] = {}
+        for token in pair_match.group(1).split(","):
+            pair_raw, pnl_raw = token.split(":", 1)
+            pair = _normalize_journal_pair_token(pair_raw)
+            if pair:
+                by_pair[pair] = float(pnl_raw)
+        snapshot = None
+        if monitored_pair and monitored_pair in by_pair:
+            snapshot = by_pair[monitored_pair]
+        elif len(by_pair) == 1:
+            snapshot = next(iter(by_pair.values()))
+        return snapshot, by_pair
+    single_match = _POSITION_PNL_RE.search(line)
+    if single_match:
+        value = float(single_match.group(1))
+        by_pair = {monitored_pair: value} if monitored_pair else {}
+        return value, by_pair
+    return None, {}
 
 
 def _normalize_trend(value: str) -> str:
@@ -533,12 +580,15 @@ def _parse_decision_line(line: str, tick_time_map: dict[int, dt.datetime]) -> Ti
     signals_match = _SIGNALS_1H_RE.search(line)
     filter_match = _FILTER_4H_RE.search(line)
     monitored_match = _MONITORED_PAIR_RE.search(line)
-    pnl_snapshot_match = _POSITION_PNL_RE.search(line)
 
     monitored_pair = (
         _normalize_journal_pair_token(monitored_match.group(1))
         if monitored_match
         else None
+    )
+    position_pnl_snapshot, position_pnl_by_pair = _parse_position_pnl_fields(
+        line,
+        monitored_pair,
     )
     create_plan = _parse_create_plan(line)
     create_plans = {create_plan.pair: create_plan} if create_plan else {}
@@ -564,9 +614,8 @@ def _parse_decision_line(line: str, tick_time_map: dict[int, dt.datetime]) -> Ti
         signals_1h=_parse_signals_1h(signals_match.group(1)) if signals_match else {},
         filter_4h=_parse_filter_4h(filter_match.group(1)) if filter_match else {},
         monitored_pair=monitored_pair or None,
-        position_pnl_snapshot=float(pnl_snapshot_match.group(1))
-        if pnl_snapshot_match
-        else None,
+        position_pnl_snapshot=position_pnl_snapshot,
+        position_pnl_by_pair=position_pnl_by_pair,
         barrier_closes=_parse_barrier_events(line),
         create_plans=create_plans,
     )
@@ -641,6 +690,10 @@ def parse_journal_ticks(
                 queue_total=meta.queue_total,
                 signals_1h=meta.signals_1h,
                 filter_4h=meta.filter_4h,
+                monitored_pair=meta.monitored_pair,
+                position_pnl_snapshot=meta.position_pnl_snapshot,
+                barrier_closes=list(meta.barrier_closes),
+                create_plans=dict(meta.create_plans),
             )
             tick_meta_map[tick_number] = meta
 
@@ -668,6 +721,10 @@ def parse_journal_ticks(
                 queue_total=meta.queue_total,
                 signals_1h=meta.signals_1h,
                 filter_4h=filter_map,
+                monitored_pair=meta.monitored_pair,
+                position_pnl_snapshot=meta.position_pnl_snapshot,
+                barrier_closes=list(meta.barrier_closes),
+                create_plans=dict(meta.create_plans),
             )
             tick_meta_map[tick_number] = meta
         elif opened_match and "4h bearish" in header_line.lower():
@@ -693,6 +750,10 @@ def parse_journal_ticks(
                 queue_total=meta.queue_total,
                 signals_1h=meta.signals_1h,
                 filter_4h=filter_map,
+                monitored_pair=meta.monitored_pair,
+                position_pnl_snapshot=meta.position_pnl_snapshot,
+                barrier_closes=list(meta.barrier_closes),
+                create_plans=dict(meta.create_plans),
             )
             tick_meta_map[tick_number] = meta
 
@@ -747,6 +808,10 @@ def parse_journal_ticks(
             queue_total=list(meta.queue_total or last_queue_total),
             signals_1h=dict(meta.signals_1h or last_signals),
             filter_4h=dict(meta.filter_4h or last_filter_4h),
+            monitored_pair=meta.monitored_pair,
+            position_pnl_snapshot=meta.position_pnl_snapshot,
+            barrier_closes=list(meta.barrier_closes),
+            create_plans=dict(meta.create_plans),
         )
 
         if meta.adaptive_activation_streak is None:
@@ -784,6 +849,41 @@ def parse_journal_ticks(
             meta,
             barrier_closes=_merge_barrier_events(meta.barrier_closes, header_barriers),
         )
+
+    session_pnls: dict[int, float] = {}
+    for tick_number, line in tick_header_lines.items():
+        pnl_match = _SESSION_PNL_RE.search(line)
+        if pnl_match is not None:
+            session_pnls[tick_number] = _parse_session_pnl_token(pnl_match.group(1))
+
+    for tick_number, line in tick_header_lines.items():
+        meta = tick_meta_map.get(tick_number)
+        if meta is None:
+            continue
+        gone_barriers: list[BarrierCloseEvent] = []
+        for gone_match in _GONE_LEG_RE.finditer(line):
+            pair = _normalize_journal_pair_token(gone_match.group(1))
+            if not pair or any(event.pair == pair for event in meta.barrier_closes):
+                continue
+            cur_pnl = session_pnls.get(tick_number)
+            prev_pnl = session_pnls.get(tick_number - 1)
+            leg_pnl = (
+                round(cur_pnl - prev_pnl, 2)
+                if cur_pnl is not None and prev_pnl is not None
+                else None
+            )
+            gone_barriers.append(
+                BarrierCloseEvent(
+                    pair=pair,
+                    close_type="gone_leg",
+                    pnl_quote=leg_pnl,
+                )
+            )
+        if gone_barriers:
+            tick_meta_map[tick_number] = replace(
+                meta,
+                barrier_closes=_merge_barrier_events(meta.barrier_closes, gone_barriers),
+            )
 
     return tick_meta_map
 
@@ -884,6 +984,10 @@ def enrich_ticks_from_snapshots(
                     if parsed.position_pnl_snapshot is not None
                     else existing.position_pnl_snapshot
                 ),
+                position_pnl_by_pair={
+                    **existing.position_pnl_by_pair,
+                    **parsed.position_pnl_by_pair,
+                },
                 barrier_closes=merged_barriers,
             )
 

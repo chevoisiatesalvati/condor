@@ -58,6 +58,34 @@ def test_parse_macd_pairs_with_hip3_k_prefix():
     assert meta.signals_1h["ADA-USD"].formal_short is True
 
 
+def test_parse_signals_1h_pipe_with_spaces():
+    raw = (
+        "BTC-USD:bb=-4.81,macd=-157.7197,sig=-156.6245,hist=-1.0952,gap=0.0070,hr=0.0069,"
+        "tr=bear,mom=dec,fL=0,fS=1,aL=0,aS=0,sL=0,sS=0,mid=65415.6,up=66360.3771,bX=0,sX=1,p=64380"
+        " | HYPE-USD:bb=22.52,macd=0.2076,sig=0.2873,hist=-0.0797,gap=0.2774,hr=0.3837,"
+        "tr=bull,mom=inc,fL=0,fS=0,aL=1,aS=0,sL=2.1611,sS=0,mid=73.2934,up=75.7722,bX=0,sX=0,p=71.931"
+    )
+    signals = _parse_signals_1h(raw)
+    assert set(signals) == {"BTC-USD", "HYPE-USD"}
+    assert signals["HYPE-USD"].adaptive_long is True
+
+
+def test_parse_decision_line_signals_1h_with_spaces():
+    tick_time_map = {1: parse_dt("2026-06-17 19:39")}
+    line = (
+        "- **#1** (19:39) entry_class=regime_adaptive_half_size pair=HYPE-USD "
+        "macd_pairs=BTC-USD,HYPE-USD signals_1h=BTC-USD:bb=-4.81,macd=-157.7197,sig=-156.6245,"
+        "hist=-1.0952,gap=0.0070,hr=0.0069,tr=bear,mom=dec,fL=0,fS=1,aL=0,aS=0,sL=0,sS=0,"
+        "mid=65415.6,up=66360.3771,bX=0,sX=1,p=64380 | HYPE-USD:bb=22.52,macd=0.2076,sig=0.2873,"
+        "hist=-0.0797,gap=0.2774,hr=0.3837,tr=bull,mom=inc,fL=0,fS=0,aL=1,aS=0,sL=2.1611,sS=0,"
+        "mid=73.2934,up=75.7722,bX=0,sX=0,p=71.931 filter_4h=BTC-USD:tr=bull,pass=0"
+    )
+    meta = _parse_decision_line(line, tick_time_map)
+    assert meta is not None
+    assert "HYPE-USD" in meta.signals_1h
+    assert meta.signals_1h["HYPE-USD"].adaptive_long is True
+
+
 def test_parse_scanner_telemetry_on_decision_line():
     tick_time_map = {3: parse_dt("2026-06-12 12:00")}
     line = (

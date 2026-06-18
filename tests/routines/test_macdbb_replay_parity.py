@@ -15,9 +15,11 @@ from routines.macdbb_replay.metrics import compute_metrics, parsed_report_from_j
 from routines.macdbb_replay.models import JournalSignal1h, OpenPosition, StrategyReplayConfig
 from routines.macdbb_replay.simulator import (
     _advance_simulated_streak,
+    _adaptive_entry_allowed,
     _thesis_decay_reasons,
     _update_thesis_decay_streak,
 )
+from routines.macdbb_replay.models import JournalCreatePlan, TickMeta
 
 
 def _snapshot(signal: str):
@@ -84,6 +86,57 @@ def test_advance_simulated_streak_does_not_increment_with_open_position():
         opened_this_tick=False,
     )
     assert streak == 2
+
+
+def test_adaptive_entry_blocked_with_open_leg_and_zero_streak():
+    meta = TickMeta(
+        tick=92,
+        timestamp=dt.datetime(2026, 6, 17, tzinfo=dt.timezone.utc),
+        macd_pairs=[],
+    )
+    assert not _adaptive_entry_allowed(
+        pair="CRV-USD",
+        meta=meta,
+        simulated_streak=0,
+        open_position_count=1,
+        adaptive_slot_fill_budget=0,
+        activation_ticks=1,
+    )
+
+
+def test_adaptive_entry_allows_slot_fill_after_activation_window():
+    meta = TickMeta(
+        tick=7,
+        timestamp=dt.datetime(2026, 6, 15, tzinfo=dt.timezone.utc),
+        macd_pairs=[],
+    )
+    assert _adaptive_entry_allowed(
+        pair="ADA-USD",
+        meta=meta,
+        simulated_streak=0,
+        open_position_count=1,
+        adaptive_slot_fill_budget=1,
+        activation_ticks=1,
+    )
+
+
+def test_adaptive_entry_allows_journal_create_plan_with_zero_streak():
+    meta = TickMeta(
+        tick=77,
+        timestamp=dt.datetime(2026, 6, 17, tzinfo=dt.timezone.utc),
+        macd_pairs=["LIT-USD"],
+        create_plans={
+            "LIT-USD": JournalCreatePlan(pair="LIT-USD", side="long", entry_class="regime_adaptive_half_size")
+        },
+    )
+    assert _adaptive_entry_allowed(
+        pair="LIT-USD",
+        meta=meta,
+        simulated_streak=0,
+        open_position_count=1,
+        adaptive_slot_fill_budget=0,
+        activation_ticks=1,
+    )
 
 
 def test_thesis_decay_intact_on_aligned_neutral_low_bb():
@@ -250,3 +303,49 @@ def test_parse_snapshot_barrier_closes_from_barrier_section():
         session_dir=session_dir,
     )
     assert tick_map[59].barrier_closes == events
+
+
+def test_reports_only_resolve_snapshot_ignores_journal_signals():
+    import datetime as dt
+
+    from routines.macdbb_replay.models import JournalSignal1h, TickMeta
+    from routines.macdbb_replay.signals import resolve_snapshot
+    from routines.macdbb_replay.models import DynamicStrategyReplayConfig
+
+    config = DynamicStrategyReplayConfig(
+        preset="custom",
+        data_source="reports_only",
+    )
+    meta = TickMeta(
+        tick=1,
+        timestamp=dt.datetime(2026, 6, 10, 12, 0, tzinfo=dt.timezone.utc),
+        macd_pairs=["BTC-USD"],
+        signals_1h={
+            "BTC-USD": JournalSignal1h(
+                pair="BTC-USD",
+                bb_pos_pct=50.0,
+                macd=1.0,
+                signal_line=0.5,
+                histogram=0.5,
+                macd_gap_ratio=0.5,
+                hist_ratio=0.5,
+                trend="bullish",
+                momentum="increasing",
+                formal_long=True,
+                formal_short=False,
+                adaptive_long=False,
+                adaptive_short=False,
+                strength_long=0.0,
+                strength_short=0.0,
+            )
+        },
+    )
+    snapshot = resolve_snapshot(
+        "BTC-USD",
+        meta,
+        {},
+        config,
+        {},
+    )
+    assert snapshot is None or snapshot.source != "journal"
+

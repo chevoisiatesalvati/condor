@@ -464,6 +464,13 @@ def live_policy_config_from_params(
         if key in params and params[key] is not None:
             payload[key] = params[key]
 
+    # Sessions saved before dynamic policy shipped omit these keys; they used fixed
+    # formal_notional + sl_pct/tp_pct from strategy_params (session 58 and earlier).
+    if params.get("enable_dynamic_sizing") is None:
+        payload["enable_dynamic_sizing"] = False
+    if params.get("enable_dynamic_barriers") is None:
+        payload["enable_dynamic_barriers"] = False
+
     return DynamicStrategyReplayConfig(**payload)
 
 

@@ -4,9 +4,28 @@ import datetime as dt
 import html
 import json
 import re
+from dataclasses import dataclass
 
 from routines.macdbb_replay.models import ParsedReport, ReportMeta
 from routines.macdbb_replay.paths import REPORTS_DIR, REPORTS_INDEX_PATH
+
+_SCANNER_TITLE_RE = re.compile(
+    r"Hyperliquid Market Scanner\s*\((\d+)h",
+    re.IGNORECASE,
+)
+_ANALYZED_RE = re.compile(
+    r"Analyzed\s+(\d+)\s+Hyperliquid\s+pairs",
+    re.IGNORECASE,
+)
+_SCANNER_TABLE_HEADERS = (
+    "Pair",
+    "Volume 24h",
+    "24h Chg",
+    "NATR",
+    "NATR-CV",
+    "Vol-CV",
+    "Range",
+)
 
 _PAIR_TITLE_RE = re.compile(r"MACD\+BB:\s+([A-Z0-9:-]+)\s+\((1h|4h)\)")
 _TABLE_SECTION_RE = re.compile(
@@ -35,7 +54,131 @@ _SIGNAL_TABLE_HEADERS = (
     "Trend",
     "Momentum",
 )
+_CONDITION_TABLE_HEADERS = ("Rule", "Condition", "Met")
 _PAIR_VALUE_RE = re.compile(r"^[A-Z0-9]+-[A-Z0-9]+$")
+
+
+@dataclass
+class ScannerPairRow:
+    pair: str
+    volume_24h_usd: float
+    price_change_24h: float
+    natr_mean: float
+    natr_cv: float
+    bucket_cv: float
+    price_range_pct: float = 0.0
+
+
+@dataclass
+class ScannerReportMeta:
+    report_id: str
+    filename: str
+    created_at: dt.datetime
+    lookback_hours: int | None = None
+    total_analyzed: int | None = None
+
+
+@dataclass
+class ParsedScannerReport:
+    total_analyzed: int
+    mature: list[ScannerPairRow]
+    degen: list[ScannerPairRow]
+    lookback_hours: int | None = None
+
+
+def parse_volume_usd(text: str) -> float:
+    cleaned = text.strip().replace("$", "").replace(",", "")
+    if not cleaned:
+        return 0.0
+    if cleaned.endswith("B"):
+        return float(cleaned[:-1]) * 1_000_000_000
+    if cleaned.endswith("M"):
+        return float(cleaned[:-1]) * 1_000_000
+    if cleaned.endswith("K"):
+        return float(cleaned[:-1]) * 1_000
+    return float(cleaned)
+
+
+def _parse_pct_change(text: str) -> float:
+    cleaned = text.strip().replace("%", "").replace("+", "")
+    return float(cleaned)
+
+
+def _parse_pct_value(text: str) -> float:
+    return float(text.strip().replace("%", ""))
+
+
+def _parse_scanner_table_body(body: str) -> list[ScannerPairRow]:
+    rows: list[ScannerPairRow] = []
+    for row_match in re.finditer(r"<tr>(.*?)</tr>", body, re.DOTALL):
+        values = [extract_td_value(value) for value in _TD_RE.findall(row_match.group(1))]
+        if len(values) < 7:
+            continue
+        pair = values[0]
+        if not _PAIR_VALUE_RE.match(pair):
+            continue
+        try:
+            rows.append(
+                ScannerPairRow(
+                    pair=pair,
+                    volume_24h_usd=parse_volume_usd(values[1]),
+                    price_change_24h=_parse_pct_change(values[2]),
+                    natr_mean=_parse_pct_value(values[3]),
+                    natr_cv=float(values[4]),
+                    bucket_cv=float(values[5]),
+                    price_range_pct=_parse_pct_value(values[6]),
+                )
+            )
+        except ValueError:
+            continue
+    return rows
+
+
+def _parse_scanner_table_rows(report_html: str) -> list[ScannerPairRow]:
+    rows: list[ScannerPairRow] = []
+    for match in _TABLE_SECTION_RE.finditer(report_html):
+        headers = _table_headers(match.group("headers"))
+        if headers != list(_SCANNER_TABLE_HEADERS):
+            continue
+        rows.extend(_parse_scanner_table_body(match.group("body")))
+    return rows
+
+
+def parse_scanner_report_html(report_html: str) -> ParsedScannerReport | None:
+    analyzed_match = _ANALYZED_RE.search(report_html)
+    title_match = _SCANNER_TITLE_RE.search(report_html)
+    if not analyzed_match:
+        return None
+
+    mature: list[ScannerPairRow] = []
+    degen: list[ScannerPairRow] = []
+    mature_marker = report_html.lower().find("mature markets")
+    degen_marker = report_html.lower().find("degen markets")
+
+    for match in _TABLE_SECTION_RE.finditer(report_html):
+        headers = _table_headers(match.group("headers"))
+        if headers != list(_SCANNER_TABLE_HEADERS):
+            continue
+        pos = match.start()
+        if degen_marker >= 0 and pos > degen_marker:
+            degen.extend(_parse_scanner_table_body(match.group("body")))
+        elif mature_marker >= 0 and pos > mature_marker:
+            mature.extend(_parse_scanner_table_body(match.group("body")))
+
+    if not mature and not degen:
+        all_rows = _parse_scanner_table_rows(report_html)
+        if not all_rows:
+            return None
+        midpoint = max(1, len(all_rows) // 2)
+        mature = all_rows[:midpoint]
+        degen = all_rows[midpoint:]
+
+    return ParsedScannerReport(
+        total_analyzed=int(analyzed_match.group(1)),
+        mature=mature,
+        degen=degen,
+        lookback_hours=int(title_match.group(1)) if title_match else None,
+    )
 
 
 def parse_dt(value: str) -> dt.datetime:
@@ -74,6 +217,22 @@ def _looks_like_signal_row(values: list[str]) -> bool:
     return True
 
 
+def _parse_condition_map(report_html: str) -> dict[tuple[str, str], bool]:
+    """Parse Rule/Condition/Met table without matching across other tables."""
+    condition_map: dict[tuple[str, str], bool] = {}
+    for match in _TABLE_SECTION_RE.finditer(report_html):
+        headers = _table_headers(match.group("headers"))
+        if headers != list(_CONDITION_TABLE_HEADERS):
+            continue
+        for row_match in re.finditer(r"<tr>(.*?)</tr>", match.group("body"), re.DOTALL):
+            values = [extract_td_value(value) for value in _TD_RE.findall(row_match.group(1))]
+            if len(values) < 3:
+                continue
+            rule, condition, met = values[0], values[1], values[2]
+            condition_map[(rule, condition)] = met.strip().lower() == "true"
+    return condition_map
+
+
 def _find_signal_row(report_html: str) -> list[str] | None:
     for match in _TABLE_SECTION_RE.finditer(report_html):
         headers = _table_headers(match.group("headers"))
@@ -106,11 +265,7 @@ def parse_report_html(report_html: str) -> ParsedReport | None:
     trend = values[10].lower()
     momentum = values[11].lower()
 
-    condition_map: dict[tuple[str, str], bool] = {}
-    for rule, condition, met in _COND_ROW_RE.findall(report_html):
-        condition_map[(extract_td_value(rule), extract_td_value(condition))] = (
-            met.strip().lower() == "true"
-        )
+    condition_map = _parse_condition_map(report_html)
 
     return ParsedReport(
         pair=pair,
@@ -194,5 +349,60 @@ def load_parsed_report(report_meta: ReportMeta) -> ParsedReport | None:
         return None
     try:
         return parse_report_html(report_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def load_scanner_reports_index() -> list[ScannerReportMeta]:
+    if not REPORTS_INDEX_PATH.exists():
+        return []
+    raw_entries = json.loads(REPORTS_INDEX_PATH.read_text(encoding="utf-8"))
+    reports: list[ScannerReportMeta] = []
+    for entry in raw_entries:
+        if entry.get("source_name") != "hyperliquid_market_scanner":
+            continue
+        title = entry.get("title", "")
+        lookback: int | None = None
+        title_match = _SCANNER_TITLE_RE.search(title)
+        if title_match:
+            lookback = int(title_match.group(1))
+        reports.append(
+            ScannerReportMeta(
+                report_id=entry["id"],
+                filename=entry["filename"],
+                created_at=parse_dt(entry["created_at"]),
+                lookback_hours=lookback,
+            )
+        )
+    reports.sort(key=lambda item: item.created_at)
+    return reports
+
+
+def nearest_scanner_report(
+    scanner_reports: list[ScannerReportMeta],
+    tick_time: dt.datetime,
+    max_window_minutes: int,
+) -> ScannerReportMeta | None:
+    if not scanner_reports:
+        return None
+    max_delta = dt.timedelta(minutes=max_window_minutes)
+    nearest: tuple[dt.timedelta, ScannerReportMeta] | None = None
+    for candidate in scanner_reports:
+        delta = abs(candidate.created_at - tick_time)
+        if delta > max_delta:
+            continue
+        if nearest is None or delta < nearest[0]:
+            nearest = (delta, candidate)
+    return nearest[1] if nearest else None
+
+
+def load_parsed_scanner_report(
+    report_meta: ScannerReportMeta,
+) -> ParsedScannerReport | None:
+    report_path = REPORTS_DIR / report_meta.filename
+    if not report_path.exists():
+        return None
+    try:
+        return parse_scanner_report_html(report_path.read_text(encoding="utf-8"))
     except Exception:
         return None

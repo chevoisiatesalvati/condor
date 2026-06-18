@@ -103,10 +103,12 @@ def _resolve_4h_filter(
     reports_by_pair: dict[str, list[ReportMeta]],
     tick_time: dt.datetime,
     time_window_min: int,
+    config: ReplayConfigBase,
 ) -> tuple[bool | None, str | None]:
-    journal_filter = meta.filter_4h.get(pair)
-    if journal_filter is not None:
-        return journal_filter.passed, journal_filter.trend
+    if config.data_source != "reports_only":
+        journal_filter = meta.filter_4h.get(pair)
+        if journal_filter is not None:
+            return journal_filter.passed, journal_filter.trend
 
     report_meta = nearest_report(
         reports_by_pair,
@@ -160,7 +162,11 @@ def resolve_snapshot(
     use_journal = (
         config.data_source in ("journal_first", "journal_recompute")
         and journal_signal is not None
-    ) or (config.data_source == "html_only" and journal_signal is None)
+    )
+    if config.data_source == "html_only":
+        use_journal = False
+    if config.data_source == "reports_only":
+        use_journal = False
 
     parsed = None
     source = "none"
@@ -275,6 +281,7 @@ def resolve_snapshot(
         reports_by_pair,
         meta.timestamp,
         config.time_window_min,
+        config,
     )
 
     return SignalSnapshot(
@@ -319,6 +326,10 @@ def build_tick_snapshots(
                 pairs.append(pair)
     if meta.signals_1h:
         for pair in meta.signals_1h:
+            if pair not in pairs:
+                pairs.append(pair)
+    if meta.create_plans:
+        for pair in meta.create_plans:
             if pair not in pairs:
                 pairs.append(pair)
     monitor_pairs: set[str] = set(extra_pairs or [])

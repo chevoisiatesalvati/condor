@@ -16,12 +16,11 @@ from routines.macdbb_replay.hl_prices import (
     hl_prefetch_settings_from_config,
     prefetch_replay_hl_prices,
 )
-from routines.macdbb_replay.journal import parse_journal_ticks
 from routines.macdbb_replay.models import (
     DynamicStrategyReplayConfig,
-    parse_session_selector,
     write_csv,
 )
+from routines.macdbb_replay.replay_loader import load_replay_sessions
 from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
 from routines.macdbb_replay import presets
 from routines.macdbb_replay.presets import (
@@ -190,22 +189,24 @@ async def run(
     config: Config, context: ContextTypes.DEFAULT_TYPE
 ) -> str | RoutineResult:
     config = resolve_config_with_preset(config)
-    replay_policy = DynamicReplayPolicy(config)
     strategy_dir = TRADING_AGENTS_DIR / config.strategy_slug
     sessions_dir = strategy_dir / "sessions"
-    if not sessions_dir.is_dir():
+
+    if config.replay_mode == "timeline_backtest":
+        if not config.range_start_utc or not config.range_end_utc:
+            return (
+                "timeline_backtest requires range_start_utc and range_end_utc "
+                "(ISO UTC datetimes)."
+            )
+    elif not sessions_dir.is_dir():
         return f"Sessions directory not found: {sessions_dir}"
 
-    try:
-        selected_sessions = parse_session_selector(config.session_nums, sessions_dir)
-    except ValueError as error:
-        return f"Invalid session_nums: {error}"
-
+    parsed_sessions, session_configs, selected_sessions = load_replay_sessions(config)
     if not selected_sessions:
         return "No sessions matched the requested selector."
 
     reports = load_reports_index()
-    if not reports:
+    if not reports and config.data_source == "reports_only":
         return "No macd_bb_analysis reports found in reports index."
     reports_by_pair = build_reports_by_pair(reports)
 
@@ -228,21 +229,6 @@ async def run(
     if config.compare_journal_flags:
         per_pair_columns.extend(compare_columns)
 
-    parsed_sessions: dict[int, dict[int, Any]] = {}
-    for session_num in selected_sessions:
-        journal_path = sessions_dir / f"session_{session_num}" / "journal.md"
-        if not journal_path.is_file():
-            logger.info("Skipping session %s (journal missing)", session_num)
-            continue
-        tick_meta_map = parse_journal_ticks(
-            journal_path.read_text(encoding="utf-8"),
-            session_dir=sessions_dir / f"session_{session_num}",
-        )
-        if not tick_meta_map:
-            logger.info("Skipping session %s (no parsed ticks)", session_num)
-            continue
-        parsed_sessions[session_num] = tick_meta_map
-
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]] = {}
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
@@ -260,12 +246,14 @@ async def run(
 
     for session_num, tick_meta_map in parsed_sessions.items():
         hl_price_cache = hl_caches_by_session.get(session_num)
+        session_config = session_configs.get(session_num, config)
+        replay_policy = DynamicReplayPolicy(session_config)
 
         per_pair_rows, per_tick_rows, trades, summary = simulate_strategy_session(
             session_num=session_num,
             tick_meta_map=tick_meta_map,
             reports_by_pair=reports_by_pair,
-            config=config,
+            config=session_config,
             hl_price_cache=hl_price_cache,
             hl_candle_cache=hl_candle_cache,
             hl_barrier_candle_cache=hl_barrier_candle_cache,
@@ -313,7 +301,7 @@ async def run(
             }
         )
 
-        if config.write_csv:
+        if config.write_csv and config.replay_mode != "timeline_backtest":
             output_dir = sessions_dir / f"session_{session_num}"
             write_csv(
                 output_dir / "strategy_replay_dynamic_per_pair.csv",

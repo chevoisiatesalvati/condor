@@ -10,6 +10,7 @@ from condor.trading_agent.policies.macdbb_dynamic import (
     SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,
     STATIC_TIER_VOL_PCT,
     EntryPolicyResult,
+    _canonical_trading_pair,
     bb_width_pct,
     compute_conviction_multiplier,
     compute_dynamic_barriers,
@@ -78,6 +79,12 @@ class DynamicReplayPolicy:
                 config=self.config,
             )
 
+        pair_vol_override: float | None = None
+        if meta.natr_by_pair:
+            pair_vol_override = meta.natr_by_pair.get(_canonical_trading_pair(pair))
+            if pair_vol_override is None:
+                pair_vol_override = meta.natr_by_pair.get(pair)
+
         return resolve_entry_policy(
             pair=pair,
             side=side,
@@ -90,9 +97,16 @@ class DynamicReplayPolicy:
             hl_candle_cache=hl_candle_cache,
             hl_vol_candle_cache=hl_vol_candle_cache,
             entry_time=entry_time,
+            pair_vol_override=pair_vol_override,
         )
 
     def skip_journal_barriers(self) -> bool:
+        if self.config.replay_mode == "session_parity":
+            return False
+        if self.config.data_source == "reports_only":
+            return True
+        if not self.config.use_journal_barriers:
+            return True
         return (
             self.config.enable_dynamic_barriers
             and self.config.ignore_journal_barriers_when_dynamic
