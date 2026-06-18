@@ -402,6 +402,8 @@ def _adaptive_entry_allowed(
 ) -> bool:
     if pair in meta.create_plans:
         return True
+    if activation_ticks == 0:
+        return True
     streak = _effective_adaptive_streak(meta, simulated_streak)
     if open_position_count == 0:
         return streak >= activation_ticks
@@ -554,6 +556,35 @@ def _scanner_allows_entries(meta: TickMeta, config: StrategyReplayConfig) -> boo
     if meta.scanner_analyzed is not None and meta.scanner_analyzed < config.min_tradeable_count:
         return False
     return True
+
+
+def _session_parity_mode(config: StrategyReplayConfig) -> bool:
+    return (
+        isinstance(config, DynamicStrategyReplayConfig)
+        and config.replay_mode == "session_parity"
+    )
+
+
+def _session_parity_journal_allows_entries(
+    meta: TickMeta,
+    config: StrategyReplayConfig,
+) -> bool:
+    if not _session_parity_mode(config):
+        return True
+    if meta.create_plans:
+        return True
+    entry_class = meta.entry_class or "hold"
+    return entry_class != "hold"
+
+
+def _session_parity_pair_allowed(
+    pair: str,
+    meta: TickMeta,
+    config: StrategyReplayConfig,
+) -> bool:
+    if not _session_parity_mode(config) or not meta.create_plans:
+        return True
+    return pair in meta.create_plans
 
 
 def _skipped_summary(reason: str) -> dict[str, Any]:
@@ -856,7 +887,10 @@ def simulate_strategy_session(
                         opens_this_tick.append(reverse_trigger)
 
         # Step 4 entries
-        entries_allowed = _scanner_allows_entries(meta, config)
+        entries_allowed = (
+            _scanner_allows_entries(meta, config)
+            and _session_parity_journal_allows_entries(meta, config)
+        )
         open_before_entry = list(open_positions.keys())
         if closes_this_tick:
             adaptive_slot_fill_budget = 0
@@ -876,19 +910,38 @@ def simulate_strategy_session(
             for pair, snapshot in snapshots.items():
                 if pair in open_positions:
                     continue
+                if not _session_parity_pair_allowed(pair, meta, config):
+                    continue
                 formal_blockers: list[str] = []
                 adaptive_blockers: list[str] = []
                 if tick <= flip_cooldown_until.get(pair, -1):
                     formal_blockers.append("flip_cooldown")
                     adaptive_blockers.append("flip_cooldown")
                 if tick <= sl_cooldown_until.get(pair, -1):
-                    adaptive_blockers.append("sl_cooldown")
+                    if pair not in meta.create_plans:
+                        adaptive_blockers.append("sl_cooldown")
 
                 metrics = snapshot.metrics
                 if not snapshot.price_trusted:
                     formal_blockers.append("no_price_data")
                     adaptive_blockers.append("no_price_data")
+                create_plan = meta.create_plans.get(pair)
                 if config.entry_modes in {"all", "formal"}:
+                    if (
+                        create_plan
+                        and create_plan.entry_class == "formal"
+                        and create_plan.side in {"long", "short"}
+                        and snapshot.price_trusted
+                        and len(open_positions) < config.max_open_executors
+                        and not formal_blockers
+                    ):
+                        plan_side = create_plan.side
+                        if filter_4h_allows(
+                            plan_side,
+                            snapshot.filter_4h_trend,
+                            snapshot.filter_4h_pass,
+                        ):
+                            formal_candidates.append((pair, plan_side, snapshot))
                     if bool(metrics["formal_long"]):
                         if not filter_4h_allows(
                             "long",
@@ -1104,6 +1157,13 @@ def simulate_strategy_session(
             len(open_positions),
             bool(opens_this_tick),
         )
+
+        if (
+            adaptive_slot_fill_budget > 0
+            and len(open_positions) < config.max_open_executors
+            and not any(action.startswith("adaptive_") for action in opens_this_tick)
+        ):
+            adaptive_slot_fill_budget = 0
 
         per_tick_rows.append(
             {

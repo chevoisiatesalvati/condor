@@ -12,14 +12,20 @@ from routines.macdbb_replay.journal import (
     parse_dt,
 )
 from routines.macdbb_replay.metrics import compute_metrics, parsed_report_from_journal
-from routines.macdbb_replay.models import JournalSignal1h, OpenPosition, StrategyReplayConfig
+from routines.macdbb_replay.models import (
+    DynamicStrategyReplayConfig,
+    JournalCreatePlan,
+    JournalSignal1h,
+    OpenPosition,
+    StrategyReplayConfig,
+    TickMeta,
+)
 from routines.macdbb_replay.simulator import (
     _advance_simulated_streak,
     _adaptive_entry_allowed,
     _thesis_decay_reasons,
     _update_thesis_decay_streak,
 )
-from routines.macdbb_replay.models import JournalCreatePlan, TickMeta
 
 
 def _snapshot(signal: str):
@@ -86,6 +92,76 @@ def test_advance_simulated_streak_does_not_increment_with_open_position():
         opened_this_tick=False,
     )
     assert streak == 2
+
+
+def test_session_parity_journal_blocks_hold_without_create_plan():
+    from routines.macdbb_replay.simulator import (
+        _session_parity_journal_allows_entries,
+        _session_parity_pair_allowed,
+    )
+
+    config = DynamicStrategyReplayConfig(replay_mode="session_parity")
+    hold_meta = TickMeta(
+        tick=3,
+        timestamp=dt.datetime(2026, 6, 14, tzinfo=dt.timezone.utc),
+        macd_pairs=[],
+        entry_class="hold",
+    )
+    open_meta = TickMeta(
+        tick=6,
+        timestamp=dt.datetime(2026, 6, 15, tzinfo=dt.timezone.utc),
+        macd_pairs=[],
+        entry_class="regime_adaptive_half_size",
+    )
+    assert not _session_parity_journal_allows_entries(hold_meta, config)
+    assert _session_parity_journal_allows_entries(open_meta, config)
+    plan_meta = TickMeta(
+        tick=8,
+        timestamp=dt.datetime(2026, 6, 18, tzinfo=dt.timezone.utc),
+        macd_pairs=["PURR-USD"],
+        entry_class="formal",
+        create_plans={
+            "PURR-USD": JournalCreatePlan(
+                pair="PURR-USD", side="short", entry_class="formal"
+            )
+        },
+    )
+    assert _session_parity_journal_allows_entries(plan_meta, config)
+    assert _session_parity_pair_allowed("PURR-USD", plan_meta, config)
+    assert not _session_parity_pair_allowed("ONDO-USD", plan_meta, config)
+
+
+def test_slot_fill_budget_expires_when_slot_left_unfilled():
+    """After a single adaptive open, the next hold tick must not chain-fill."""
+    meta = TickMeta(
+        tick=3,
+        timestamp=dt.datetime(2026, 6, 14, tzinfo=dt.timezone.utc),
+        macd_pairs=[],
+    )
+    assert not _adaptive_entry_allowed(
+        pair="NEAR-USD",
+        meta=meta,
+        simulated_streak=0,
+        open_position_count=1,
+        adaptive_slot_fill_budget=0,
+        activation_ticks=1,
+    )
+
+
+def test_adaptive_entry_allowed_when_activation_ticks_zero():
+    meta = TickMeta(
+        tick=2,
+        timestamp=dt.datetime(2026, 6, 17, tzinfo=dt.timezone.utc),
+        macd_pairs=[],
+    )
+    assert _adaptive_entry_allowed(
+        pair="LIT-USD",
+        meta=meta,
+        simulated_streak=0,
+        open_position_count=1,
+        adaptive_slot_fill_budget=0,
+        activation_ticks=0,
+    )
 
 
 def test_adaptive_entry_blocked_with_open_leg_and_zero_streak():
