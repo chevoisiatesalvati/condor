@@ -118,7 +118,12 @@ async def fetch_all_candles(
 # Step 3: Analyze each pair
 # ---------------------------------------------------------------------------
 
-def analyze_pair(candles: list[dict], pair_info: dict) -> dict[str, Any] | None:
+def analyze_pair(
+    candles: list[dict],
+    pair_info: dict,
+    *,
+    bucket_size: int = 15,
+) -> dict[str, Any] | None:
     """Analyze volume patterns and volatility for a single pair's candles."""
     if len(candles) < 30:
         return None
@@ -141,8 +146,8 @@ def analyze_pair(candles: list[dict], pair_info: dict) -> dict[str, Any] | None:
     vol_std = np.std(quote_volumes)
     volume_cv = vol_std / vol_mean if vol_mean > 0 else 0
 
-    # Volume consistency: split into 15-min buckets (15 candles each for 1m)
-    bucket_size = 15
+    # Volume consistency: split into 15-min buckets (15 x 1m or 3 x 5m candles).
+    bucket_size = max(1, bucket_size)
     n_buckets = len(quote_volumes) // bucket_size
     if n_buckets >= 2:
         bucket_sums = [

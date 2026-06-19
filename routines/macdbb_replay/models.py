@@ -208,6 +208,7 @@ class ReplayConfigBase(BaseModel):
         "hl_mega_sweep_best",
         "hl_dynamic_mega_sweep_best",
         "hl_dynamic_session_parity",
+        "hl_dynamic_timeline_mega_best",
     ] = (
         Field(
             default="hl_mega_sweep_best",
@@ -422,6 +423,7 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
         "hl_mega_sweep_best",
         "hl_dynamic_mega_sweep_best",
         "hl_dynamic_session_parity",
+        "hl_dynamic_timeline_mega_best",
     ] = Field(
         default="hl_dynamic_mega_sweep_best",
         description=(
