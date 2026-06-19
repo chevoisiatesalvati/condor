@@ -28,6 +28,10 @@ from routines.macdbb_replay.presets import (
     capital_normalized_pnl,
     resolve_config_with_preset,
 )
+from routines.macdbb_replay.replay_data import (
+    configure_replay_data_sources,
+    is_report_driven_data_source,
+)
 from routines.macdbb_replay.reports import build_reports_by_pair, load_reports_index
 from routines.macdbb_replay.simulator import simulate_strategy_session
 
@@ -189,6 +193,7 @@ async def run(
     config: Config, context: ContextTypes.DEFAULT_TYPE
 ) -> str | RoutineResult:
     config = resolve_config_with_preset(config)
+    configure_replay_data_sources(config)
     strategy_dir = TRADING_AGENTS_DIR / config.strategy_slug
     sessions_dir = strategy_dir / "sessions"
 
@@ -211,8 +216,8 @@ async def run(
         return "No sessions matched the requested selector."
 
     reports = load_reports_index()
-    if not reports and config.data_source == "reports_only":
-        return "No macd_bb_analysis reports found in reports index."
+    if not reports and is_report_driven_data_source(config.data_source):
+        return "No macd_bb_analysis reports or snapshots found for replay."
     reports_by_pair = build_reports_by_pair(reports)
 
     all_pair_rows: list[dict[str, Any]] = []
@@ -238,7 +243,7 @@ async def run(
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_vol_candle_cache: dict[str, list[dict[str, float]]] = {}
-    if config.price_source in ("auto", "hl_candles") and parsed_sessions:
+    if config.price_source in ("auto", "hl_candles", "binance_candles") and parsed_sessions:
         (
             hl_caches_by_session,
             hl_candle_cache,

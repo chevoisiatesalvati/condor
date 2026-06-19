@@ -28,6 +28,7 @@ from routines.macdbb_replay.models import (
     StrategyReplayConfig,
     TickMeta,
 )
+from routines.macdbb_replay.replay_data import is_report_driven_data_source
 
 __all__ = [
     "NATR_LOOKBACK_PERIODS",
@@ -103,7 +104,7 @@ class DynamicReplayPolicy:
     def skip_journal_barriers(self) -> bool:
         if self.config.replay_mode == "session_parity":
             return False
-        if self.config.data_source == "reports_only":
+        if is_report_driven_data_source(self.config.data_source):
             return True
         if not self.config.use_journal_barriers:
             return True

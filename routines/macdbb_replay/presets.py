@@ -189,12 +189,18 @@ _DRIVER_SESSION: dict[str, PresetValue] = {
 
 _DRIVER_TIMELINE: dict[str, PresetValue] = {
     "replay_mode": "timeline_backtest",
-    "data_source": "reports_only",
+    "data_source": "snapshots",
     "config_source": "preset",
     "frequency_sec": 1800,
     "time_window_min": 15,
     "use_journal_barriers": False,
     "write_csv": False,
+    "candle_source": "binance_perpetual",
+    "price_source": "binance_candles",
+    "hl_use_cache": True,
+    "hl_refresh_cache": False,
+    "hl_cache_dir": "data/binance_candles",
+    "snapshot_dir": "data/replay_snapshots",
 }
 
 _STRATEGY_SESSION_MEGA_BEST: dict[str, PresetValue] = {

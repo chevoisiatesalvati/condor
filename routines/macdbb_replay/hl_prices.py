@@ -55,11 +55,17 @@ class HlPrefetchSettings:
     use_cache: bool = True
     refresh_cache: bool = False
     cache_dir: Path | None = None
+    candle_source: str = "hyperliquid"
+
+
+def _is_binance_source(source: str) -> bool:
+    return source == "binance_perpetual"
 
 
 def hl_prefetch_settings_from_config(config: object) -> HlPrefetchSettings:
     cache_dir_raw = getattr(config, "hl_cache_dir", None)
     cache_dir = Path(cache_dir_raw) if cache_dir_raw else None
+    candle_source = getattr(config, "candle_source", "hyperliquid")
     return HlPrefetchSettings(
         interval=getattr(config, "hl_price_interval", "5m"),
         barrier_interval=getattr(config, "hl_barrier_interval", "1m"),
@@ -72,6 +78,7 @@ def hl_prefetch_settings_from_config(config: object) -> HlPrefetchSettings:
         use_cache=getattr(config, "hl_use_cache", True),
         refresh_cache=getattr(config, "hl_refresh_cache", False),
         cache_dir=cache_dir,
+        candle_source=candle_source,
     )
 
 
@@ -82,11 +89,24 @@ def _load_hl_candles():
     return importlib.reload(hl_candles_mod)
 
 
-def _load_hl_candle_cache():
-    """Reload hl_candle_cache so dev hot-reload picks up new exports."""
-    import routines.lib.hl_candle_cache as hl_candle_cache_mod
+def _load_binance_candle_cache():
+    import routines.lib.binance_candle_cache as binance_candle_cache_mod
 
-    return importlib.reload(hl_candle_cache_mod)
+    return importlib.reload(binance_candle_cache_mod)
+
+
+def _load_binance_candles():
+    import routines.lib.binance_candles as binance_candles_mod
+
+    return importlib.reload(binance_candles_mod)
+
+
+def _cache_pair_for_source(pair: str, source: str) -> str:
+    if _is_binance_source(source):
+        from routines.lib.pair_format import binance_pair_from_any
+
+        return binance_pair_from_any(pair)
+    return _canonical_trading_pair(pair)
 
 
 def _max_nearest_delta_ms(interval: str, interval_ms: int | None) -> int:
@@ -149,7 +169,16 @@ def _vol_series_usable(
     return _vol_bars_in_lookback(candles, tick_times, lookback_hours) >= SCANNER_NATR_MIN_BARS
 
 
-def _within_1m_api_window(tick_times: list[dt.datetime]) -> bool:
+def _load_hl_candle_cache():
+    """Reload hl_candle_cache so dev hot-reload picks up new exports."""
+    import routines.lib.hl_candle_cache as hl_candle_cache_mod
+
+    return importlib.reload(hl_candle_cache_mod)
+
+
+def _within_1m_api_window(tick_times: list[dt.datetime], *, candle_source: str) -> bool:
+    if _is_binance_source(candle_source):
+        return True
     if not tick_times:
         return False
     latest = max(_ensure_utc(tick_time) for tick_time in tick_times)
@@ -260,6 +289,17 @@ def _configure_hl_throttle(settings: HlPrefetchSettings) -> None:
     hl_candles.reset_hl_rate_limit_state()
 
 
+def _configure_candle_throttle(settings: HlPrefetchSettings) -> None:
+    if _is_binance_source(settings.candle_source):
+        binance_candles = _load_binance_candles()
+        binance_candles.configure_binance_rate_limit(
+            request_interval_ms=settings.request_interval_ms,
+            max_retries=settings.max_retries,
+        )
+        return
+    _configure_hl_throttle(settings)
+
+
 async def prefetch_replay_hl_prices(
     session_tick_maps: dict[int, dict[int, TickMeta]],
     *,
@@ -270,14 +310,24 @@ async def prefetch_replay_hl_prices(
         return {}, {}, {}, {}
 
     opts = settings or HlPrefetchSettings()
-    _configure_hl_throttle(opts)
+    _configure_candle_throttle(opts)
 
-    hl_candles = _load_hl_candles()
-    fetch_hl_candles_between_cached = _load_hl_candle_cache().fetch_hl_candles_between_cached
-    hl_close_nearest = hl_candles.hl_close_nearest
-    trading_pair_to_hl_coin = hl_candles.trading_pair_to_hl_coin
-    interval_ms = hl_candles._INTERVAL_MS.get(opts.interval)
-    barrier_interval_ms = hl_candles._INTERVAL_MS.get(opts.barrier_interval)
+    use_binance = _is_binance_source(opts.candle_source)
+    if use_binance:
+        candle_mod = _load_binance_candles()
+        candle_cache_mod = _load_binance_candle_cache()
+        fetch_between_cached = candle_cache_mod.fetch_binance_candles_between_cached
+        close_nearest = candle_mod.close_nearest
+        pair_label = lambda pair: candle_mod.trading_pair_to_symbol(_cache_pair_for_source(pair, opts.candle_source))
+    else:
+        candle_mod = _load_hl_candles()
+        candle_cache_mod = _load_hl_candle_cache()
+        fetch_between_cached = candle_cache_mod.fetch_hl_candles_between_cached
+        close_nearest = candle_mod.hl_close_nearest
+        pair_label = lambda pair: candle_mod.trading_pair_to_hl_coin(pair)
+
+    interval_ms = candle_mod._INTERVAL_MS.get(opts.interval)
+    barrier_interval_ms = candle_mod._INTERVAL_MS.get(opts.barrier_interval)
     max_delta_ms = _max_nearest_delta_ms(opts.interval, interval_ms)
 
     pair_requests = _aggregate_pair_requests(session_tick_maps)
@@ -295,7 +345,6 @@ async def prefetch_replay_hl_prices(
     load_barrier_series = opts.barrier_interval != opts.interval
 
     async with aiohttp.ClientSession() as session:
-        hl_candle_cache = _load_hl_candle_cache()
 
         async def _fetch_series(
             pair: str,
@@ -311,10 +360,11 @@ async def prefetch_replay_hl_prices(
             back_hours = history_hours if history_hours is not None else opts.buffer_hours
             start = min(tick_times) - dt.timedelta(hours=back_hours)
             end = max(tick_times) + dt.timedelta(hours=opts.buffer_hours)
+            cache_pair = _cache_pair_for_source(pair, opts.candle_source)
             async with semaphore:
                 try:
-                    return await fetch_hl_candles_between_cached(
-                        pair,
+                    return await fetch_between_cached(
+                        cache_pair,
                         interval,
                         start,
                         end,
@@ -327,16 +377,17 @@ async def prefetch_replay_hl_prices(
                         ignore_api_skip=ignore_api_skip,
                     )
                 except Exception as error:
-                    hl_candle_cache.mark_api_fetch_failed(
-                        pair,
+                    candle_cache_mod.mark_api_fetch_failed(
+                        cache_pair,
                         interval,
                         cache_dir=opts.cache_dir,
                     )
                     logger.warning(
-                        "HL price prefetch failed for %s %s (%s): %s",
+                        "%s price prefetch failed for %s %s (%s): %s",
+                        "Binance" if use_binance else "HL",
                         pair,
                         interval,
-                        trading_pair_to_hl_coin(pair),
+                        pair_label(pair),
                         error,
                     )
                     return []
@@ -349,8 +400,9 @@ async def prefetch_replay_hl_prices(
         ) -> list[dict[str, float]]:
             if not opts.use_cache or opts.refresh_cache:
                 return []
-            cached = hl_candle_cache.load_candles(
-                pair,
+            cache_pair = _cache_pair_for_source(pair, opts.candle_source)
+            cached = candle_cache_mod.load_candles(
+                cache_pair,
                 interval,
                 cache_dir=opts.cache_dir,
             )
@@ -368,10 +420,11 @@ async def prefetch_replay_hl_prices(
             vol_history_hours: int,
             price_coverage_end_ms: int,
         ) -> tuple[list[dict[str, float]], str]:
+            cache_pair = _cache_pair_for_source(pair, opts.candle_source)
             skip_1m_api = (
-                not _within_1m_api_window(tick_times)
-                or hl_candle_cache.is_api_fetch_skipped(
-                    pair,
+                not _within_1m_api_window(tick_times, candle_source=opts.candle_source)
+                or candle_cache_mod.is_api_fetch_skipped(
+                    cache_pair,
                     opts.barrier_interval,
                     cache_dir=opts.cache_dir,
                 )
@@ -398,8 +451,8 @@ async def prefetch_replay_hl_prices(
                 if _vol_series_usable(fetched_1m, tick_times, vol_history_hours):
                     return fetched_1m, opts.barrier_interval
 
-            skip_5m_api = hl_candle_cache.is_api_fetch_skipped(
-                pair,
+            skip_5m_api = candle_cache_mod.is_api_fetch_skipped(
+                _cache_pair_for_source(pair, opts.candle_source),
                 opts.interval,
                 cache_dir=opts.cache_dir,
             )
@@ -477,9 +530,9 @@ async def prefetch_replay_hl_prices(
                 return
 
             skip_1m_api = (
-                not _within_1m_api_window(tick_times)
-                or hl_candle_cache.is_api_fetch_skipped(
-                    pair,
+                not _within_1m_api_window(tick_times, candle_source=opts.candle_source)
+                or candle_cache_mod.is_api_fetch_skipped(
+                    _cache_pair_for_source(pair, opts.candle_source),
                     opts.barrier_interval,
                     cache_dir=opts.cache_dir,
                 )
@@ -509,7 +562,7 @@ async def prefetch_replay_hl_prices(
         if not candles:
             continue
         for session_num, tick_num, tick_time, journal_pair in requests:
-            close = hl_close_nearest(
+            close = close_nearest(
                 candles,
                 tick_time,
                 max_delta_ms=max_delta_ms,
@@ -518,9 +571,11 @@ async def prefetch_replay_hl_prices(
                 session_caches[session_num][(journal_pair, tick_num)] = close
 
     total_prices = sum(len(cache) for cache in session_caches.values())
+    source_label = "Binance" if use_binance else "HL"
     logger.info(
-        "HL replay prefetch: %d prices across %d sessions "
+        "%s replay prefetch: %d prices across %d sessions "
         "(%d unique pairs, %d price series, %d barrier series, %d vol series)",
+        source_label,
         total_prices,
         len(session_tick_maps),
         len(pair_requests),

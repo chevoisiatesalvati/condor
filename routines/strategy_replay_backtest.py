@@ -186,7 +186,7 @@ async def run(
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_vol_candle_cache: dict[str, list[dict[str, float]]] = {}
-    if config.price_source in ("auto", "hl_candles") and parsed_sessions:
+    if config.price_source in ("auto", "hl_candles", "binance_candles") and parsed_sessions:
         (
             hl_caches_by_session,
             hl_candle_cache,

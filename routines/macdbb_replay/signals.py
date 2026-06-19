@@ -15,6 +15,7 @@ from routines.macdbb_replay.models import (
     TickMeta,
 )
 from routines.macdbb_replay.hl_prices import HlPriceCache, hl_cache_has_prices
+from routines.macdbb_replay.replay_data import is_report_driven_data_source
 from routines.macdbb_replay.reports import (
     ReportMeta,
     load_parsed_report,
@@ -52,14 +53,20 @@ def _resolve_price(
             price_trusted = True
             price_tag = "report"
 
-    if config.price_source in ("auto", "hl_candles") and (
-        price <= 0 or config.price_source == "hl_candles"
+    candle_price_sources = ("hl_candles", "binance_candles")
+    if config.price_source in ("auto", *candle_price_sources) and (
+        price <= 0 or config.price_source in candle_price_sources
     ):
         hl_price = hl_price_cache.get((pair, meta.tick)) if hl_price_cache else None
         if hl_price and hl_price > 0:
             price = hl_price
             price_trusted = True
-            price_tag = "hl"
+            if config.price_source == "binance_candles" or getattr(
+                config, "candle_source", "hyperliquid"
+            ) == "binance_perpetual":
+                price_tag = "binance"
+            else:
+                price_tag = "hl"
 
     if price > 0:
         last_price_by_pair[pair] = price
@@ -74,12 +81,12 @@ def session_has_trusted_prices(
     hl_price_cache: HlPriceCache | None = None,
 ) -> bool:
     """True when at least one tick/pair has a trusted price from the configured source."""
-    if config.price_source in ("auto", "hl_candles") and hl_cache_has_prices(
+    if config.price_source in ("auto", "hl_candles", "binance_candles") and hl_cache_has_prices(
         tick_meta_map,
         hl_price_cache,
     ):
         return True
-    if config.price_source == "hl_candles":
+    if config.price_source in ("hl_candles", "binance_candles"):
         return False
 
     last_price_by_pair: dict[str, float] = {}
@@ -105,7 +112,7 @@ def _resolve_4h_filter(
     time_window_min: int,
     config: ReplayConfigBase,
 ) -> tuple[bool | None, str | None]:
-    if config.data_source != "reports_only":
+    if not is_report_driven_data_source(config.data_source):
         journal_filter = meta.filter_4h.get(pair)
         if journal_filter is not None:
             return journal_filter.passed, journal_filter.trend
@@ -165,7 +172,7 @@ def resolve_snapshot(
     )
     if config.data_source == "html_only":
         use_journal = False
-    if config.data_source == "reports_only":
+    if is_report_driven_data_source(config.data_source):
         use_journal = False
 
     parsed = None

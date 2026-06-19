@@ -220,6 +220,28 @@ async def _fetch_hl_candle_chunk(
     )
 
 
+async def fetch_hl_candle_window(
+    trading_pair: str,
+    interval: str,
+    start: dt.datetime,
+    end: dt.datetime,
+    *,
+    session: aiohttp.ClientSession,
+) -> list[dict[str, float]]:
+    """Fetch a single candleSnapshot request for [start, end] (no chunking)."""
+    interval_ms = _INTERVAL_MS.get(interval)
+    if not interval_ms:
+        raise ValueError(f"Unsupported HL candle interval: {interval}")
+
+    start_ms = int(start.astimezone(dt.timezone.utc).timestamp() * 1000)
+    end_ms = int(end.astimezone(dt.timezone.utc).timestamp() * 1000)
+    if end_ms <= start_ms:
+        return []
+
+    coin = trading_pair_to_hl_coin(trading_pair)
+    return await _fetch_hl_candle_chunk(session, coin, interval, start_ms, end_ms)
+
+
 async def fetch_hl_candles_between(
     trading_pair: str,
     interval: str,
@@ -276,7 +298,9 @@ async def fetch_hl_candles_between(
 
 __all__ = [
     "HL_INFO_URL",
+    "_INTERVAL_MS",
     "configure_hl_rate_limit",
+    "fetch_hl_candle_window",
     "fetch_hl_candles",
     "fetch_hl_candles_between",
     "hl_close_nearest",

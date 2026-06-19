@@ -7,6 +7,7 @@ from typing import Any
 from routines.macdbb_replay.journal import parse_journal_ticks
 from routines.macdbb_replay.models import DynamicStrategyReplayConfig, parse_session_selector
 from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_replay.replay_data import is_report_driven_data_source
 from routines.macdbb_replay.session_builder import (
     build_session_parity_ticks,
     build_timeline_ticks,
@@ -37,7 +38,7 @@ def load_replay_sessions(
         if not journal_path.is_file():
             continue
 
-        if config.data_source == "reports_only":
+        if is_report_driven_data_source(config.data_source):
             ticks, session_config, _params = build_session_parity_ticks(
                 session_dir,
                 config.strategy_slug,

@@ -289,6 +289,10 @@ def parse_report_html(report_html: str) -> ParsedReport | None:
 
 
 def load_reports_index() -> list[ReportMeta]:
+    from routines.macdbb_replay import snapshot_store
+
+    if snapshot_store.is_snapshot_store_active():
+        return snapshot_store.load_macdbb_index()
     if not REPORTS_INDEX_PATH.exists():
         return []
     raw_entries = json.loads(REPORTS_INDEX_PATH.read_text(encoding="utf-8"))
@@ -344,6 +348,10 @@ def nearest_report(
 
 
 def load_parsed_report(report_meta: ReportMeta) -> ParsedReport | None:
+    if report_meta.filename.startswith("snapshot://"):
+        from routines.macdbb_replay import snapshot_store
+
+        return snapshot_store.load_parsed_macdbb_snapshot(report_meta)
     report_path = REPORTS_DIR / report_meta.filename
     if not report_path.exists():
         return None
@@ -354,6 +362,10 @@ def load_parsed_report(report_meta: ReportMeta) -> ParsedReport | None:
 
 
 def load_scanner_reports_index() -> list[ScannerReportMeta]:
+    from routines.macdbb_replay import snapshot_store
+
+    if snapshot_store.is_snapshot_store_active():
+        return snapshot_store.load_scanner_index()
     if not REPORTS_INDEX_PATH.exists():
         return []
     raw_entries = json.loads(REPORTS_INDEX_PATH.read_text(encoding="utf-8"))
@@ -399,6 +411,10 @@ def nearest_scanner_report(
 def load_parsed_scanner_report(
     report_meta: ScannerReportMeta,
 ) -> ParsedScannerReport | None:
+    if report_meta.filename.startswith("snapshot://"):
+        from routines.macdbb_replay import snapshot_store
+
+        return snapshot_store.load_parsed_scanner_snapshot(report_meta)
     report_path = REPORTS_DIR / report_meta.filename
     if not report_path.exists():
         return None

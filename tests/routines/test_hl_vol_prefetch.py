@@ -64,5 +64,6 @@ def test_within_1m_api_window_respects_max_age() -> None:
     recent = [now - dt.timedelta(days=HL_1M_API_MAX_AGE_DAYS - 1)]
     old = [now - dt.timedelta(days=HL_1M_API_MAX_AGE_DAYS + 1)]
 
-    assert _within_1m_api_window(recent) is True
-    assert _within_1m_api_window(old) is False
+    assert _within_1m_api_window(recent, candle_source="hyperliquid") is True
+    assert _within_1m_api_window(old, candle_source="hyperliquid") is False
+    assert _within_1m_api_window(old, candle_source="binance_perpetual") is True

@@ -1,4 +1,8 @@
-"""Backfill archived scanner + MACD BB HTML reports for historical replay ticks."""
+"""Backfill scanner + MACD BB HTML reports for historical replay ticks.
+
+Deprecated for bulk historical backfill: prefer ``scripts/prefetch_hl_candles.py``
+and ``scripts/build_replay_snapshots.py`` for candle-first replay pipelines.
+"""
 
 from __future__ import annotations
 
@@ -18,11 +22,23 @@ import aiohttp
 import numpy as np
 
 from condor.reports import ReportBuilder
+from routines.lib.hl_candle_cache import fetch_hl_candles_between_cached
+from routines.lib.binance_candle_cache import fetch_binance_candles_between_cached
+from routines.lib.pair_format import binance_pair_from_any
 from routines.lib.hl_candles import (
     HL_INFO_URL,
     configure_hl_rate_limit,
-    fetch_hl_candles_between,
-    trading_pair_to_hl_coin,
+)
+from routines.macdbb_replay.tick_market_state import (
+    HL_1M_MAX_AGE_DAYS,
+    CANDLE_MINUTES,
+    bars_for_hours,
+    classified_to_parsed_scanner,
+    compute_macdbb_from_closes,
+    price_change_window,
+    quote_volume_24h,
+    quote_volume_window,
+    scanner_interval_for_tick,
 )
 from routines.macdbb_replay.paths import TRADING_AGENTS_DIR, REPORTS_DIR, REPORTS_INDEX_PATH
 from routines.macdbb_replay.models import DynamicStrategyReplayConfig
@@ -38,10 +54,6 @@ from routines.macdbb_replay.tick_schedule import parse_tick_schedule_file
 from routines.market_scanner import analyze_pair, classify_markets, format_volume
 
 logger = logging.getLogger(__name__)
-
-# HL 1m candleSnapshot retention is short; use 5m for older backfill ticks.
-HL_1M_MAX_AGE_DAYS = 4
-CANDLE_MINUTES = {"1m": 1, "5m": 5}
 
 _INDEX_FILE = REPORTS_DIR / "reports_index.json"
 _HTML_TEMPLATE = None  # loaded lazily from condor.reports
@@ -147,191 +159,112 @@ class BackfillSettings:
     request_interval_ms: int = 600
     max_retries: int = 8
     exclude_hip3: bool = True
+    cache_dir: Path | None = None
+    candle_source: str = "hyperliquid"
 
 
 @dataclass
 class CandleCache:
     _store: dict[tuple[str, str, int], list[dict[str, float]]]
+    _session: aiohttp.ClientSession | None
+    cache_dir: Path | None
+    candle_source: str
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        session: aiohttp.ClientSession | None = None,
+        cache_dir: Path | None = None,
+        candle_source: str = "hyperliquid",
+    ) -> None:
         self._store = {}
+        self._session = session
+        self.cache_dir = cache_dir
+        self.candle_source = candle_source
+
+    def _cache_pair(self, trading_pair: str) -> str:
+        if self.candle_source == "binance_perpetual":
+            return binance_pair_from_any(trading_pair)
+        return trading_pair
+
+    async def _fetch_between_cached(
+        self,
+        trading_pair: str,
+        interval: str,
+        start: dt.datetime,
+        end: dt.datetime,
+    ) -> list[dict[str, float]]:
+        cache_pair = self._cache_pair(trading_pair)
+        if self.candle_source == "binance_perpetual":
+            return await fetch_binance_candles_between_cached(
+                cache_pair,
+                interval,
+                start,
+                end,
+                session=self._session,
+                cache_dir=self.cache_dir,
+                use_cache=True,
+                refresh_cache=False,
+                fill_gaps=True,
+            )
+        return await fetch_hl_candles_between_cached(
+            cache_pair,
+            interval,
+            start,
+            end,
+            session=self._session,
+            cache_dir=self.cache_dir,
+            use_cache=True,
+            refresh_cache=False,
+            fill_gaps=True,
+        )
 
     def _hour_key(self, end: dt.datetime) -> int:
         end_utc = end.astimezone(dt.timezone.utc)
         return int(end_utc.timestamp() // 3600)
 
-    async def get_1m_window(
-        self,
-        session: aiohttp.ClientSession,
-        trading_pair: str,
-        end: dt.datetime,
-        hours: int,
-    ) -> list[dict[str, float]]:
-        key = (trading_pair, "1m", self._hour_key(end))
-        cached = self._store.get(key)
-        if cached is not None:
-            return cached
-        start = end - dt.timedelta(hours=hours)
-        candles = await fetch_hl_candles_between(
-            trading_pair,
-            "1m",
-            start,
-            end,
-            session=session,
-        )
-        self._store[key] = candles
-        return candles
-
     async def get_interval_window(
         self,
-        session: aiohttp.ClientSession,
         trading_pair: str,
         interval: str,
         end: dt.datetime,
         hours: int,
     ) -> list[dict[str, float]]:
+        if self._session is None:
+            raise RuntimeError("CandleCache requires an aiohttp session")
         key = (trading_pair, interval, self._hour_key(end))
         cached = self._store.get(key)
         if cached is not None:
             return cached
         start = end - dt.timedelta(hours=hours)
-        candles = await fetch_hl_candles_between(
+        candles = await self._fetch_between_cached(
             trading_pair,
             interval,
             start,
             end,
-            session=session,
         )
         self._store[key] = candles
         return candles
 
 
-def _ema(values: np.ndarray, period: int) -> np.ndarray:
-    alpha = 2.0 / (period + 1)
-    result = np.empty_like(values)
-    result[0] = values[0]
-    for index in range(1, len(values)):
-        result[index] = alpha * values[index] + (1 - alpha) * result[index - 1]
-    return result
-
-
-def compute_macdbb_from_closes(
-    closes: np.ndarray,
+async def fetch_binance_universe(
+    session: aiohttp.ClientSession,
     *,
-    macd_fast: int = 12,
-    macd_slow: int = 26,
-    macd_signal_period: int = 9,
-    bb_period: int = 20,
-    bb_std: float = 2.0,
-) -> dict[str, Any] | None:
-    min_required = macd_slow + macd_signal_period + bb_period
-    if len(closes) < min_required:
-        return None
+    top_n: int = 100,
+    min_volume_usd: float = 2_000_000.0,
+) -> list[dict[str, Any]]:
+    from routines.market_scanner import fetch_top_pairs
 
-    ema_fast = _ema(closes, macd_fast)
-    ema_slow = _ema(closes, macd_slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = _ema(macd_line, macd_signal_period)
-    histogram = macd_line - signal_line
-
-    n = len(closes)
-    bb_mid = np.array([np.mean(closes[max(0, i - bb_period + 1) : i + 1]) for i in range(n)])
-    bb_std_arr = np.array([np.std(closes[max(0, i - bb_period + 1) : i + 1]) for i in range(n)])
-    bb_upper = bb_mid + bb_std * bb_std_arr
-    bb_lower = bb_mid - bb_std * bb_std_arr
-
-    close = float(closes[-1])
-    macd_curr, macd_prev = float(macd_line[-1]), float(macd_line[-2])
-    sig_curr, sig_prev = float(signal_line[-1]), float(signal_line[-2])
-    hist_curr, hist_prev = float(histogram[-1]), float(histogram[-2])
-    bb_up, bb_mid_val, bb_lo = float(bb_upper[-1]), float(bb_mid[-1]), float(bb_lower[-1])
-
-    bb_range = bb_up - bb_lo
-    bb_pos = (close - bb_lo) / bb_range if bb_range > 0 else 0.5
-
-    bullish_cross = macd_prev < sig_prev and macd_curr >= sig_curr
-    bearish_cross = macd_prev > sig_prev and macd_curr <= sig_curr
-    c_long_cross = bullish_cross
-    c_long_bb = close <= bb_mid_val
-    c_short_cross = bearish_cross
-    c_short_bb = close >= bb_up
-    c_short_macd_neg = macd_curr < 0
-    long_signal = c_long_cross and c_long_bb
-    short_signal = c_short_cross and c_short_bb and c_short_macd_neg
-    if long_signal:
-        signal = "LONG"
-    elif short_signal:
-        signal = "SHORT"
-    else:
-        signal = "NEUTRAL"
-
-    trend = "bullish" if macd_curr > 0 else "bearish"
-    momentum = "increasing" if abs(hist_curr) > abs(hist_prev) else "decreasing"
-
-    return {
-        "signal": signal,
-        "close": close,
-        "bb_up": bb_up,
-        "bb_mid_val": bb_mid_val,
-        "bb_lo": bb_lo,
-        "bb_pos": bb_pos,
-        "macd_curr": macd_curr,
-        "sig_curr": sig_curr,
-        "hist_curr": hist_curr,
-        "trend": trend,
-        "momentum": momentum,
-        "c_long_cross": c_long_cross,
-        "c_long_bb": c_long_bb,
-        "c_short_cross": c_short_cross,
-        "c_short_bb": c_short_bb,
-        "c_short_macd_neg": c_short_macd_neg,
-    }
-
-
-def _scanner_interval_for_tick(tick_time: dt.datetime) -> str:
-    age_days = (dt.datetime.now(dt.timezone.utc) - tick_time.astimezone(dt.timezone.utc)).days
-    return "1m" if age_days <= HL_1M_MAX_AGE_DAYS else "5m"
-
-
-def _bars_for_hours(hours: int, interval: str) -> int:
-    minutes = CANDLE_MINUTES[interval]
-    return max(1, (hours * 60) // minutes)
-
-
-def _volume_window_bars(interval: str) -> int:
-    return _bars_for_hours(24, interval)
-
-
-def _quote_volume_window(candles: list[dict[str, float]], interval: str) -> float:
-    window = candles[-_volume_window_bars(interval) :]
-    return _quote_volume_24h(window)
-
-
-def _price_change_window(candles: list[dict[str, float]], interval: str) -> float:
-    window = candles[-_volume_window_bars(interval) :]
-    return _price_change_pct(window)
-
-
-def _quote_volume_24h(candles: list[dict[str, float]]) -> float:
-    if not candles:
-        return 0.0
-    total = 0.0
-    for candle in candles:
-        try:
-            total += float(candle["close"]) * float(candle["volume"])
-        except (KeyError, TypeError, ValueError):
-            continue
-    return total
-
-
-def _price_change_pct(candles: list[dict[str, float]]) -> float:
-    if len(candles) < 2:
-        return 0.0
-    first = float(candles[0]["close"])
-    last = float(candles[-1]["close"])
-    if first <= 0:
-        return 0.0
-    return ((last - first) / first) * 100.0
+    _ = session
+    rows = await fetch_top_pairs(top_n, min_volume_usd)
+    return [
+        {
+            "trading_pair": row["trading_pair"],
+            "volume_24h_usd": float(row["volume_24h_usd"]),
+            "price": float(row["price"]),
+        }
+        for row in rows
+    ]
 
 
 async def fetch_hl_universe(
@@ -419,18 +352,9 @@ def _has_scanner_report_at(
 
 
 def _analysis_rows_to_scanner_rows(items: list[dict[str, Any]]) -> list[ScannerPairRow]:
-    return [
-        ScannerPairRow(
-            pair=item["trading_pair"],
-            volume_24h_usd=float(item["volume_24h_usd"]),
-            price_change_24h=float(item["price_change_24h"]),
-            natr_mean=float(item["natr_mean"]),
-            natr_cv=float(item["natr_cv"]),
-            bucket_cv=float(item["bucket_cv"]),
-            price_range_pct=float(item["price_range_pct"]),
-        )
-        for item in items
-    ]
+    from routines.macdbb_replay.tick_market_state import analysis_rows_to_scanner_rows
+
+    return analysis_rows_to_scanner_rows(items)
 
 
 def _classified_to_parsed_scanner(
@@ -438,12 +362,7 @@ def _classified_to_parsed_scanner(
     *,
     lookback_hours: int,
 ) -> ParsedScannerReport:
-    return ParsedScannerReport(
-        total_analyzed=int(classified["total_analyzed"]),
-        mature=_analysis_rows_to_scanner_rows(classified["mature"]),
-        degen=_analysis_rows_to_scanner_rows(classified["degen"]),
-        lookback_hours=lookback_hours,
-    )
+    return classified_to_parsed_scanner(classified, lookback_hours=lookback_hours)
 
 
 def _save_scanner_report(
@@ -578,10 +497,10 @@ async def backfill_tick(
     if _has_scanner_report_at(tick_time, time_window_min=settings.time_window_min):
         return {"scanner": 0, "macd": 0, "skipped": 1}
 
-    scanner_interval = _scanner_interval_for_tick(tick_time)
+    scanner_interval = scanner_interval_for_tick(tick_time)
     candle_minutes = CANDLE_MINUTES[scanner_interval]
     fetch_hours = max(settings.lookback_hours + 24, 30)
-    min_bars = _bars_for_hours(settings.lookback_hours, scanner_interval)
+    min_bars = bars_for_hours(settings.lookback_hours, scanner_interval)
     bucket_size = max(1, 15 // candle_minutes)
 
     ranked: list[tuple[float, dict[str, Any], list[dict[str, float]]]] = []
@@ -589,7 +508,6 @@ async def backfill_tick(
         pair = candidate["trading_pair"]
         try:
             candles = await cache.get_interval_window(
-                session,
                 pair,
                 scanner_interval,
                 tick_time,
@@ -606,7 +524,7 @@ async def backfill_tick(
             continue
         if len(candles) < min_bars:
             continue
-        volume_24h = _quote_volume_window(candles, scanner_interval)
+        volume_24h = quote_volume_window(candles, scanner_interval)
         if volume_24h < settings.min_volume_usd:
             continue
         ranked.append((volume_24h, candidate, candles))
@@ -614,14 +532,14 @@ async def backfill_tick(
     ranked.sort(key=lambda row: row[0], reverse=True)
     top = ranked[: settings.top_n]
     analyses: list[dict[str, Any]] = []
-    lookback_bars = _bars_for_hours(settings.lookback_hours, scanner_interval)
+    lookback_bars = bars_for_hours(settings.lookback_hours, scanner_interval)
     for _volume, candidate, candles in top:
         analysis_candles = candles[-lookback_bars:]
         pair_info = {
             "trading_pair": candidate["trading_pair"],
             "price": float(analysis_candles[-1]["close"]),
-            "price_change_pct": _price_change_window(candles, scanner_interval),
-            "volume_24h_usd": _quote_volume_window(candles, scanner_interval),
+            "price_change_pct": price_change_window(candles, scanner_interval),
+            "volume_24h_usd": quote_volume_window(candles, scanner_interval),
         }
         result = analyze_pair(
             analysis_candles,
@@ -661,7 +579,6 @@ async def backfill_tick(
         for interval, hours in (("1h", 250), ("4h", 400)):
             try:
                 candles = await cache.get_interval_window(
-                    session,
                     pair,
                     interval,
                     tick_time,
@@ -697,9 +614,9 @@ async def run_backfill(
     )
 
     totals = {"scanner": 0, "macd": 0, "skipped": 0, "errors": 0}
-    cache = CandleCache()
 
     async with aiohttp.ClientSession() as session:
+        cache = CandleCache(session=session, cache_dir=settings.cache_dir)
         universe = await fetch_hl_universe(session, exclude_hip3=settings.exclude_hip3)
         logger.info(
             "Backfill: %d tick times, %d universe candidates, interval=%dms",
@@ -733,3 +650,18 @@ async def run_backfill(
                     totals["errors"],
                 )
     return totals
+
+
+# Re-export shared helpers for backward-compatible imports.
+_quote_volume_24h = quote_volume_24h
+
+__all__ = [
+    "BackfillSettings",
+    "CandleCache",
+    "_quote_volume_24h",
+    "collect_session_tick_times",
+    "compute_macdbb_from_closes",
+    "fetch_hl_universe",
+    "fetch_binance_universe",
+    "run_backfill",
+]

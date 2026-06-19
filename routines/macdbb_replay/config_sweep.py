@@ -33,6 +33,10 @@ from routines.macdbb_replay.presets import (
     capital_normalized_pnl,
     resolve_config_with_preset,
 )
+from routines.macdbb_replay.replay_data import (
+    configure_replay_data_sources,
+    is_report_driven_data_source,
+)
 from routines.macdbb_replay.reports import (
     ReportMeta,
     build_reports_by_pair,
@@ -311,7 +315,7 @@ async def _load_sessions(
     sessions_dir = strategy_dir / "sessions"
     selected_sessions = parse_session_selector(config.session_nums, sessions_dir)
 
-    if config.data_source == "reports_only":
+    if is_report_driven_data_source(config.data_source):
         parsed_sessions, _session_configs, selected_sessions = load_replay_sessions(
             config  # type: ignore[arg-type]
         )
@@ -548,6 +552,7 @@ async def run_dynamic_sweep(
     config_builder: Callable[[], list[tuple[str, dict[str, Any]]]] | None = None,
 ) -> tuple[list[SweepResult], str, float]:
     load_config = DynamicStrategyReplayConfig(**_dynamic_sweep_base(dynamic_mode))
+    configure_replay_data_sources(load_config)
     (
         parsed_sessions,
         hl_caches,

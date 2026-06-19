@@ -242,6 +242,7 @@ class ReplayConfigBase(BaseModel):
         "journal_recompute",
         "html_only",
         "reports_only",
+        "snapshots",
     ] = Field(
         default="journal_first",
         description=(
@@ -249,7 +250,8 @@ class ReplayConfigBase(BaseModel):
             "journal_recompute: recompute entries from journal numerics + config "
             "(full formal when mid/up logged; else fL/fS fallback). "
             "html_only: HTML report payloads only. "
-            "reports_only: scanner + MACD reports + replay config (no journal signals)."
+            "reports_only: scanner + MACD reports + replay config (no journal signals). "
+            "snapshots: parquet market snapshots + replay config (no HTML)."
         ),
     )
     replay_mode: Literal["session_parity", "timeline_backtest"] = Field(
@@ -317,11 +319,19 @@ class ReplayConfigBase(BaseModel):
         default=False,
         description="Emit journal fL/fS/aL/aS mismatch columns in per-pair CSV",
     )
-    price_source: Literal["auto", "reports", "hl_candles"] = Field(
+    price_source: Literal["auto", "reports", "hl_candles", "binance_candles"] = Field(
         default="auto",
         description=(
-            "Price resolution: auto (HTML reports then HL candles), "
-            "reports (HTML only), or hl_candles (Hyperliquid historical)."
+            "Price resolution: auto (HTML reports then candle cache), "
+            "reports (HTML only), hl_candles (Hyperliquid), or "
+            "binance_candles (Binance USDT-M perpetual)."
+        ),
+    )
+    candle_source: Literal["hyperliquid", "binance_perpetual"] = Field(
+        default="hyperliquid",
+        description=(
+            "Exchange for historical OHLCV prefetch/cache during replay and "
+            "snapshot builds (binance_perpetual recommended for timeline backtests)."
         ),
     )
     hl_price_interval: str = Field(
@@ -360,7 +370,14 @@ class ReplayConfigBase(BaseModel):
     )
     hl_cache_dir: str | None = Field(
         default=None,
-        description="Override default data/hl_candles cache directory",
+        description=(
+            "Override default candle cache directory "
+            "(data/hl_candles or data/binance_candles depending on candle_source)"
+        ),
+    )
+    snapshot_dir: str | None = Field(
+        default=None,
+        description="Parquet snapshot directory for data_source=snapshots",
     )
     require_price_data: bool = Field(
         default=True,

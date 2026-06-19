@@ -16,7 +16,9 @@ from routines.macdbb_replay.timeline_sweep import (
 def test_timeline_sweep_overrides_sets_backtest_mode():
     overrides = timeline_sweep_overrides()
     assert overrides["replay_mode"] == "timeline_backtest"
-    assert overrides["data_source"] == "reports_only"
+    assert overrides["data_source"] == "snapshots"
+    assert overrides["candle_source"] == "binance_perpetual"
+    assert overrides["price_source"] == "binance_candles"
     assert "session_nums" not in overrides
     assert overrides["range_start_utc"].endswith("Z")
     assert overrides["range_end_utc"].endswith("Z")

@@ -19,6 +19,7 @@ from routines.macdbb_replay.dynamic_policy import (
     resolve_fixed_entry_policy,
 )
 from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_replay.replay_data import is_report_driven_data_source
 from routines.macdbb_replay.reports import ReportMeta, ScannerReportMeta, load_scanner_reports_index
 from routines.macdbb_replay.session_builder import (
     _default_strategy_params,
@@ -645,7 +646,7 @@ def simulate_strategy_session(
 
     report_driven_params: dict[str, Any] | None = None
     scanner_reports: list[ScannerReportMeta] | None = None
-    if config.data_source == "reports_only":
+    if is_report_driven_data_source(config.data_source):
         session_dir = TRADING_AGENTS_DIR / config.strategy_slug / f"sessions/session_{session_num}"
         if session_dir.is_dir():
             _, report_driven_params = replay_config_from_session(
@@ -666,7 +667,7 @@ def simulate_strategy_session(
 
     for tick_index, tick in enumerate(sorted_ticks):
         meta = tick_meta_map[tick]
-        if config.data_source == "reports_only" and report_driven_params and scanner_reports:
+        if is_report_driven_data_source(config.data_source) and report_driven_params and scanner_reports:
             journal_meta = meta
             refreshed = refresh_tick_meta_from_reports(
                 journal_meta,
