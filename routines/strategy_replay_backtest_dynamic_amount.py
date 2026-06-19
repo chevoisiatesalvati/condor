@@ -196,13 +196,18 @@ async def run(
         if not config.range_start_utc or not config.range_end_utc:
             return (
                 "timeline_backtest requires range_start_utc and range_end_utc "
-                "(ISO UTC datetimes)."
+                "(ISO UTC datetimes). Leave empty to use full scanner report span."
             )
     elif not sessions_dir.is_dir():
         return f"Sessions directory not found: {sessions_dir}"
 
     parsed_sessions, session_configs, selected_sessions = load_replay_sessions(config)
     if not selected_sessions:
+        if config.replay_mode == "timeline_backtest":
+            return (
+                "Timeline backtest produced no ticks for the selected range. "
+                "Check range_start_utc / range_end_utc and frequency_sec."
+            )
         return "No sessions matched the requested selector."
 
     reports = load_reports_index()

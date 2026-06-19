@@ -486,6 +486,18 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
         description="Skip journal barrier closes when dynamic barriers are enabled",
     )
 
+    @classmethod
+    def get_routine_fields(cls) -> dict[str, dict[str, Any]]:
+        from routines.macdbb_replay.field_ui import build_dynamic_replay_field_metadata
+
+        return build_dynamic_replay_field_metadata(cls)
+
+    @classmethod
+    def get_routine_groups(cls) -> list[str]:
+        from routines.macdbb_replay.field_ui import REPLAY_FIELD_GROUPS
+
+        return list(REPLAY_FIELD_GROUPS)
+
 
 class AdaptiveReplayConfig(ReplayConfigBase):
     """Legacy adaptive-only replay with single position."""

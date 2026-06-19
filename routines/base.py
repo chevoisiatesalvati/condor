@@ -117,8 +117,19 @@ class RoutineInfo:
                 if "options" in extra and isinstance(extra["options"], list):
                     entry["options"] = extra["options"]
                     entry["widget"] = extra.get("widget", "select")
+                if "group" in extra:
+                    entry["group"] = extra["group"]
+                if "visible_when" in extra:
+                    entry["visible_when"] = extra["visible_when"]
             fields[name] = entry
         return fields
+
+    def get_routine_field_metadata(self) -> dict[str, dict]:
+        """Field metadata for UI; config class may override via get_routine_fields()."""
+        cls_get_fields = getattr(self.config_class, "get_routine_fields", None)
+        if callable(cls_get_fields):
+            return cls_get_fields()
+        return self.get_fields()
 
 
 def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:

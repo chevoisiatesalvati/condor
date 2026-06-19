@@ -223,6 +223,15 @@ async def get_field_options(
         except Exception as e:
             log.warning(f"Failed to fetch controller configs: {e}")
             return {"options": []}
+    if source == "timeline_report_range":
+        try:
+            from routines.macdbb_replay.replay_range import timeline_range_from_reports
+
+            start, end = timeline_range_from_reports()
+            return {"start": start, "end": end}
+        except Exception as e:
+            log.warning(f"Failed to fetch timeline report range: {e}")
+            return {"start": None, "end": None}
     return {"options": []}
 
 

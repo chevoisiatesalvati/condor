@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import json
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,13 +25,18 @@ from routines.macdbb_replay.config_sweep import (
 from routines.macdbb_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
 from routines.macdbb_replay.presets import (
+    DYNAMIC_PRESET_OVERRIDES,
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
+    _DRIVER_TIMELINE,
+    _DYNAMIC_PRESET_INFRA,
+    _STRATEGY_TIMELINE_MEGA_BEST,
+    _merge_preset_layers,
     resolve_config_with_preset,
 )
+from routines.macdbb_replay.replay_range import timeline_range_from_reports
 from routines.macdbb_replay.reports import (
     build_reports_by_pair,
     load_reports_index,
-    load_scanner_reports_index,
 )
 from routines.strategy_replay_backtest_dynamic_amount import run as run_dynamic_replay
 
@@ -40,19 +44,9 @@ DEFAULT_FREQUENCY_SEC = 1800
 DEFAULT_TIME_WINDOW_MIN = 15
 TIMELINE_PRESET_NAME = "hl_dynamic_timeline_mega_best"
 AGENT_SLUG = "macdbb_scanner_aggressive_hl"
-
-
-def iso_utc(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def timeline_range_from_reports() -> tuple[str, str]:
-    reports = load_scanner_reports_index()
-    if not reports:
-        raise ValueError("No scanner reports in index for timeline sweep range")
-    oldest = min(report.created_at for report in reports)
-    newest = max(report.created_at for report in reports)
-    return iso_utc(oldest), iso_utc(newest)
+PRESET_STRIP_KEYS = frozenset(
+    {"preset", "session_nums", "range_start_utc", "range_end_utc"}
+)
 
 
 def timeline_sweep_overrides(
@@ -68,17 +62,10 @@ def timeline_sweep_overrides(
     if range_end_utc:
         end = range_end_utc
     return {
-        "replay_mode": "timeline_backtest",
-        "data_source": "reports_only",
-        "config_source": "preset",
+        **_DRIVER_TIMELINE,
         "preset": "custom",
-        "session_nums": "all",
         "range_start_utc": start,
         "range_end_utc": end,
-        "frequency_sec": frequency_sec,
-        "time_window_min": time_window_min,
-        "use_journal_barriers": False,
-        "write_csv": False,
     }
 
 
@@ -281,14 +268,13 @@ def build_timeline_preset_overrides(
     frequency_sec: int = DEFAULT_FREQUENCY_SEC,
     time_window_min: int = DEFAULT_TIME_WINDOW_MIN,
 ) -> dict[str, Any]:
-    merged = full_replay_overrides(
+    del dynamic_mode, frequency_sec, time_window_min
+    return _merge_preset_layers(
+        _DYNAMIC_PRESET_INFRA,
+        _DRIVER_TIMELINE,
+        _STRATEGY_TIMELINE_MEGA_BEST,
         sweep_delta,
-        dynamic_mode=dynamic_mode,
-        frequency_sec=frequency_sec,
-        time_window_min=time_window_min,
     )
-    merged["preset"] = TIMELINE_PRESET_NAME
-    return merged
 
 
 def load_top_sweep_rows(csv_path: Path, top_n: int = 5) -> list[dict[str, str]]:
@@ -396,10 +382,15 @@ def apply_winner_to_presets(
     presets_path = presets_path or Path("routines/macdbb_replay/presets.py")
     models_path = models_path or Path("routines/macdbb_replay/models.py")
     preset_text = presets_path.read_text(encoding="utf-8")
-    marker = '    "hl_dynamic_session_parity": {'
     if TIMELINE_PRESET_NAME in preset_text:
-        raise ValueError(f"Preset {TIMELINE_PRESET_NAME} already exists in presets.py")
-    block = render_preset_block(TIMELINE_PRESET_NAME, preset_overrides)
+        return
+    marker = '    "hl_dynamic_session_parity": {'
+    filtered = {
+        key: value
+        for key, value in preset_overrides.items()
+        if key not in PRESET_STRIP_KEYS
+    }
+    block = render_preset_block(TIMELINE_PRESET_NAME, filtered)
     preset_text = preset_text.replace(marker, block + "\n" + marker, 1)
     presets_path.write_text(preset_text, encoding="utf-8")
 

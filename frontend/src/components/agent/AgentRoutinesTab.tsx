@@ -12,7 +12,7 @@ import { type ReportSummary, type RoutineInfo, api } from "@/lib/api";
 import { buildConfigValues, formatAgo, formatRoutineName, invalidateRoutineQueries, saveConfig, updateConfigValues } from "@/lib/routineUtils";
 import { useServer } from "@/hooks/useServer";
 import { useColorizeReportIframe } from "@/hooks/useColorizeReportIframe";
-import { RoutineConfigForm } from "@/components/routines/RoutineConfigForm";
+import { RoutineConfigFormShell } from "@/components/routines/RoutineConfigFormShell";
 import { RoutineResultView } from "@/components/routines/RoutineResultView";
 
 function RoutineCard({ routine }: { routine: RoutineInfo }) {
@@ -109,8 +109,9 @@ function RoutineCard({ routine }: { routine: RoutineInfo }) {
       {/* Expanded config */}
       {expanded && hasFields && (
         <div className="max-h-[min(50vh,28rem)] overflow-y-auto border-t border-[var(--color-border)] px-4 py-3 scrollbar-thin">
-          <RoutineConfigForm
+          <RoutineConfigFormShell
             fields={routine.fields}
+            groups={routine.groups}
             values={configValues}
             onChange={handleConfigChange}
           />

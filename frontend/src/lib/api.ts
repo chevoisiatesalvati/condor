@@ -446,10 +446,11 @@ export interface RoutineFieldInfo {
   type: string;
   default: unknown;
   description: string;
-  widget?: "select";
+  widget?: "select" | "date";
   options?: string[];
   options_from?: string;
   group?: string;
+  visible_when?: Record<string, string>;
   duration?: boolean;
   effective_tick_key?: string;
 }
@@ -469,6 +470,7 @@ export interface RoutineInfo {
   category: string;
   source: string;
   fields: Record<string, RoutineFieldInfo>;
+  groups?: string[];
   report_count: number;
   preset_overrides?: Record<string, Record<string, unknown>>;
 }
@@ -1165,6 +1167,11 @@ export const api = {
   getRoutineFieldOptions: (source: string, server: string) =>
     apiFetch<{ options: string[] }>(
       `/api/v1/routines/options/${encodeURIComponent(source)}?server=${encodeURIComponent(server)}`,
+    ),
+
+  getTimelineReportRange: (server: string) =>
+    apiFetch<{ start: string | null; end: string | null }>(
+      `/api/v1/routines/options/timeline_report_range?server=${encodeURIComponent(server)}`,
     ),
 
   getRoutineHooks: (name: string) =>

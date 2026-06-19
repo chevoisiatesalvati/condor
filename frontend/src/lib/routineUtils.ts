@@ -58,7 +58,15 @@ export function applyPresetOverrides(
   if (!overrides) {
     return values;
   }
-  return { ...values, ...overrides };
+  const next = { ...values, ...overrides };
+  if (overrides.replay_mode === "timeline_backtest") {
+    delete next.session_nums;
+  }
+  if (overrides.replay_mode === "session_parity") {
+    next.range_start_utc = null;
+    next.range_end_utc = null;
+  }
+  return next;
 }
 
 function configValuesEqual(a: unknown, b: unknown): boolean {

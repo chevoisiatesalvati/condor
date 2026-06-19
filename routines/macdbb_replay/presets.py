@@ -169,145 +169,194 @@ PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
     },
 }
 
+# Shared infra keys merged into dynamic presets (not mode-specific).
+_DYNAMIC_PRESET_INFRA: dict[str, PresetValue] = {
+    "formal_notional_quote": 500.0,
+    "price_source": "auto",
+    "hl_use_cache": True,
+    "require_price_data": True,
+}
+
+_DRIVER_SESSION: dict[str, PresetValue] = {
+    "replay_mode": "session_parity",
+    "data_source": "reports_only",
+    "config_source": "preset",
+    "session_nums": "all",
+    "time_window_min": 5,
+    "use_journal_barriers": False,
+    "write_csv": False,
+}
+
+_DRIVER_TIMELINE: dict[str, PresetValue] = {
+    "replay_mode": "timeline_backtest",
+    "data_source": "reports_only",
+    "config_source": "preset",
+    "frequency_sec": 1800,
+    "time_window_min": 15,
+    "use_journal_barriers": False,
+    "write_csv": False,
+}
+
+_STRATEGY_SESSION_MEGA_BEST: dict[str, PresetValue] = {
+    "enable_dynamic_sizing": True,
+    "enable_dynamic_barriers": True,
+    "ignore_journal_barriers_when_dynamic": True,
+    "activation_ticks": 0,
+    "sl_pct": 3.8,
+    "tp_pct": 5.0,
+    "thesis_decay_exit_ticks": 28,
+    "thesis_bb_drift_pts": 78.0,
+    "adaptive_long_bb_pos_max": 82.0,
+    "adaptive_short_bb_pos_min": 88.0,
+    "adaptive_strong_long_bb_pos_max": 26.0,
+    "adaptive_strong_short_bb_pos_min": 82.0,
+    "adaptive_min_macd_gap_ratio": 0.07,
+    "adaptive_min_hist_ratio": 0.07,
+    "adaptive_score_open_min": 0.8,
+    "adaptive_score_open_min_extreme": 2.8,
+    "adaptive_hist_sign_bonus": 0.48,
+    "adaptive_hist_sign_penalty": 0.58,
+    "adaptive_momentum_bonus": 0.22,
+    "adaptive_momentum_penalty": 0.16,
+    "bb_proximity_epsilon_pct": 0.11,
+    "ignore_adaptive_4h_filter": True,
+    "adaptive_requires_flat": False,
+    "max_open_executors": 10,
+    "min_tradeable_count": 1,
+    "sl_cooldown_ticks": 2,
+    "flip_cooldown_ticks": 8,
+    "min_notional_quote": 200.0,
+    "max_notional_quote": 1400.0,
+    "min_conviction_mult": 0.7,
+    "max_conviction_mult": 1.9,
+    "strength_mult_per_unit": 0.42,
+    "extreme_displacement_mult": 1.65,
+    "activation_streak_mult_per_tick": 0.0,
+    "thin_universe_mult": 0.96,
+    "mature_tape_low_vol_mult": 0.99,
+    "vol_inverse_sizing": True,
+    "min_vol_mult": 0.58,
+    "max_vol_mult": 1.05,
+    "ref_volatility_pct": 0.75,
+    "sl_vol_exponent": 1.05,
+    "tp_vol_exponent": 1.35,
+    "sl_min_pct": 1.4,
+    "sl_max_pct": 7.0,
+    "tp_min_pct": 3.5,
+    "tp_max_pct": 11.0,
+    "volatility_source": "bb_width",
+}
+
+_STRATEGY_TIMELINE_MEGA_BEST: dict[str, PresetValue] = {
+    "enable_dynamic_sizing": True,
+    "enable_dynamic_barriers": True,
+    "ignore_journal_barriers_when_dynamic": False,
+    "activation_ticks": 0,
+    "sl_pct": 4.5,
+    "tp_pct": 6.2,
+    "thesis_decay_exit_ticks": 28,
+    "thesis_bb_drift_pts": 18.0,
+    "adaptive_long_bb_pos_max": 82.0,
+    "adaptive_short_bb_pos_min": 88.0,
+    "adaptive_strong_long_bb_pos_max": 38.0,
+    "adaptive_strong_short_bb_pos_min": 95.0,
+    "adaptive_min_macd_gap_ratio": 0.15,
+    "adaptive_min_hist_ratio": 0.07,
+    "adaptive_score_open_min": 1.8,
+    "adaptive_score_open_min_extreme": 1.8,
+    "adaptive_hist_sign_bonus": 0.48,
+    "adaptive_hist_sign_penalty": 0.28,
+    "adaptive_momentum_bonus": 0.38,
+    "adaptive_momentum_penalty": 0.06,
+    "bb_proximity_epsilon_pct": 0.06,
+    "ignore_adaptive_4h_filter": True,
+    "adaptive_requires_flat": False,
+    "max_open_executors": 10,
+    "min_tradeable_count": 1,
+    "sl_cooldown_ticks": 2,
+    "flip_cooldown_ticks": 8,
+    "min_notional_quote": 200.0,
+    "max_notional_quote": 1100.0,
+    "min_conviction_mult": 0.7,
+    "max_conviction_mult": 1.4,
+    "strength_mult_per_unit": 0.16,
+    "extreme_displacement_mult": 1.35,
+    "activation_streak_mult_per_tick": 0.0,
+    "thin_universe_mult": 0.82,
+    "mature_tape_low_vol_mult": 1.12,
+    "vol_inverse_sizing": True,
+    "min_vol_mult": 0.82,
+    "max_vol_mult": 1.75,
+    "ref_volatility_pct": 0.68,
+    "sl_vol_exponent": 1.05,
+    "tp_vol_exponent": 0.75,
+    "sl_min_pct": 2.2,
+    "sl_max_pct": 7.5,
+    "tp_min_pct": 5.5,
+    "tp_max_pct": 11.0,
+    "volatility_source": "bb_width",
+}
+
+
+def _merge_preset_layers(*layers: dict[str, PresetValue]) -> dict[str, PresetValue]:
+    merged: dict[str, PresetValue] = {}
+    for layer in layers:
+        merged.update(layer)
+    return merged
+
+
 # Dynamic replay only — mega sweep v4 top1 (sessions 37-60 routine validation, cap-norm +$342).
 DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
-    "hl_dynamic_mega_sweep_best": {
-        "session_nums": "all",
-        "replay_mode": "session_parity",
-        "data_source": "reports_only",
-        "config_source": "preset",
-        "use_journal_barriers": False,
-        "formal_notional_quote": 500.0,
-        "price_source": "auto",
-        "hl_use_cache": True,
-        "require_price_data": True,
-        "enable_dynamic_sizing": True,
-        "enable_dynamic_barriers": True,
-        "ignore_journal_barriers_when_dynamic": True,
-        "activation_ticks": 0,
-        "sl_pct": 3.8,
-        "tp_pct": 5.0,
-        "thesis_decay_exit_ticks": 28,
-        "thesis_bb_drift_pts": 78.0,
-        "adaptive_long_bb_pos_max": 82.0,
-        "adaptive_short_bb_pos_min": 88.0,
-        "adaptive_strong_long_bb_pos_max": 26.0,
-        "adaptive_strong_short_bb_pos_min": 82.0,
-        "adaptive_min_macd_gap_ratio": 0.07,
-        "adaptive_min_hist_ratio": 0.07,
-        "adaptive_score_open_min": 0.8,
-        "adaptive_score_open_min_extreme": 2.8,
-        "adaptive_hist_sign_bonus": 0.48,
-        "adaptive_hist_sign_penalty": 0.58,
-        "adaptive_momentum_bonus": 0.22,
-        "adaptive_momentum_penalty": 0.16,
-        "bb_proximity_epsilon_pct": 0.11,
-        "ignore_adaptive_4h_filter": True,
-        "adaptive_requires_flat": False,
-        "max_open_executors": 10,
-        "min_tradeable_count": 1,
-        "sl_cooldown_ticks": 2,
-        "flip_cooldown_ticks": 8,
-        "min_notional_quote": 200.0,
-        "max_notional_quote": 1400.0,
-        "min_conviction_mult": 0.7,
-        "max_conviction_mult": 1.9,
-        "strength_mult_per_unit": 0.42,
-        "extreme_displacement_mult": 1.65,
-        "activation_streak_mult_per_tick": 0.0,
-        "thin_universe_mult": 0.96,
-        "mature_tape_low_vol_mult": 0.99,
-        "vol_inverse_sizing": True,
-        "min_vol_mult": 0.58,
-        "max_vol_mult": 1.05,
-        "ref_volatility_pct": 0.75,
-        "sl_vol_exponent": 1.05,
-        "tp_vol_exponent": 1.35,
-        "sl_min_pct": 1.4,
-        "sl_max_pct": 7.0,
-        "tp_min_pct": 3.5,
-        "tp_max_pct": 11.0,
-        "volatility_source": "bb_width",
-    },
-    "hl_dynamic_timeline_mega_best": {
-        "session_nums": "all",
-        "replay_mode": "timeline_backtest",
-        "data_source": "reports_only",
-        "config_source": "preset",
-        "use_journal_barriers": False,
-        "formal_notional_quote": 500.0,
-        "price_source": "auto",
-        "hl_use_cache": True,
-        "require_price_data": True,
-        "enable_dynamic_sizing": True,
-        "enable_dynamic_barriers": True,
-        "ignore_journal_barriers_when_dynamic": False,
-        "activation_ticks": 0,
-        "sl_pct": 4.5,
-        "tp_pct": 6.2,
-        "thesis_decay_exit_ticks": 28,
-        "thesis_bb_drift_pts": 18.0,
-        "adaptive_long_bb_pos_max": 82.0,
-        "adaptive_short_bb_pos_min": 88.0,
-        "adaptive_strong_long_bb_pos_max": 38.0,
-        "adaptive_strong_short_bb_pos_min": 95.0,
-        "adaptive_min_macd_gap_ratio": 0.15,
-        "adaptive_min_hist_ratio": 0.07,
-        "adaptive_score_open_min": 1.8,
-        "adaptive_score_open_min_extreme": 1.8,
-        "adaptive_hist_sign_bonus": 0.48,
-        "adaptive_hist_sign_penalty": 0.28,
-        "adaptive_momentum_bonus": 0.38,
-        "adaptive_momentum_penalty": 0.06,
-        "bb_proximity_epsilon_pct": 0.06,
-        "ignore_adaptive_4h_filter": True,
-        "adaptive_requires_flat": False,
-        "max_open_executors": 10,
-        "min_tradeable_count": 1,
-        "sl_cooldown_ticks": 2,
-        "flip_cooldown_ticks": 8,
-        "min_notional_quote": 200.0,
-        "max_notional_quote": 1100.0,
-        "min_conviction_mult": 0.7,
-        "max_conviction_mult": 1.4,
-        "strength_mult_per_unit": 0.16,
-        "extreme_displacement_mult": 1.35,
-        "activation_streak_mult_per_tick": 0.0,
-        "thin_universe_mult": 0.82,
-        "mature_tape_low_vol_mult": 1.12,
-        "vol_inverse_sizing": True,
-        "min_vol_mult": 0.82,
-        "max_vol_mult": 1.75,
-        "ref_volatility_pct": 0.68,
-        "sl_vol_exponent": 1.05,
-        "tp_vol_exponent": 0.75,
-        "sl_min_pct": 2.2,
-        "sl_max_pct": 7.5,
-        "tp_min_pct": 5.5,
-        "tp_max_pct": 11.0,
-        "volatility_source": "bb_width",
-        "frequency_sec": 1800,
-        "range_end_utc": "2026-06-18T22:55:27Z",
-        "range_start_utc": "2026-06-02T22:08:00Z",
-        "time_window_min": 15,
-        "write_csv": False,
-    },
-    "hl_dynamic_session_parity": {
-        "session_nums": "all",
-        "replay_mode": "session_parity",
-        "tick_schedule": "journal_ticks",
-        "data_source": "reports_only",
-        "config_source": "session",
-        "time_window_min": 5,
-        "use_journal_barriers": False,
-        "compare_journal_flags": False,
-        "price_source": "auto",
-        "hl_use_cache": True,
-        "require_price_data": True,
-    },
+    "hl_dynamic_mega_sweep_best": _merge_preset_layers(
+        _DYNAMIC_PRESET_INFRA,
+        _DRIVER_SESSION,
+        _STRATEGY_SESSION_MEGA_BEST,
+    ),
+    "hl_dynamic_timeline_mega_best": _merge_preset_layers(
+        _DYNAMIC_PRESET_INFRA,
+        _DRIVER_TIMELINE,
+        _STRATEGY_TIMELINE_MEGA_BEST,
+    ),
+    "hl_dynamic_session_parity": _merge_preset_layers(
+        {
+            "price_source": "auto",
+            "hl_use_cache": True,
+            "require_price_data": True,
+        },
+        {
+            **_DRIVER_SESSION,
+            "config_source": "session",
+            "compare_journal_flags": False,
+        },
+    ),
 }
 
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
+
+
+def resolve_timeline_range(config: ConfigT) -> ConfigT:
+    """Fill missing timeline range from scanner report index."""
+    replay_mode = getattr(config, "replay_mode", None)
+    if replay_mode != "timeline_backtest":
+        return config
+    start = getattr(config, "range_start_utc", None)
+    end = getattr(config, "range_end_utc", None)
+    if start and end:
+        return config
+    from routines.macdbb_replay.replay_range import timeline_range_from_reports
+
+    range_start, range_end = timeline_range_from_reports()
+    updates: dict[str, PresetValue] = {}
+    if not start:
+        updates["range_start_utc"] = range_start
+    if not end:
+        updates["range_end_utc"] = range_end
+    if not updates:
+        return config
+    config_type = type(config)
+    allowed = set(config_type.model_fields)
+    filtered = {key: value for key, value in updates.items() if key in allowed}
+    return config_type(**{**config.model_dump(), **filtered})
 
 
 def resolve_config_with_preset(config: ConfigT) -> ConfigT:
@@ -320,11 +369,12 @@ def resolve_config_with_preset(config: ConfigT) -> ConfigT:
     """
     preset = getattr(config, "preset", "custom")
     if preset == "custom":
-        return config
+        return resolve_timeline_range(config)
     overrides = PRESET_OVERRIDES.get(preset) or DYNAMIC_PRESET_OVERRIDES.get(preset)
     if not overrides:
-        return config
+        return resolve_timeline_range(config)
     config_type = type(config)
     allowed = set(config_type.model_fields)
     filtered = {key: value for key, value in overrides.items() if key in allowed}
-    return config_type(**{**config.model_dump(), **filtered, "preset": preset})
+    merged = config_type(**{**config.model_dump(), **filtered, "preset": preset})
+    return resolve_timeline_range(merged)

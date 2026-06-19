@@ -171,16 +171,19 @@ class RoutineStore:
         report_counts = self._get_report_counts()
         out = []
         for name, info in all_routines.items():
+            groups_fn = getattr(info.config_class, "get_routine_groups", None)
             entry = {
                 "name": name,
                 "description": info.description,
                 "is_continuous": info.is_continuous,
                 "category": info.category,
                 "source": info.source,
-                "fields": info.get_fields(),
+                "fields": info.get_routine_field_metadata(),
                 "report_count": report_counts.get(name, 0)
                 or report_counts.get(name.split("/")[-1], 0),
             }
+            if callable(groups_fn):
+                entry["groups"] = groups_fn()
             if info.preset_overrides:
                 entry["preset_overrides"] = info.preset_overrides
             out.append(entry)
