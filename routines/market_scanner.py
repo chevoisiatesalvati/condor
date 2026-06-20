@@ -66,6 +66,8 @@ async def fetch_top_pairs(top_n: int, min_volume: float) -> list[dict]:
         })
 
     usdt_tickers.sort(key=lambda x: x["volume_24h_usd"], reverse=True)
+    if top_n <= 0:
+        return usdt_tickers
     return usdt_tickers[:top_n]
 
 

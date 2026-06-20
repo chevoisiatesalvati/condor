@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -28,6 +29,7 @@ class TickMarketSettings:
     candidate_pool: int = 45
     macd_review_count: int = 5
     macd_pairs_superset: int = 12
+    max_concurrent: int = 30
 
 
 class CandleWindowLoader(Protocol):
@@ -276,21 +278,24 @@ async def compute_tick_market_state(
     fetch_hours = max(settings.lookback_hours + 24, 30)
     min_bars = bars_for_hours(settings.lookback_hours, scanner_interval)
     bucket_size = max(1, 15 // candle_minutes)
+    semaphore = asyncio.Semaphore(max(1, settings.max_concurrent))
 
-    ranked: list[tuple[float, dict[str, Any], list[dict[str, float]]]] = []
-    for candidate in universe[: settings.candidate_pool]:
+    async def _rank_candidate(
+        candidate: dict[str, Any],
+    ) -> tuple[float, dict[str, Any], list[dict[str, float]]] | None:
         pair = candidate["trading_pair"]
-        try:
-            candles = await loader.get_interval_window(
-                pair,
-                scanner_interval,
-                tick_time,
-                fetch_hours,
-            )
-        except Exception:
-            continue
+        async with semaphore:
+            try:
+                candles = await loader.get_interval_window(
+                    pair,
+                    scanner_interval,
+                    tick_time,
+                    fetch_hours,
+                )
+            except Exception:
+                return None
         if len(candles) < min_bars:
-            continue
+            return None
         volume_24h = await _quote_volume_for_pair(
             pair=pair,
             scanner_interval=scanner_interval,
@@ -301,8 +306,21 @@ async def compute_tick_market_state(
             primary_candles=candles,
         )
         if volume_24h is None or volume_24h < settings.min_volume_usd:
+            return None
+        return (volume_24h, candidate, candles)
+
+    candidate_results = await asyncio.gather(
+        *[
+            _rank_candidate(candidate)
+            for candidate in universe[: settings.candidate_pool]
+        ],
+        return_exceptions=True,
+    )
+    ranked: list[tuple[float, dict[str, Any], list[dict[str, float]]]] = []
+    for result in candidate_results:
+        if isinstance(result, Exception) or result is None:
             continue
-        ranked.append((volume_24h, candidate, candles))
+        ranked.append(result)
 
     ranked.sort(key=lambda row: row[0], reverse=True)
     top = ranked[: settings.top_n]
@@ -354,8 +372,9 @@ async def compute_tick_market_state(
         ]
 
     macdbb_reports: list[ParsedReport] = []
-    for pair in macd_pairs:
-        for interval, hours in (("1h", 250), ("4h", 400)):
+
+    async def _fetch_macdbb(pair: str, interval: str, hours: int) -> ParsedReport | None:
+        async with semaphore:
             try:
                 candles = await loader.get_interval_window(
                     pair,
@@ -364,12 +383,23 @@ async def compute_tick_market_state(
                     hours,
                 )
             except Exception:
-                continue
-            closes = np.array([float(c["close"]) for c in candles], dtype=float)
-            metrics = compute_macdbb_from_closes(closes)
-            if metrics is None:
-                continue
-            macdbb_reports.append(metrics_to_parsed_report(pair, interval, metrics))
+                return None
+        closes = np.array([float(c["close"]) for c in candles], dtype=float)
+        metrics = compute_macdbb_from_closes(closes)
+        if metrics is None:
+            return None
+        return metrics_to_parsed_report(pair, interval, metrics)
+
+    macd_tasks = [
+        _fetch_macdbb(pair, interval, hours)
+        for pair in macd_pairs
+        for interval, hours in (("1h", 250), ("4h", 400))
+    ]
+    macd_results = await asyncio.gather(*macd_tasks, return_exceptions=True)
+    for result in macd_results:
+        if isinstance(result, Exception) or result is None:
+            continue
+        macdbb_reports.append(result)
 
     return TickMarketState(
         tick_time=tick_time,

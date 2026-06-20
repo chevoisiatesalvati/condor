@@ -57,7 +57,12 @@ def _parse_args() -> argparse.Namespace:
         "--universe-top-n",
         type=int,
         default=100,
-        help="Max pairs when using Binance universe (default: 100)",
+        help="Max pairs when using Binance universe (0 = no limit, all above min-volume)",
+    )
+    parser.add_argument(
+        "--universe-all",
+        action="store_true",
+        help="Fetch all USDT-M pairs above --min-volume-usd (same as --universe-top-n 0)",
     )
     parser.add_argument(
         "--min-volume-usd",
@@ -129,6 +134,8 @@ async def _prefetch_pair_interval(
 
 
 async def _run_prefetch(args: argparse.Namespace) -> dict[str, int]:
+    if args.universe_all:
+        args.universe_top_n = 0
     configure_binance_rate_limit(
         request_interval_ms=args.request_interval_ms,
         max_retries=args.max_retries,
@@ -159,6 +166,12 @@ async def _run_prefetch(args: argparse.Namespace) -> dict[str, int]:
             )
             pairs = [row["trading_pair"] for row in universe]
             universe_source = "binance_futures_ticker"
+            logging.info(
+                "Binance universe: %d pairs (top_n=%s, min_volume=$%.0f)",
+                len(pairs),
+                "all" if args.universe_top_n <= 0 else args.universe_top_n,
+                args.min_volume_usd,
+            )
 
         semaphore = asyncio.Semaphore(max(1, args.max_concurrent))
         tasks: list[asyncio.Task[tuple[str, str, int]]] = []

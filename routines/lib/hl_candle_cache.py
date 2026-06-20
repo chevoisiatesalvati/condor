@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from routines.lib import hl_candles
 
@@ -20,6 +22,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_CACHE_DIR = ROOT_DIR / "data" / "hl_candles"
 
 _CANDLE_COLUMNS = ["timestamp_ms", "open", "high", "low", "close", "volume"]
+_ROW_GROUP_SIZE = 8640
 
 
 def _sanitize_pair_filename(trading_pair: str) -> str:
@@ -134,6 +137,32 @@ def _records_to_candles(records: list[dict[str, Any]]) -> list[dict[str, float]]
     ]
 
 
+def _read_meta(path: Path) -> dict[str, Any] | None:
+    meta_path = _meta_path(path)
+    if not meta_path.is_file():
+        return None
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def meta_covers_range(
+    meta: dict[str, Any],
+    start_ms: int,
+    required_end_ms: int,
+    interval_ms: int,
+) -> bool:
+    try:
+        min_ts = int(meta["min_ts_ms"])
+        max_ts = int(meta["max_ts_ms"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if min_ts > start_ms:
+        return False
+    return max_ts >= required_end_ms - interval_ms
+
+
 def _write_meta(path: Path, records: list[dict[str, Any]]) -> None:
     if not records:
         return
@@ -170,6 +199,87 @@ def load_candles(
     return _records_to_candles(records)
 
 
+def _resolve_cache_path(
+    trading_pair: str,
+    interval: str,
+    *,
+    cache_dir: Path | None = None,
+) -> Path | None:
+    path = cache_path(trading_pair, interval, cache_dir=cache_dir)
+    if path.is_file():
+        return path
+    legacy_pair = trading_pair.rsplit("-", 1)[0] if trading_pair.endswith("-USD") else trading_pair
+    legacy_path = (cache_dir or DEFAULT_CACHE_DIR) / interval / f"{_sanitize_pair_filename(legacy_pair)}.parquet"
+    if legacy_path.is_file() and legacy_path != path:
+        return legacy_path
+    return None
+
+
+def load_candles_in_range(
+    trading_pair: str,
+    interval: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    cache_dir: Path | None = None,
+) -> list[dict[str, float]]:
+    """Load a timestamp slice from cache without reading unrelated row groups when possible."""
+    if end_ms < start_ms:
+        return []
+
+    path = _resolve_cache_path(trading_pair, interval, cache_dir=cache_dir)
+    if path is None:
+        return []
+
+    meta = _read_meta(path)
+    if meta is not None:
+        try:
+            if int(meta["max_ts_ms"]) < start_ms or int(meta["min_ts_ms"]) > end_ms:
+                return []
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    try:
+        table = pq.read_table(
+            path,
+            columns=_CANDLE_COLUMNS,
+            filters=[
+                ("timestamp_ms", ">=", start_ms),
+                ("timestamp_ms", "<=", end_ms),
+            ],
+        )
+        if table.num_rows == 0:
+            return []
+        records = table.sort_by("timestamp_ms").to_pydict()
+        return _records_to_candles(
+            [
+                {
+                    "timestamp_ms": records["timestamp_ms"][index],
+                    "open": records["open"][index],
+                    "high": records["high"][index],
+                    "low": records["low"][index],
+                    "close": records["close"][index],
+                    "volume": records["volume"][index],
+                }
+                for index in range(table.num_rows)
+            ]
+        )
+    except Exception:
+        logger.debug("Parquet filter read failed for %s, falling back to index slice", path)
+
+    ts_frame = pd.read_parquet(path, columns=["timestamp_ms"])
+    if ts_frame.empty:
+        return []
+    timestamps = ts_frame["timestamp_ms"].to_numpy(dtype=np.int64)
+    start_index = int(np.searchsorted(timestamps, start_ms, side="left"))
+    end_index = int(np.searchsorted(timestamps, end_ms, side="right"))
+    if start_index >= end_index:
+        return []
+    frame = pd.read_parquet(path, columns=_CANDLE_COLUMNS).iloc[start_index:end_index]
+    records = frame.sort_values("timestamp_ms").to_dict(orient="records")
+    return _records_to_candles(records)
+
+
 def save_candles(
     trading_pair: str,
     interval: str,
@@ -189,7 +299,11 @@ def save_candles(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(".parquet.tmp")
-    pd.DataFrame(records, columns=_CANDLE_COLUMNS).to_parquet(temp_path, index=False)
+    pd.DataFrame(records, columns=_CANDLE_COLUMNS).to_parquet(
+        temp_path,
+        index=False,
+        row_group_size=_ROW_GROUP_SIZE,
+    )
     temp_path.replace(path)
     _write_meta(path, records)
     logger.debug(
@@ -297,8 +411,23 @@ async def fetch_hl_candles_between_cached(
             save_candles(trading_pair, interval, candles, cache_dir=cache_dir)
         return candles
 
-    cached = [] if refresh_cache else load_candles(trading_pair, interval, cache_dir=cache_dir)
+    parquet_path = cache_path(trading_pair, interval, cache_dir=cache_dir)
     required_end_ms = end_ms if coverage_end_ms is None else min(end_ms, coverage_end_ms)
+
+    if not refresh_cache:
+        meta = _read_meta(parquet_path) if parquet_path.is_file() else None
+        if meta is not None and meta_covers_range(meta, start_ms, required_end_ms, interval_ms):
+            ranged = load_candles_in_range(
+                trading_pair,
+                interval,
+                start_ms,
+                end_ms,
+                cache_dir=cache_dir,
+            )
+            if ranged:
+                return ranged
+
+    cached = [] if refresh_cache else load_candles(trading_pair, interval, cache_dir=cache_dir)
 
     if cached and not refresh_cache and _cache_covers_range(
         cached, start_ms, required_end_ms, interval_ms
@@ -317,7 +446,6 @@ async def fetch_hl_candles_between_cached(
         )
     )
 
-    parquet_path = cache_path(trading_pair, interval, cache_dir=cache_dir)
     if not ignore_api_skip and _should_skip_api_fetch(parquet_path):
         return _filter_candles_in_range(cached, start_ms, end_ms)
 
@@ -386,6 +514,8 @@ __all__ = [
     "fetch_hl_candles_between_cached",
     "is_api_fetch_skipped",
     "load_candles",
+    "load_candles_in_range",
     "mark_api_fetch_failed",
+    "meta_covers_range",
     "save_candles",
 ]

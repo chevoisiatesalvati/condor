@@ -23,7 +23,11 @@ import numpy as np
 
 from condor.reports import ReportBuilder
 from routines.lib.hl_candle_cache import fetch_hl_candles_between_cached
-from routines.lib.binance_candle_cache import fetch_binance_candles_between_cached
+from routines.lib.binance_candle_cache import (
+    fetch_binance_candles_between_cached,
+    load_candles as load_binance_candles,
+)
+from routines.lib.hl_candle_cache import load_candles as load_hl_candles
 from routines.lib.pair_format import binance_pair_from_any
 from routines.lib.hl_candles import (
     HL_INFO_URL,
@@ -165,10 +169,16 @@ class BackfillSettings:
 
 @dataclass
 class CandleCache:
-    _store: dict[tuple[str, str, int], list[dict[str, float]]]
+    _file_cache: dict[tuple[str, str], list[dict[str, float]]]
+    _file_cache_order: list[tuple[str, str]]
+    _window_cache: dict[tuple[str, str, int, int], list[dict[str, float]]]
+    _access_counts: dict[tuple[str, str], int]
+    _load_locks: dict[tuple[str, str], asyncio.Lock]
     _session: aiohttp.ClientSession | None
     cache_dir: Path | None
     candle_source: str
+    max_file_cache_entries: int
+    max_window_cache_entries: int = 256
 
     def __init__(
         self,
@@ -176,16 +186,67 @@ class CandleCache:
         session: aiohttp.ClientSession | None = None,
         cache_dir: Path | None = None,
         candle_source: str = "hyperliquid",
+        max_file_cache_entries: int = 80,
+        max_window_cache_entries: int = 256,
     ) -> None:
-        self._store = {}
+        self._file_cache = {}
+        self._file_cache_order = []
+        self._window_cache = {}
+        self._window_cache_order: list[tuple[str, str, int, int]] = []
+        self._access_counts = {}
+        self._load_locks = {}
         self._session = session
         self.cache_dir = cache_dir
         self.candle_source = candle_source
+        self.max_file_cache_entries = max(1, max_file_cache_entries)
+        self.max_window_cache_entries = max(1, max_window_cache_entries)
 
     def _cache_pair(self, trading_pair: str) -> str:
         if self.candle_source == "binance_perpetual":
             return binance_pair_from_any(trading_pair)
         return trading_pair
+
+    @staticmethod
+    def _filter_window(
+        candles: list[dict[str, float]],
+        start_ms: int,
+        end_ms: int,
+    ) -> list[dict[str, float]]:
+        return [
+            candle
+            for candle in candles
+            if start_ms <= int(candle["timestamp_ms"]) <= end_ms
+        ]
+
+    def _touch_file_cache(self, key: tuple[str, str]) -> None:
+        if key in self._file_cache_order:
+            self._file_cache_order.remove(key)
+        self._file_cache_order.append(key)
+
+    def _store_file_cache(self, key: tuple[str, str], candles: list[dict[str, float]]) -> None:
+        self._file_cache[key] = candles
+        self._touch_file_cache(key)
+        while len(self._file_cache_order) > self.max_file_cache_entries:
+            evict_key = self._file_cache_order.pop(0)
+            self._file_cache.pop(evict_key, None)
+
+    def _store_window_cache(
+        self,
+        key: tuple[str, str, int, int],
+        candles: list[dict[str, float]],
+    ) -> None:
+        self._window_cache[key] = candles
+        if key in self._window_cache_order:
+            self._window_cache_order.remove(key)
+        self._window_cache_order.append(key)
+        while len(self._window_cache_order) > self.max_window_cache_entries:
+            evict_key = self._window_cache_order.pop(0)
+            self._window_cache.pop(evict_key, None)
+
+    def _load_disk_candles(self, cache_pair: str, interval: str) -> list[dict[str, float]]:
+        if self.candle_source == "binance_perpetual":
+            return load_binance_candles(cache_pair, interval, cache_dir=self.cache_dir)
+        return load_hl_candles(cache_pair, interval, cache_dir=self.cache_dir)
 
     async def _fetch_between_cached(
         self,
@@ -219,9 +280,20 @@ class CandleCache:
             fill_gaps=True,
         )
 
-    def _hour_key(self, end: dt.datetime) -> int:
-        end_utc = end.astimezone(dt.timezone.utc)
-        return int(end_utc.timestamp() // 3600)
+    async def _maybe_promote_file_cache(self, cache_pair: str, interval: str) -> None:
+        key = (cache_pair, interval)
+        count = self._access_counts.get(key, 0) + 1
+        self._access_counts[key] = count
+        if count < 2 or key in self._file_cache:
+            return
+
+        lock = self._load_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if key in self._file_cache:
+                return
+            candles = self._load_disk_candles(cache_pair, interval)
+            if candles:
+                self._store_file_cache(key, candles)
 
     async def get_interval_window(
         self,
@@ -232,18 +304,32 @@ class CandleCache:
     ) -> list[dict[str, float]]:
         if self._session is None:
             raise RuntimeError("CandleCache requires an aiohttp session")
-        key = (trading_pair, interval, self._hour_key(end))
-        cached = self._store.get(key)
-        if cached is not None:
-            return cached
+        cache_pair = self._cache_pair(trading_pair)
+        key = (cache_pair, interval)
         start = end - dt.timedelta(hours=hours)
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        window_key = (cache_pair, interval, start_ms, end_ms)
+
+        window_candles = self._window_cache.get(window_key)
+        if window_candles is not None:
+            return window_candles
+
+        file_candles = self._file_cache.get(key)
+        if file_candles is not None:
+            self._touch_file_cache(key)
+            sliced = self._filter_window(file_candles, start_ms, end_ms)
+            self._store_window_cache(window_key, sliced)
+            return sliced
+
         candles = await self._fetch_between_cached(
             trading_pair,
             interval,
             start,
             end,
         )
-        self._store[key] = candles
+        self._store_window_cache(window_key, candles)
+        await self._maybe_promote_file_cache(cache_pair, interval)
         return candles
 
 
@@ -253,6 +339,7 @@ async def fetch_binance_universe(
     top_n: int = 100,
     min_volume_usd: float = 2_000_000.0,
 ) -> list[dict[str, Any]]:
+    """Fetch Binance USDT-M pairs by 24h quote volume. Use top_n=0 for no limit."""
     from routines.market_scanner import fetch_top_pairs
 
     _ = session

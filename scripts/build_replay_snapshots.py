@@ -7,8 +7,10 @@ import argparse
 import asyncio
 import datetime as dt
 import logging
+import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 
@@ -37,6 +39,7 @@ from routines.macdbb_replay.snapshot_store import (
 )
 from routines.macdbb_replay.tick_market_state import (
     TickMarketSettings,
+    TickMarketState,
     compute_tick_market_state,
 )
 from routines.macdbb_replay.tick_schedule import build_range_tick_schedule, parse_iso_utc
@@ -86,7 +89,7 @@ def _parse_args() -> argparse.Namespace:
         "--universe-top-n",
         type=int,
         default=100,
-        help="Top pairs per venue when not using --intersection-manifest",
+        help="Top pairs per venue when not using --intersection-manifest (0 = no limit)",
     )
     parser.add_argument(
         "--intersection-manifest",
@@ -128,6 +131,24 @@ def _parse_args() -> argparse.Namespace:
         choices=("same", "binance_perpetual", "hyperliquid"),
         default="same",
         help="Candle cache for 24h volume ranking (default: same as --candle-source)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=50,
+        help="Append snapshot parquet every N built ticks (default: 50)",
+    )
+    parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=30,
+        help="Max concurrent candle fetches per tick (default: 30)",
+    )
+    parser.add_argument(
+        "--file-cache-entries",
+        type=int,
+        default=80,
+        help="Max pair-interval candle files kept in memory (default: 80)",
     )
     return parser.parse_args()
 
@@ -213,83 +234,121 @@ async def _run_build(args: argparse.Namespace) -> dict[str, int]:
         candidate_pool=settings.candidate_pool,
         macd_review_count=settings.macd_review_count,
         macd_pairs_superset=settings.macd_review_count,
+        max_concurrent=args.max_concurrent,
     )
     strategy_params = _default_strategy_params(DynamicStrategyReplayConfig())
 
     totals = {"ticks": len(tick_times), "built": 0, "skipped": 0, "errors": 0}
+    pending_states: list[TickMarketState] = []
+    stop_requested = False
+
+    def _request_stop(signum: int, _frame: object) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+        logging.info("Stop requested (signal %s); finishing current tick then flushing batch", signum)
+
+    def _flush_pending() -> None:
+        if not pending_states:
+            return
+        append_states(pending_states, snapshot_dir=args.snapshot_dir)
+        pending_states.clear()
+
+    previous_handlers: dict[int, Any] = {}
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous_handlers[sig] = signal.signal(sig, _request_stop)
+        except (AttributeError, ValueError, OSError):
+            pass
+
     if not tick_times:
         logging.info("No ticks to build.")
         return totals
 
-    async with aiohttp.ClientSession() as session:
-        cache = CandleCache(
-            session=session,
-            cache_dir=cache_dir,
-            candle_source=args.candle_source,
-        )
-        volume_cache: CandleCache | None = None
-        if volume_source != args.candle_source:
-            volume_cache_dir = (
-                BINANCE_DEFAULT_CACHE_DIR
-                if volume_source == "binance_perpetual"
-                else HL_DEFAULT_CACHE_DIR
-            )
-            volume_cache = CandleCache(
+    try:
+        async with aiohttp.ClientSession() as session:
+            cache = CandleCache(
                 session=session,
-                cache_dir=volume_cache_dir,
-                candle_source=volume_source,
+                cache_dir=cache_dir,
+                candle_source=args.candle_source,
+                max_file_cache_entries=args.file_cache_entries,
             )
-            logging.info(
-                "Volume ranking from %s candles; OHLC/MACD from %s",
-                volume_source,
-                args.candle_source,
-            )
-        if args.intersection_manifest:
-            intersection = load_intersection_manifest(args.intersection_manifest)
-            universe = universe_rows_for_exchange(intersection, args.candle_source)
-            logging.info(
-                "Using shared intersection universe: %d pairs from %s",
-                len(universe),
-                args.intersection_manifest,
-            )
-        elif args.candle_source == "binance_perpetual":
-            universe = await fetch_binance_universe(
-                session,
-                top_n=args.universe_top_n,
-                min_volume_usd=settings.min_volume_usd,
-            )
-        else:
-            universe = await fetch_hl_universe(session, exclude_hip3=settings.exclude_hip3)
-            if args.universe_top_n > 0:
-                universe = universe[: args.universe_top_n]
-        for index, tick_time in enumerate(tick_times, start=1):
-            try:
-                state = await compute_tick_market_state(
-                    tick_time,
-                    universe=universe,
-                    loader=cache,
-                    settings=market_settings,
-                    strategy_params=strategy_params,
-                    volume_loader=volume_cache,
+            volume_cache: CandleCache | None = None
+            if volume_source != args.candle_source:
+                volume_cache_dir = (
+                    BINANCE_DEFAULT_CACHE_DIR
+                    if volume_source == "binance_perpetual"
+                    else HL_DEFAULT_CACHE_DIR
                 )
-                if state.parsed_scanner is None:
-                    totals["skipped"] += 1
-                    continue
-                append_states([state], snapshot_dir=args.snapshot_dir)
-                totals["built"] += 1
-            except Exception:
-                totals["errors"] += 1
-                logging.exception("Snapshot build failed at %s", tick_time)
-                continue
-            if index % 10 == 0 or index == len(tick_times):
+                volume_cache = CandleCache(
+                    session=session,
+                    cache_dir=volume_cache_dir,
+                    candle_source=volume_source,
+                    max_file_cache_entries=args.file_cache_entries,
+                )
                 logging.info(
-                    "Progress %d/%d — built=%d skipped=%d errors=%d",
-                    index,
-                    len(tick_times),
-                    totals["built"],
-                    totals["skipped"],
-                    totals["errors"],
+                    "Volume ranking from %s candles; OHLC/MACD from %s",
+                    volume_source,
+                    args.candle_source,
                 )
+            if args.intersection_manifest:
+                intersection = load_intersection_manifest(args.intersection_manifest)
+                universe = universe_rows_for_exchange(intersection, args.candle_source)
+                logging.info(
+                    "Using shared intersection universe: %d pairs from %s",
+                    len(universe),
+                    args.intersection_manifest,
+                )
+            elif args.candle_source == "binance_perpetual":
+                universe = await fetch_binance_universe(
+                    session,
+                    top_n=args.universe_top_n,
+                    min_volume_usd=settings.min_volume_usd,
+                )
+            else:
+                universe = await fetch_hl_universe(session, exclude_hip3=settings.exclude_hip3)
+                if args.universe_top_n > 0:
+                    universe = universe[: args.universe_top_n]
+            for index, tick_time in enumerate(tick_times, start=1):
+                if stop_requested:
+                    logging.info("Stopping build after %d ticks in this run", index - 1)
+                    break
+                try:
+                    state = await compute_tick_market_state(
+                        tick_time,
+                        universe=universe,
+                        loader=cache,
+                        settings=market_settings,
+                        strategy_params=strategy_params,
+                        volume_loader=volume_cache,
+                    )
+                    if state.parsed_scanner is None:
+                        totals["skipped"] += 1
+                        continue
+                    pending_states.append(state)
+                    totals["built"] += 1
+                    if len(pending_states) >= args.batch_size:
+                        _flush_pending()
+                except Exception:
+                    totals["errors"] += 1
+                    logging.exception("Snapshot build failed at %s", tick_time)
+                    continue
+                if index % 10 == 0 or index == len(tick_times):
+                    logging.info(
+                        "Progress %d/%d — built=%d skipped=%d errors=%d pending=%d",
+                        index,
+                        len(tick_times),
+                        totals["built"],
+                        totals["skipped"],
+                        totals["errors"],
+                        len(pending_states),
+                    )
+    finally:
+        _flush_pending()
+        for sig, handler in previous_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except (AttributeError, ValueError, OSError):
+                pass
 
     write_manifest(
         {

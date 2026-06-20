@@ -70,6 +70,16 @@ def _sample_state(tick_time: dt.datetime) -> TickMarketState:
     )
 
 
+def test_snapshot_store_batch_append(tmp_path):
+    tick_a = dt.datetime(2026, 6, 1, 12, 0, tzinfo=dt.timezone.utc)
+    tick_b = dt.datetime(2026, 6, 1, 12, 30, tzinfo=dt.timezone.utc)
+    append_states([_sample_state(tick_a), _sample_state(tick_b)], snapshot_dir=tmp_path)
+    configure_snapshot_dir(tmp_path)
+
+    scanner_index = load_scanner_reports_index()
+    assert len(scanner_index) == 2
+
+
 def test_snapshot_store_round_trip_and_report_loader(tmp_path):
     tick_time = dt.datetime(2026, 6, 1, 12, 0, tzinfo=dt.timezone.utc)
     append_states([_sample_state(tick_time)], snapshot_dir=tmp_path)

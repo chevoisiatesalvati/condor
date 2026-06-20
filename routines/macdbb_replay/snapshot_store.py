@@ -170,6 +170,12 @@ def existing_tick_ids(*, snapshot_dir: Path | None = None) -> set[str]:
     return set(frame["tick_id"].astype(str).tolist())
 
 
+def _write_parquet_atomic(path: Path, frame: pd.DataFrame) -> None:
+    temp_path = path.with_suffix(".parquet.tmp")
+    frame.to_parquet(temp_path, index=False)
+    temp_path.replace(path)
+
+
 def append_states(
     states: list[TickMarketState],
     *,
@@ -202,7 +208,7 @@ def append_states(
             frame = merged
         else:
             frame = new_frame
-        frame.to_parquet(path, index=False)
+        _write_parquet_atomic(path, frame)
 
     configure_snapshot_dir(root)
     _invalidate_indexes()
