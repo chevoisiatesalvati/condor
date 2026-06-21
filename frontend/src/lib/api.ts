@@ -451,6 +451,9 @@ export interface RoutineFieldInfo {
   options_from?: string;
   group?: string;
   visible_when?: Record<string, string>;
+  nullable?: boolean;
+  hidden?: boolean;
+  hidden_when?: Record<string, string>;
   duration?: boolean;
   effective_tick_key?: string;
 }
@@ -1173,6 +1176,16 @@ export const api = {
     apiFetch<{ start: string | null; end: string | null }>(
       `/api/v1/routines/options/timeline_report_range?server=${encodeURIComponent(server)}`,
     ),
+
+  getTimelineSnapshotRange: (server: string, snapshotDir?: string) => {
+    const params = new URLSearchParams({ server });
+    if (snapshotDir) {
+      params.set("snapshot_dir", snapshotDir);
+    }
+    return apiFetch<{ start: string | null; end: string | null }>(
+      `/api/v1/routines/options/timeline_snapshot_range?${params.toString()}`,
+    );
+  },
 
   getRoutineHooks: (name: string) =>
     apiFetch<RoutineHooks>(`/api/v1/routines/${encodeURIComponent(name)}/hooks`),

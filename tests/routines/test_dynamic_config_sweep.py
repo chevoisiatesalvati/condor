@@ -106,7 +106,7 @@ def test_mega_dynamic_both_on_samples():
         iter_mega_dynamic_sweep_configs("both_on", min_configs=30, seed=19)
     )
     assert len(configs) >= 32
-    assert any("anchor_hl_dynamic_mega_sweep_best" in name for name, _ in configs)
+    assert any("anchor_hl_dynamic_session_parity" in name for name, _ in configs)
     executor_values = {
         overrides["max_open_executors"]
         for _name, overrides in configs
@@ -120,12 +120,12 @@ def test_mega_dynamic_both_on_samples():
         assert is_sensible_replay_config(overrides)
 
 
-def test_hl_dynamic_mega_sweep_best_preset_matches_winner_base():
+def test_hl_dynamic_session_parity_preset_matches_winner_base():
     from routines.macdbb_replay.models import DynamicStrategyReplayConfig
 
     expected = {**CURRENT_WINNER_OVERRIDES, **DYNAMIC_MODE_PRESETS["both_on"]}
     resolved = resolve_config_with_preset(
-        DynamicStrategyReplayConfig(preset="hl_dynamic_mega_sweep_best")
+        DynamicStrategyReplayConfig(preset="hl_dynamic_session_parity")
     ).model_dump()
     skip = {"write_csv", "report_label", "compare_journal_flags", "preset"}
     for key, value in expected.items():
@@ -133,5 +133,5 @@ def test_hl_dynamic_mega_sweep_best_preset_matches_winner_base():
             assert resolved[key] == value, f"mismatch on {key}: {resolved[key]!r} != {value!r}"
 
     assert (
-        DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"]["max_open_executors"] == 10
+        DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"]["max_open_executors"] == 10
     )

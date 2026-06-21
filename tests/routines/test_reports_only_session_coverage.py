@@ -96,7 +96,7 @@ def test_report_index_starts_after_early_sessions():
 def test_session_37_live_reports_absent_before_backfill():
     """Without backfill files, session 37 has journal queue fields but no live HTML coverage."""
     config = DynamicStrategyReplayConfig(
-        preset="hl_dynamic_mega_sweep_best",
+        preset="hl_dynamic_session_parity",
         data_source="reports_only",
         config_source="preset",
     )
@@ -130,7 +130,7 @@ def test_session_37_live_reports_absent_before_backfill():
 def test_session_48_has_scanner_and_macd_report_coverage():
     """Later sessions overlap the saved report index — reports_only can compute signals."""
     config = DynamicStrategyReplayConfig(
-        preset="hl_dynamic_mega_sweep_best",
+        preset="hl_dynamic_session_parity",
         data_source="reports_only",
         config_source="preset",
     )

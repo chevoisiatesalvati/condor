@@ -26,6 +26,13 @@ function fieldVisible(
   field: RoutineFieldInfo,
   values: Record<string, unknown>,
 ): boolean {
+  if (field.hidden) return false;
+  if (field.hidden_when) {
+    const hidden = Object.entries(field.hidden_when).every(
+      ([key, expected]) => values[key] === expected,
+    );
+    if (hidden) return false;
+  }
   if (!field.visible_when) return true;
   return Object.entries(field.visible_when).every(
     ([key, expected]) => values[key] === expected,
@@ -40,34 +47,59 @@ function TimelineDateRangePicker({
   onChange: (key: string, value: unknown) => void;
 }) {
   const { server } = useServer();
-  const { data } = useQuery({
+  const snapshotDir = String(values.snapshot_dir ?? "");
+  const usesSnapshots = values.data_source === "snapshots";
+
+  const { data: reportRange } = useQuery({
     queryKey: ["timeline-report-range", server],
     queryFn: () => api.getTimelineReportRange(server!),
     enabled: !!server,
     staleTime: 60_000,
   });
 
+  const { data: snapshotRange, isLoading: snapshotRangeLoading } = useQuery({
+    queryKey: ["timeline-snapshot-range", server, snapshotDir],
+    queryFn: () => api.getTimelineSnapshotRange(server!, snapshotDir || undefined),
+    enabled: !!server && usesSnapshots && !!snapshotDir,
+    staleTime: 60_000,
+  });
+
   const startDate = isoToDateInput(values.range_start_utc);
   const endDate = isoToDateInput(values.range_end_utc);
 
-  const applyAllReports = () => {
-    if (!data?.start || !data?.end) return;
-    onChange("range_start_utc", data.start);
-    onChange("range_end_utc", data.end);
+  const applyRange = (start: string | null, end: string | null) => {
+    if (!start || !end) return;
+    onChange("range_start_utc", start);
+    onChange("range_end_utc", end);
   };
 
-  const applyLastDays = (days: number) => {
-    const end = todayDateInput();
+  const applyAllReports = () => {
+    applyRange(reportRange?.start ?? null, reportRange?.end ?? null);
+  };
+
+  const applyAllSnapshots = () => {
+    applyRange(snapshotRange?.start ?? null, snapshotRange?.end ?? null);
+  };
+
+  const applyLastDays = (days: number, endIso?: string | null) => {
+    const end = endIso ? isoToDateInput(endIso) : todayDateInput();
     const start = addDaysToDateInput(end, -days);
     onChange("range_start_utc", dateInputToIso(start, false));
-    onChange("range_end_utc", dateInputToIso(end, true));
+    onChange("range_end_utc", endIso ?? dateInputToIso(end, true));
+  };
+
+  const applyLastYears = (years: number) => {
+    const anchorEnd = usesSnapshots
+      ? snapshotRange?.end
+      : reportRange?.end;
+    applyLastDays(years * 365, anchorEnd);
   };
 
   return (
     <div className="mb-4 space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
       <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-muted)]">
         <Calendar className="h-3.5 w-3.5" />
-        Report period
+        Timeline range
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <input
@@ -89,13 +121,54 @@ function TimelineDateRangePicker({
         />
       </div>
       <div className="flex flex-wrap gap-2">
+        {usesSnapshots ? (
+          <button
+            type="button"
+            onClick={applyAllSnapshots}
+            disabled={snapshotRangeLoading || !snapshotDir || !snapshotRange?.start}
+            title={
+              !snapshotDir
+                ? "Select a snapshot directory first"
+                : snapshotRangeLoading
+                  ? "Loading snapshot range…"
+                  : !snapshotRange?.start
+                    ? "No snapshot range available for this directory"
+                    : undefined
+            }
+            className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+          >
+            All snapshots
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={applyAllReports}
+            disabled={!reportRange?.start}
+            className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+          >
+            All reports
+          </button>
+        )}
         <button
           type="button"
-          onClick={applyAllReports}
-          disabled={!data?.start}
-          className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+          onClick={() => applyLastYears(1)}
+          className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
         >
-          All reports
+          Last 1y
+        </button>
+        <button
+          type="button"
+          onClick={() => applyLastYears(2)}
+          className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
+        >
+          Last 2y
+        </button>
+        <button
+          type="button"
+          onClick={() => applyLastYears(3)}
+          className="rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
+        >
+          Last 3y
         </button>
         <button
           type="button"
@@ -112,9 +185,6 @@ function TimelineDateRangePicker({
           Last 30d
         </button>
       </div>
-      <p className="text-xs text-[var(--color-text-muted)]">
-        Leave empty to use the full scanner report span at run time.
-      </p>
     </div>
   );
 }
@@ -184,6 +254,7 @@ export function GroupedRoutineConfigForm({
                           fieldKey={key}
                           field={field}
                           value={values[key]}
+                          configValues={values}
                           onChange={onChange}
                         />
                       </div>

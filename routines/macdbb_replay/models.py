@@ -431,21 +431,14 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
 
     preset: Literal[
         "custom",
-        "safe",
-        "balanced",
-        "opportunistic",
-        "replay_probe",
-        "hl_sweep_best",
-        "hl_bb_loose_best",
-        "hl_mega_sweep_best",
-        "hl_dynamic_mega_sweep_best",
         "hl_dynamic_session_parity",
         "hl_dynamic_timeline_mega_best",
     ] = Field(
-        default="hl_dynamic_mega_sweep_best",
+        default="hl_dynamic_timeline_mega_best",
         description=(
-            "hl_dynamic_mega_sweep_best = mega sweep v4 top1 "
-            "(exec=10, sessions 37-60 routine validation)."
+            "hl_dynamic_timeline_mega_best = timeline mega sweep winner on "
+            "data/replay_snapshots_binance_1y (full snapshot span). "
+            "hl_dynamic_session_parity = session journal validation (mega sweep params)."
         ),
     )
 

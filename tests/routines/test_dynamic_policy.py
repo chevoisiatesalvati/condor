@@ -250,7 +250,7 @@ def test_estimate_pair_volatility_uses_scanner_natr_from_1m_cache():
     )
 
     config = DynamicStrategyReplayConfig(
-        preset="hl_dynamic_mega_sweep_best",
+        preset="hl_dynamic_session_parity",
         volatility_source="natr",
     )
     entry_time = dt.datetime(2026, 6, 17, 20, 32, tzinfo=dt.timezone.utc)

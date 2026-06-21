@@ -669,13 +669,14 @@ def simulate_strategy_session(
         meta = tick_meta_map[tick]
         if is_report_driven_data_source(config.data_source) and report_driven_params and scanner_reports:
             journal_meta = meta
+            open_pair_list = list(open_positions.keys())
             refreshed = refresh_tick_meta_from_reports(
                 journal_meta,
                 config,
                 report_driven_params,
                 reports_by_pair,
                 scanner_reports,
-                open_pairs=list(open_positions.keys()),
+                open_pairs=open_pair_list,
             )
             if (
                 isinstance(config, DynamicStrategyReplayConfig)

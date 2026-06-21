@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import datetime as dt
 import html
 import json
@@ -324,6 +325,26 @@ def build_reports_by_pair(reports: list[ReportMeta]) -> dict[str, list[ReportMet
     return by_pair
 
 
+_PAIR_INTERVAL_INDEX: dict[int, dict[tuple[str, str], list[ReportMeta]]] = {}
+
+
+def _reports_by_pair_interval(
+    reports_by_pair: dict[str, list[ReportMeta]],
+) -> dict[tuple[str, str], list[ReportMeta]]:
+    cache_key = id(reports_by_pair)
+    cached = _PAIR_INTERVAL_INDEX.get(cache_key)
+    if cached is not None:
+        return cached
+    by_key: dict[tuple[str, str], list[ReportMeta]] = {}
+    for pair, pair_reports in reports_by_pair.items():
+        for report in pair_reports:
+            by_key.setdefault((pair, report.interval), []).append(report)
+    for reports in by_key.values():
+        reports.sort(key=lambda item: item.created_at)
+    _PAIR_INTERVAL_INDEX[cache_key] = by_key
+    return by_key
+
+
 def nearest_report(
     reports_by_pair: dict[str, list[ReportMeta]],
     pair: str,
@@ -331,14 +352,17 @@ def nearest_report(
     max_window_minutes: int,
     interval: str = "1h",
 ) -> ReportMeta | None:
-    candidates = reports_by_pair.get(pair, [])
+    candidates = _reports_by_pair_interval(reports_by_pair).get((pair, interval), [])
     if not candidates:
         return None
     max_delta = dt.timedelta(minutes=max_window_minutes)
+    times = [report.created_at for report in candidates]
+    position = bisect.bisect_left(times, tick_time)
     nearest: tuple[dt.timedelta, ReportMeta] | None = None
-    for candidate in candidates:
-        if candidate.interval != interval:
+    for index in (position - 1, position):
+        if index < 0 or index >= len(candidates):
             continue
+        candidate = candidates[index]
         delta = abs(candidate.created_at - tick_time)
         if delta > max_delta:
             continue
@@ -398,8 +422,13 @@ def nearest_scanner_report(
     if not scanner_reports:
         return None
     max_delta = dt.timedelta(minutes=max_window_minutes)
+    times = [report.created_at for report in scanner_reports]
+    position = bisect.bisect_left(times, tick_time)
     nearest: tuple[dt.timedelta, ScannerReportMeta] | None = None
-    for candidate in scanner_reports:
+    for index in (position - 1, position):
+        if index < 0 or index >= len(scanner_reports):
+            continue
+        candidate = scanner_reports[index]
         delta = abs(candidate.created_at - tick_time)
         if delta > max_delta:
             continue

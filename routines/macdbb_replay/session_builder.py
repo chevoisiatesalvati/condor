@@ -82,6 +82,29 @@ def _populate_tick_from_reports(
             natr_by_pair={},
         )
 
+    if config.replay_mode == "timeline_backtest":
+        return TickMeta(
+            tick=tick_meta.tick,
+            timestamp=tick_meta.timestamp,
+            macd_pairs=list(queue.macd_pairs),
+            tradeable_count=queue.tradeable_count,
+            scanner_analyzed=queue.scanner_analyzed,
+            scanner_regime=queue.regime,
+            natr_floor_used=queue.natr_floor_used,
+            queue_total=list(queue.queue_total),
+            natr_by_pair=dict(queue.natr_by_pair),
+            signals_1h=dict(tick_meta.signals_1h),
+            filter_4h=dict(tick_meta.filter_4h),
+            monitored_pair=tick_meta.monitored_pair,
+            position_pnl_snapshot=tick_meta.position_pnl_snapshot,
+            position_pnl_by_pair=dict(tick_meta.position_pnl_by_pair),
+            barrier_closes=list(tick_meta.barrier_closes),
+            create_plans=dict(tick_meta.create_plans),
+            adaptive_activation_streak=tick_meta.adaptive_activation_streak,
+            thesis_decay_streak=tick_meta.thesis_decay_streak,
+            entry_class=tick_meta.entry_class,
+        )
+
     best_score = 0.0
     best_pair: str | None = None
 
@@ -325,4 +348,11 @@ def build_timeline_ticks(
     start = parse_iso_utc(config.range_start_utc)
     end = parse_iso_utc(config.range_end_utc)
     schedule = build_range_tick_schedule(start, end, config.frequency_sec)
-    return build_report_driven_ticks(schedule, config, strategy_params)
+    return {
+        tick_number: TickMeta(
+            tick=tick_number,
+            timestamp=meta.timestamp,
+            macd_pairs=[],
+        )
+        for tick_number, meta in schedule.items()
+    }

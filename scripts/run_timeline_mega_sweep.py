@@ -12,6 +12,8 @@ from pathlib import Path
 from routines.macdbb_replay.config_sweep import _mega_dynamic_space_size
 from routines.macdbb_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_replay.presets import resolve_config_with_preset
+from routines.macdbb_replay.replay_data import configure_replay_data_sources
+from routines.macdbb_replay.snapshot_store import load_manifest
 from routines.macdbb_replay.timeline_sweep import (
     DEFAULT_FREQUENCY_SEC,
     DEFAULT_TIME_WINDOW_MIN,
@@ -43,6 +45,17 @@ def _parse_args() -> argparse.Namespace:
     )
     sweep.add_argument("--frequency-sec", type=int, default=DEFAULT_FREQUENCY_SEC)
     sweep.add_argument("--time-window-min", type=int, default=DEFAULT_TIME_WINDOW_MIN)
+    sweep.add_argument(
+        "--output-stem",
+        default="",
+        help="CSV filename stem (default: strategy_replay_dynamic_{mode}_mega_timeline)",
+    )
+    sweep.add_argument(
+        "--snapshot-dir",
+        type=Path,
+        default=Path("data/replay_snapshots"),
+        help="Parquet snapshot directory for timeline replay",
+    )
 
     validate = sub.add_parser("validate", help="Validate top-N via dynamic replay routine")
     validate.add_argument(
@@ -86,6 +99,12 @@ def _parse_args() -> argparse.Namespace:
     )
     all_cmd.add_argument("--frequency-sec", type=int, default=DEFAULT_FREQUENCY_SEC)
     all_cmd.add_argument("--time-window-min", type=int, default=DEFAULT_TIME_WINDOW_MIN)
+    all_cmd.add_argument(
+        "--snapshot-dir",
+        type=Path,
+        default=Path("data/replay_snapshots"),
+        help="Parquet snapshot directory for timeline replay",
+    )
     all_cmd.add_argument("--validate-top", type=int, default=5)
     all_cmd.add_argument("--skip-preset", action="store_true")
     all_cmd.add_argument("--skip-agent", action="store_true")
@@ -94,25 +113,39 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def _run_sweep(args: argparse.Namespace) -> Path:
-    start, end = timeline_range_from_reports()
+    configure_replay_data_sources(
+        DynamicStrategyReplayConfig(
+            data_source="snapshots",
+            snapshot_dir=str(args.snapshot_dir),
+            replay_mode="timeline_backtest",
+        )
+    )
+    manifest = load_manifest(snapshot_dir=args.snapshot_dir)
+    if manifest and manifest.get("range_start_utc") and manifest.get("range_end_utc"):
+        start = manifest["range_start_utc"]
+        end = manifest["range_end_utc"]
+    else:
+        start, end = timeline_range_from_reports()
+    output_stem = args.output_stem or f"strategy_replay_dynamic_{args.dynamic_mode}_mega_timeline"
     print(
         f"Dynamic mega timeline sweep mode={args.dynamic_mode} | "
         f"space~{_mega_dynamic_space_size(args.dynamic_mode):,} | "
-        f"min_configs={args.min_configs} | range {start} -> {end}"
+        f"min_configs={args.min_configs} | range {start} -> {end} | snapshots={args.snapshot_dir}"
     )
     results, _baseline, _benchmark, range_start, range_end = await run_timeline_dynamic_sweep(
         dynamic_mode=args.dynamic_mode,
         output_dir=args.output_dir,
         min_configs=args.min_configs,
         seed=args.seed,
-        output_stem=f"strategy_replay_dynamic_{args.dynamic_mode}_mega_timeline",
+        output_stem=output_stem,
         frequency_sec=args.frequency_sec,
         time_window_min=args.time_window_min,
         range_start_utc=start,
         range_end_utc=end,
+        snapshot_dir=str(args.snapshot_dir),
         top_n=args.top,
     )
-    csv_path = args.output_dir / f"strategy_replay_dynamic_{args.dynamic_mode}_mega_timeline.csv"
+    csv_path = args.output_dir / f"{output_stem}.csv"
     if results:
         winner = results[0]
         print(

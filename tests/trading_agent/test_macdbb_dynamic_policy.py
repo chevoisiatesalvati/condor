@@ -14,7 +14,7 @@ from routines.macdbb_replay.presets import DYNAMIC_PRESET_OVERRIDES
 
 
 def _preset_strategy_params() -> dict:
-    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"]
+    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"]
     keys = (
         "enable_dynamic_sizing",
         "enable_dynamic_barriers",
@@ -63,7 +63,7 @@ def test_live_policy_config_from_params_defaults_fixed_when_flags_absent():
 def test_live_policy_config_from_params_matches_preset():
     params = _preset_strategy_params()
     config = live_policy_config_from_params(params, formal_notional_quote=500.0)
-    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"]
+    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"]
 
     assert config.formal_notional_quote == 500.0
     assert config.activation_ticks == preset["activation_ticks"]

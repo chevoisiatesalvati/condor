@@ -18,22 +18,23 @@ def test_timeline_sweep_overrides_sets_backtest_mode():
     assert overrides["replay_mode"] == "timeline_backtest"
     assert overrides["data_source"] == "snapshots"
     assert overrides["candle_source"] == "binance_perpetual"
-    assert overrides["price_source"] == "binance_candles"
+    assert overrides["price_source"] == "reports"
     assert "session_nums" not in overrides
     assert overrides["range_start_utc"].endswith("Z")
     assert overrides["range_end_utc"].endswith("Z")
 
 
-def test_timeline_preset_static_dict_has_no_session_or_baked_range():
+def test_timeline_preset_static_dict_has_default_snapshot_infra():
     preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_timeline_mega_best"]
     assert "session_nums" not in preset
-    assert "range_start_utc" not in preset
-    assert "range_end_utc" not in preset
     assert preset["replay_mode"] == "timeline_backtest"
+    assert preset["snapshot_dir"] == "data/replay_snapshots_binance_1y"
+    assert preset["range_start_utc"].endswith("Z")
+    assert preset["range_end_utc"].endswith("Z")
 
 
 def test_session_preset_static_dict_has_no_timeline_range():
-    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"]
+    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"]
     assert preset["replay_mode"] == "session_parity"
     assert "session_nums" in preset
     assert "range_start_utc" not in preset
@@ -81,6 +82,26 @@ def test_timeline_preset_respects_user_range():
     assert config.range_end_utc == "2026-06-10T23:59:59Z"
 
 
+def test_timeline_preset_respects_user_snapshot_dir():
+    config = resolve_config_with_preset(
+        DynamicStrategyReplayConfig(
+            preset="hl_dynamic_timeline_mega_best",
+            snapshot_dir="data/replay_snapshots_binance_1y",
+        )
+    )
+    assert config.snapshot_dir == "data/replay_snapshots_binance_1y"
+    assert config.replay_mode == "timeline_backtest"
+
+
+def test_timeline_range_from_snapshots_uses_manifest():
+    from routines.macdbb_replay.replay_range import timeline_range_from_snapshots
+
+    start, end = timeline_range_from_snapshots("data/replay_snapshots_binance_1y")
+    assert start.endswith("Z")
+    assert end.endswith("Z")
+    assert start < end
+
+
 def test_dynamic_replay_field_groups():
     groups = DynamicStrategyReplayConfig.get_routine_groups()
     assert "Preset & mode" in groups
@@ -93,7 +114,11 @@ def test_dynamic_replay_field_metadata_has_groups_and_visibility():
     assert fields["range_start_utc"]["group"] == "Timeline"
     assert fields["range_start_utc"]["visible_when"]["replay_mode"] == "timeline_backtest"
     assert fields["session_nums"]["visible_when"]["replay_mode"] == "session_parity"
-    assert fields["range_start_utc"]["widget"] == "date"
+    assert fields["snapshot_dir"]["visible_when"]["data_source"] == "snapshots"
+    assert fields["snapshot_dir"]["options_from"] == "replay_snapshot_dirs"
+    assert fields["tick_schedule"]["hidden"] is True
+    assert fields["config_source"]["hidden"] is True
+    assert fields["price_source"]["hidden_when"]["data_source"] == "snapshots"
 
 
 def test_replay_config_to_agent_strategy_params_hours():

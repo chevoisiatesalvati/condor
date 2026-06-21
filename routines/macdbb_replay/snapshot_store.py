@@ -33,19 +33,31 @@ _scanner_index: list[ScannerReportMeta] | None = None
 _macdbb_index: list[ReportMeta] | None = None
 _scanner_frame: pd.DataFrame | None = None
 _macdbb_frame: pd.DataFrame | None = None
+_parsed_scanner_by_tick: dict[str, ParsedScannerReport] | None = None
+_parsed_macdbb_by_id: dict[str, ParsedReport] | None = None
 
 
 def configure_snapshot_dir(snapshot_dir: Path | str | None) -> None:
     """Set active snapshot directory and clear cached indexes."""
     global _active_snapshot_dir, _scanner_index, _macdbb_index, _scanner_frame, _macdbb_frame
-    if snapshot_dir is None:
-        _active_snapshot_dir = None
-    else:
-        _active_snapshot_dir = Path(snapshot_dir)
+    global _parsed_scanner_by_tick, _parsed_macdbb_by_id
+    new_dir = None if snapshot_dir is None else Path(snapshot_dir).resolve()
+    old_dir = _active_snapshot_dir.resolve() if _active_snapshot_dir is not None else None
+    if new_dir == old_dir:
+        return
+    _active_snapshot_dir = new_dir
     _scanner_index = None
     _macdbb_index = None
     _scanner_frame = None
     _macdbb_frame = None
+    _parsed_scanner_by_tick = None
+    _parsed_macdbb_by_id = None
+
+
+def _activate_snapshot_dir(root: Path) -> None:
+    """Mark snapshot dir active without invalidating loaded caches."""
+    global _active_snapshot_dir
+    _active_snapshot_dir = root.resolve()
 
 
 def get_snapshot_dir() -> Path | None:
@@ -215,11 +227,95 @@ def append_states(
 
 
 def _invalidate_indexes() -> None:
-    global _scanner_index, _macdbb_index, _scanner_frame, _macdbb_frame
+    global _scanner_index, _macdbb_index, _scanner_frame, _macdbb_frame, _parsed_scanner_by_tick
     _scanner_index = None
     _macdbb_index = None
     _scanner_frame = None
     _macdbb_frame = None
+    _parsed_scanner_by_tick = None
+    _parsed_macdbb_by_id = None
+
+
+def _ensure_parsed_scanner_cache(root: Path) -> dict[str, ParsedScannerReport]:
+    global _parsed_scanner_by_tick
+    if _parsed_scanner_by_tick is not None and get_snapshot_dir() == root:
+        return _parsed_scanner_by_tick
+
+    frame = _load_scanner_frame(root)
+    cache: dict[str, ParsedScannerReport] = {}
+    if frame.empty:
+        _parsed_scanner_by_tick = cache
+        return cache
+
+    for tick_id, group in frame.groupby("tick_id"):
+        first = group.iloc[0]
+        mature: list[ScannerPairRow] = []
+        degen: list[ScannerPairRow] = []
+        for _, row in group.iterrows():
+            pair_row = ScannerPairRow(
+                pair=str(row["pair"]),
+                volume_24h_usd=float(row["volume_24h_usd"]),
+                price_change_24h=float(row["price_change_24h"]),
+                natr_mean=float(row["natr_mean"]),
+                natr_cv=float(row["natr_cv"]),
+                bucket_cv=float(row["bucket_cv"]),
+                price_range_pct=float(row["price_range_pct"]),
+            )
+            if str(row["bucket"]) == "degen":
+                degen.append(pair_row)
+            else:
+                mature.append(pair_row)
+        cache[str(tick_id)] = ParsedScannerReport(
+            total_analyzed=int(first["total_analyzed"]),
+            mature=mature,
+            degen=degen,
+            lookback_hours=int(first["lookback_hours"]),
+        )
+
+    _parsed_scanner_by_tick = cache
+    _activate_snapshot_dir(root)
+    return cache
+
+
+def _ensure_parsed_macdbb_cache(root: Path) -> dict[str, ParsedReport]:
+    global _parsed_macdbb_by_id
+    if _parsed_macdbb_by_id is not None and get_snapshot_dir() == root:
+        return _parsed_macdbb_by_id
+
+    frame = _load_macdbb_frame(root)
+    cache: dict[str, ParsedReport] = {}
+    if frame.empty:
+        _parsed_macdbb_by_id = cache
+        return cache
+
+    for _, row in frame.iterrows():
+        tick_id = str(row["tick_id"])
+        pair = str(row["pair"])
+        interval = str(row["interval"])
+        report_id = f"{tick_id}:{pair}:{interval}"
+        cache[report_id] = ParsedReport(
+            pair=pair,
+            interval=interval,
+            signal=str(row["signal"]),
+            price=float(row["price"]),
+            bb_pos_pct=float(row["bb_pos_pct"]),
+            bb_mid=float(row["bb_mid"]),
+            bb_upper=float(row["bb_upper"]),
+            macd=float(row["macd"]),
+            signal_line=float(row["signal_line"]),
+            histogram=float(row["histogram"]),
+            trend=str(row["trend"]),
+            momentum=str(row["momentum"]),
+            bullish_cross=bool(row["bullish_cross"]),
+            price_le_mid=bool(row["price_le_mid"]),
+            bearish_cross=bool(row["bearish_cross"]),
+            price_ge_upper=bool(row["price_ge_upper"]),
+            macd_lt_zero=bool(row["macd_lt_zero"]),
+        )
+
+    _parsed_macdbb_by_id = cache
+    _activate_snapshot_dir(root)
+    return cache
 
 
 def write_manifest(
@@ -272,7 +368,7 @@ def load_scanner_index(*, snapshot_dir: Path | None = None) -> list[ScannerRepor
         )
     metas.sort(key=lambda item: item.created_at)
     _scanner_index = metas
-    configure_snapshot_dir(root)
+    _activate_snapshot_dir(root)
     return metas
 
 
@@ -304,7 +400,7 @@ def load_macdbb_index(*, snapshot_dir: Path | None = None) -> list[ReportMeta]:
         )
     metas.sort(key=lambda item: item.created_at)
     _macdbb_index = metas
-    configure_snapshot_dir(root)
+    _activate_snapshot_dir(root)
     return metas
 
 
@@ -334,38 +430,8 @@ def load_parsed_scanner_snapshot(
     snapshot_dir: Path | None = None,
 ) -> ParsedScannerReport | None:
     root = snapshot_dir_or_default(snapshot_dir)
-    frame = _load_scanner_frame(root)
-    if frame.empty:
-        return None
-    tick_id = report_meta.report_id
-    group = frame[frame["tick_id"] == tick_id]
-    if group.empty:
-        return None
-
-    first = group.iloc[0]
-    mature: list[ScannerPairRow] = []
-    degen: list[ScannerPairRow] = []
-    for _, row in group.iterrows():
-        pair_row = ScannerPairRow(
-            pair=str(row["pair"]),
-            volume_24h_usd=float(row["volume_24h_usd"]),
-            price_change_24h=float(row["price_change_24h"]),
-            natr_mean=float(row["natr_mean"]),
-            natr_cv=float(row["natr_cv"]),
-            bucket_cv=float(row["bucket_cv"]),
-            price_range_pct=float(row["price_range_pct"]),
-        )
-        if str(row["bucket"]) == "degen":
-            degen.append(pair_row)
-        else:
-            mature.append(pair_row)
-
-    return ParsedScannerReport(
-        total_analyzed=int(first["total_analyzed"]),
-        mature=mature,
-        degen=degen,
-        lookback_hours=int(first["lookback_hours"]),
-    )
+    cache = _ensure_parsed_scanner_cache(root)
+    return cache.get(str(report_meta.report_id))
 
 
 def nearest_macdbb_snapshot(
@@ -402,37 +468,5 @@ def load_parsed_macdbb_snapshot(
     snapshot_dir: Path | None = None,
 ) -> ParsedReport | None:
     root = snapshot_dir_or_default(snapshot_dir)
-    frame = _load_macdbb_frame(root)
-    if frame.empty:
-        return None
-    parts = report_meta.report_id.split(":")
-    if len(parts) != 3:
-        return None
-    tick_id, pair, interval = parts
-    rows = frame[
-        (frame["tick_id"] == tick_id)
-        & (frame["pair"] == pair)
-        & (frame["interval"] == interval)
-    ]
-    if rows.empty:
-        return None
-    row = rows.iloc[-1]
-    return ParsedReport(
-        pair=str(row["pair"]),
-        interval=str(row["interval"]),
-        signal=str(row["signal"]),
-        price=float(row["price"]),
-        bb_pos_pct=float(row["bb_pos_pct"]),
-        bb_mid=float(row["bb_mid"]),
-        bb_upper=float(row["bb_upper"]),
-        macd=float(row["macd"]),
-        signal_line=float(row["signal_line"]),
-        histogram=float(row["histogram"]),
-        trend=str(row["trend"]),
-        momentum=str(row["momentum"]),
-        bullish_cross=bool(row["bullish_cross"]),
-        price_le_mid=bool(row["price_le_mid"]),
-        bearish_cross=bool(row["bearish_cross"]),
-        price_ge_upper=bool(row["price_ge_upper"]),
-        macd_lt_zero=bool(row["macd_lt_zero"]),
-    )
+    cache = _ensure_parsed_macdbb_cache(root)
+    return cache.get(str(report_meta.report_id))

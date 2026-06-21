@@ -101,6 +101,7 @@ async def run_timeline_dynamic_sweep(
     time_window_min: int = DEFAULT_TIME_WINDOW_MIN,
     range_start_utc: str | None = None,
     range_end_utc: str | None = None,
+    snapshot_dir: str | None = None,
     top_n: int = 40,
 ) -> tuple[list[SweepResult], str, float, str, str]:
     timeline_fields = timeline_sweep_overrides(
@@ -109,9 +110,24 @@ async def run_timeline_dynamic_sweep(
         frequency_sec=frequency_sec,
         time_window_min=time_window_min,
     )
+    if snapshot_dir:
+        timeline_fields = {**timeline_fields, "snapshot_dir": snapshot_dir}
     load_config = DynamicStrategyReplayConfig(
         **_finalize_mega_dynamic_config(_merge(_dynamic_sweep_base(dynamic_mode), **timeline_fields))
     )
+    from routines.macdbb_replay.replay_data import configure_replay_data_sources
+
+    configure_replay_data_sources(load_config)
+    if snapshot_dir:
+        from routines.macdbb_replay.snapshot_store import (
+            _ensure_parsed_macdbb_cache,
+            _ensure_parsed_scanner_cache,
+            snapshot_dir_or_default,
+        )
+
+        root = snapshot_dir_or_default(snapshot_dir)
+        _ensure_parsed_scanner_cache(root)
+        _ensure_parsed_macdbb_cache(root)
     (
         parsed_sessions,
         hl_caches,

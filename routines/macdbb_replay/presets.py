@@ -187,6 +187,9 @@ _DRIVER_SESSION: dict[str, PresetValue] = {
     "write_csv": False,
 }
 
+# Default parquet snapshots for timeline mega best preset (UI + routine).
+DEFAULT_TIMELINE_SNAPSHOT_DIR = "data/replay_snapshots_binance_1y"
+
 _DRIVER_TIMELINE: dict[str, PresetValue] = {
     "replay_mode": "timeline_backtest",
     "data_source": "snapshots",
@@ -196,11 +199,8 @@ _DRIVER_TIMELINE: dict[str, PresetValue] = {
     "use_journal_barriers": False,
     "write_csv": False,
     "candle_source": "binance_perpetual",
-    "price_source": "binance_candles",
-    "hl_use_cache": True,
-    "hl_refresh_cache": False,
-    "hl_cache_dir": "data/binance_candles",
-    "snapshot_dir": "data/replay_snapshots",
+    "price_source": "reports",
+    "snapshot_dir": DEFAULT_TIMELINE_SNAPSHOT_DIR,
 }
 
 _STRATEGY_SESSION_MEGA_BEST: dict[str, PresetValue] = {
@@ -304,6 +304,22 @@ _STRATEGY_TIMELINE_MEGA_BEST: dict[str, PresetValue] = {
 }
 
 
+def _build_timeline_driver() -> dict[str, PresetValue]:
+    """Timeline driver with default snapshot dir and full snapshot date span."""
+    driver = dict(_DRIVER_TIMELINE)
+    try:
+        from routines.macdbb_replay.replay_range import timeline_range_from_snapshots
+
+        range_start, range_end = timeline_range_from_snapshots(
+            DEFAULT_TIMELINE_SNAPSHOT_DIR
+        )
+        driver["range_start_utc"] = range_start
+        driver["range_end_utc"] = range_end
+    except ValueError:
+        pass
+    return driver
+
+
 def _merge_preset_layers(*layers: dict[str, PresetValue]) -> dict[str, PresetValue]:
     merged: dict[str, PresetValue] = {}
     for layer in layers:
@@ -311,26 +327,18 @@ def _merge_preset_layers(*layers: dict[str, PresetValue]) -> dict[str, PresetVal
     return merged
 
 
-# Dynamic replay only — mega sweep v4 top1 (sessions 37-60 routine validation, cap-norm +$342).
+# Dynamic replay — timeline mega best + session parity (journal validation).
 DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
-    "hl_dynamic_mega_sweep_best": _merge_preset_layers(
-        _DYNAMIC_PRESET_INFRA,
-        _DRIVER_SESSION,
-        _STRATEGY_SESSION_MEGA_BEST,
-    ),
     "hl_dynamic_timeline_mega_best": _merge_preset_layers(
         _DYNAMIC_PRESET_INFRA,
-        _DRIVER_TIMELINE,
+        _build_timeline_driver(),
         _STRATEGY_TIMELINE_MEGA_BEST,
     ),
     "hl_dynamic_session_parity": _merge_preset_layers(
+        _DYNAMIC_PRESET_INFRA,
+        _DRIVER_SESSION,
+        _STRATEGY_SESSION_MEGA_BEST,
         {
-            "price_source": "auto",
-            "hl_use_cache": True,
-            "require_price_data": True,
-        },
-        {
-            **_DRIVER_SESSION,
             "config_source": "session",
             "compare_journal_flags": False,
         },
@@ -339,9 +347,38 @@ DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
 
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
 
+# Form values that should win over named preset defaults when explicitly set.
+USER_WINS_AFTER_PRESET_KEYS = frozenset(
+    {
+        "snapshot_dir",
+        "hl_cache_dir",
+        "range_start_utc",
+        "range_end_utc",
+    }
+)
+
+
+def _preserve_user_overrides(original: ConfigT, merged: ConfigT) -> ConfigT:
+    """Re-apply non-empty user infra fields overwritten by preset merge."""
+    if getattr(original, "preset", "custom") != getattr(merged, "preset", "custom"):
+        return merged
+    updates: dict[str, PresetValue] = {}
+    for key in USER_WINS_AFTER_PRESET_KEYS:
+        user_val = getattr(original, key, None)
+        if user_val is None or user_val == "":
+            continue
+        if user_val != getattr(merged, key, None):
+            updates[key] = user_val
+    if not updates:
+        return merged
+    config_type = type(merged)
+    allowed = set(config_type.model_fields)
+    filtered = {key: value for key, value in updates.items() if key in allowed}
+    return config_type(**{**merged.model_dump(), **filtered})
+
 
 def resolve_timeline_range(config: ConfigT) -> ConfigT:
-    """Fill missing timeline range from scanner report index."""
+    """Fill missing timeline range from snapshots or scanner report index."""
     replay_mode = getattr(config, "replay_mode", None)
     if replay_mode != "timeline_backtest":
         return config
@@ -349,9 +386,22 @@ def resolve_timeline_range(config: ConfigT) -> ConfigT:
     end = getattr(config, "range_end_utc", None)
     if start and end:
         return config
-    from routines.macdbb_replay.replay_range import timeline_range_from_reports
+    data_source = getattr(config, "data_source", None)
+    snapshot_dir = getattr(config, "snapshot_dir", None)
+    range_start: str | None = None
+    range_end: str | None = None
+    if data_source == "snapshots":
+        try:
+            from routines.macdbb_replay.replay_range import timeline_range_from_snapshots
 
-    range_start, range_end = timeline_range_from_reports()
+            range_start, range_end = timeline_range_from_snapshots(snapshot_dir)
+        except ValueError:
+            range_start = None
+            range_end = None
+    if not range_start or not range_end:
+        from routines.macdbb_replay.replay_range import timeline_range_from_reports
+
+        range_start, range_end = timeline_range_from_reports()
     updates: dict[str, PresetValue] = {}
     if not start:
         updates["range_start_utc"] = range_start
@@ -371,7 +421,8 @@ def resolve_config_with_preset(config: ConfigT) -> ConfigT:
     When preset is not ``custom``, keys defined in PRESET_OVERRIDES always win
     over form/default values (the UI sends every field, so exclude_unset would
     not help). Fields outside the preset dict — e.g. session_nums, sl_pct —
-    still come from the form.
+    still come from the form. Infra paths/ranges in USER_WINS_AFTER_PRESET_KEYS
+    are preserved when the user explicitly sets them.
     """
     preset = getattr(config, "preset", "custom")
     if preset == "custom":
@@ -383,4 +434,5 @@ def resolve_config_with_preset(config: ConfigT) -> ConfigT:
     allowed = set(config_type.model_fields)
     filtered = {key: value for key, value in overrides.items() if key in allowed}
     merged = config_type(**{**config.model_dump(), **filtered, "preset": preset})
+    merged = _preserve_user_overrides(config, merged)
     return resolve_timeline_range(merged)

@@ -81,6 +81,15 @@ def session_has_trusted_prices(
     hl_price_cache: HlPriceCache | None = None,
 ) -> bool:
     """True when at least one tick/pair has a trusted price from the configured source."""
+    if (
+        getattr(config, "replay_mode", None) == "timeline_backtest"
+        and is_report_driven_data_source(config.data_source)
+    ):
+        from routines.macdbb_replay import snapshot_store
+
+        if snapshot_store.is_snapshot_store_active():
+            return True
+
     if config.price_source in ("auto", "hl_candles", "binance_candles") and hl_cache_has_prices(
         tick_meta_map,
         hl_price_cache,

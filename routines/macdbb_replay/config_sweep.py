@@ -45,9 +45,9 @@ from routines.macdbb_replay.reports import (
 from routines.macdbb_replay.replay_loader import load_replay_sessions
 from routines.macdbb_replay.simulator import simulate_strategy_session
 
-# Current live winner — hl_dynamic_mega_sweep_best (mega sweep v4 top1, sessions 37-60).
+# Session mega sweep anchor for dynamic config sweeps.
 CURRENT_WINNER_OVERRIDES: dict[str, Any] = {
-    **DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"],
+    **DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"],
     "preset": "custom",
 }
 
@@ -252,7 +252,7 @@ def iter_mega_dynamic_sweep_configs(
     anchors: list[tuple[str, dict[str, Any]]] = [
         (f"dyn_{mode}_baseline_winner", dict(base)),
         (
-            f"dyn_{mode}_anchor_hl_dynamic_mega_sweep_best",
+            f"dyn_{mode}_anchor_hl_dynamic_session_parity",
             _finalize_mega_dynamic_config(
                 _merge(_dynamic_sweep_base(mode), **CURRENT_WINNER_OVERRIDES)
             ),
@@ -336,7 +336,11 @@ async def _load_sessions(
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_vol_candle_cache: dict[str, list[dict[str, float]]] = {}
-    if parsed_sessions:
+    skip_price_prefetch = (
+        getattr(config, "replay_mode", None) == "timeline_backtest"
+        and is_report_driven_data_source(config.data_source)
+    )
+    if parsed_sessions and not skip_price_prefetch:
         (
             hl_caches_by_session,
             hl_candle_cache,

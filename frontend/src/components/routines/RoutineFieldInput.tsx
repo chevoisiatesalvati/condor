@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { RoutineFieldInfo } from "@/lib/api";
 import { api } from "@/lib/api";
@@ -9,14 +9,19 @@ import {
   dateInputToIso,
   isoToDateInput,
 } from "@/lib/replayDateUtils";
+import { getDisabledSelectOptions } from "@/lib/routineUtils";
 
 function SelectField({
+  fieldKey,
   field,
   value,
+  configValues,
   onChange,
 }: {
+  fieldKey: string;
   field: RoutineFieldInfo;
   value: unknown;
+  configValues: Record<string, unknown>;
   onChange: (v: unknown) => void;
 }) {
   const { server } = useServer();
@@ -30,26 +35,44 @@ function SelectField({
   });
 
   const options = usesDynamicOptions ? (data?.options ?? []) : staticOptions;
+  const allowsEmpty = field.nullable === true;
+  const disabledOptions = useMemo(
+    () => getDisabledSelectOptions(fieldKey, configValues),
+    [fieldKey, configValues.replay_mode, configValues.data_source],
+  );
 
   useEffect(() => {
+    if (allowsEmpty) return;
     if (options.length === 0) return;
-    if (value && value !== "" && options.includes(String(value))) return;
-    onChange(options[0]);
-  }, [options, value, onChange]);
+    const current = String(value ?? "");
+    if (current && options.includes(current) && !disabledOptions.has(current)) {
+      return;
+    }
+    const firstEnabled = options.find((opt) => !disabledOptions.has(opt));
+    if (firstEnabled) onChange(firstEnabled);
+  }, [allowsEmpty, options, value, onChange, disabledOptions]);
 
   return (
     <div className="relative">
       <select
-        value={String(value ?? field.default ?? "")}
-        onChange={(e) => onChange(e.target.value)}
+        value={String(value ?? "")}
+        onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
         className="w-full appearance-none rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 pr-8 text-sm text-[var(--color-text)] focus:border-[var(--color-primary)] focus:outline-none"
       >
+        {allowsEmpty && (
+          <option value="">—</option>
+        )}
         {usesDynamicOptions && isLoading && <option value="">Loading...</option>}
-        {!isLoading && options.length === 0 && (
+        {!isLoading && options.length === 0 && !allowsEmpty && (
           <option value="">No options available</option>
         )}
         {options.map((opt) => (
-          <option key={opt} value={opt}>
+          <option
+            key={opt}
+            value={opt}
+            disabled={disabledOptions.has(opt)}
+            className={disabledOptions.has(opt) ? "text-[var(--color-text-muted)]" : undefined}
+          >
             {opt}
           </option>
         ))}
@@ -113,16 +136,26 @@ export function RoutineFieldInput({
   fieldKey,
   field,
   value,
+  configValues,
   onChange,
 }: {
   fieldKey: string;
   field: RoutineFieldInfo;
   value: unknown;
+  configValues?: Record<string, unknown>;
   onChange: (key: string, value: unknown) => void;
 }) {
+  const allValues = configValues ?? {};
+
   if (field.widget === "select" && (field.options_from || (field.options?.length ?? 0) > 0)) {
     return (
-      <SelectField field={field} value={value} onChange={(v) => onChange(fieldKey, v)} />
+      <SelectField
+        fieldKey={fieldKey}
+        field={field}
+        value={value}
+        configValues={allValues}
+        onChange={(v) => onChange(fieldKey, v)}
+      />
     );
   }
 

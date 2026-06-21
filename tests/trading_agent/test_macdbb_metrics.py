@@ -14,7 +14,7 @@ from routines.macdbb_replay.presets import DYNAMIC_PRESET_OVERRIDES
 
 
 def _v6_metrics_params() -> dict:
-    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"]
+    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"]
     keys = (
         "bb_proximity_epsilon_pct",
         "adaptive_long_bb_pos_max",

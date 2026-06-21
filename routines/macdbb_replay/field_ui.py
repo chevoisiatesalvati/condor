@@ -6,6 +6,23 @@ from typing import Any
 
 SESSION_MODE = {"replay_mode": "session_parity"}
 TIMELINE_MODE = {"replay_mode": "timeline_backtest"}
+SNAPSHOT_MODE = {"data_source": "snapshots"}
+HIDE_WHEN_SNAPSHOTS = {"data_source": "snapshots"}
+
+_HL_PREFETCH_FIELDS = (
+    "candle_source",
+    "price_source",
+    "hl_price_interval",
+    "hl_barrier_interval",
+    "hl_max_concurrent",
+    "hl_request_interval_ms",
+    "hl_max_retries",
+    "hl_use_cache",
+    "hl_refresh_cache",
+    "hl_cache_dir",
+    "require_price_data",
+    "scanner_lookback_hours",
+)
 
 REPLAY_FIELD_GROUPS: list[str] = [
     "Preset & mode",
@@ -24,7 +41,23 @@ REPLAY_FIELD_UI: dict[str, dict[str, Any]] = {
     "strategy_slug": {"group": "Preset & mode"},
     "replay_mode": {"group": "Preset & mode"},
     "data_source": {"group": "Preset & mode"},
-    "tick_schedule": {"group": "Preset & mode"},
+    "tick_schedule": {"group": "Preset & mode", "hidden": True},
+    "config_source": {"group": "Preset & mode", "hidden": True},
+    "snapshot_dir": {
+        "group": "Preset & mode",
+        "visible_when": SNAPSHOT_MODE,
+        "options_from": "replay_snapshot_dirs",
+        "widget": "select",
+    },
+}
+
+for _hl_field in _HL_PREFETCH_FIELDS:
+    REPLAY_FIELD_UI[_hl_field] = {
+        "group": "HL price prefetch",
+        "hidden_when": HIDE_WHEN_SNAPSHOTS,
+    }
+
+REPLAY_FIELD_UI.update({
     "range_start_utc": {
         "group": "Timeline",
         "visible_when": TIMELINE_MODE,
@@ -37,9 +70,8 @@ REPLAY_FIELD_UI: dict[str, dict[str, Any]] = {
     },
     "frequency_sec": {"group": "Timeline", "visible_when": TIMELINE_MODE},
     "session_nums": {"group": "Sessions", "visible_when": SESSION_MODE},
-    "config_source": {"group": "Sessions", "visible_when": SESSION_MODE},
-    "time_window_min": {"group": "Sessions"},
-    "use_journal_barriers": {"group": "Sessions"},
+    "time_window_min": {"group": "Sessions", "visible_when": SESSION_MODE},
+    "use_journal_barriers": {"group": "Sessions", "visible_when": SESSION_MODE},
     "activation_ticks": {"group": "Adaptive gates"},
     "thesis_bb_drift_pts": {"group": "Adaptive gates"},
     "adaptive_long_bb_pos_max": {"group": "Adaptive gates"},
@@ -96,18 +128,7 @@ REPLAY_FIELD_UI: dict[str, dict[str, Any]] = {
         "visible_when": SESSION_MODE,
     },
     "report_label": {"group": "Execution & output"},
-    "price_source": {"group": "HL price prefetch"},
-    "hl_price_interval": {"group": "HL price prefetch"},
-    "hl_barrier_interval": {"group": "HL price prefetch"},
-    "hl_max_concurrent": {"group": "HL price prefetch"},
-    "hl_request_interval_ms": {"group": "HL price prefetch"},
-    "hl_max_retries": {"group": "HL price prefetch"},
-    "hl_use_cache": {"group": "HL price prefetch"},
-    "hl_refresh_cache": {"group": "HL price prefetch"},
-    "hl_cache_dir": {"group": "HL price prefetch"},
-    "require_price_data": {"group": "HL price prefetch"},
-    "scanner_lookback_hours": {"group": "HL price prefetch"},
-}
+})
 
 
 def _literal_field_options(annotation: Any) -> list[str] | None:
@@ -140,6 +161,13 @@ def build_dynamic_replay_field_metadata(config_class: type) -> dict[str, dict[st
             entry["widget"] = "select"
             entry["options"] = literal_options
 
+        from typing import get_args, get_origin
+
+        origin = get_origin(annotation)
+        args = get_args(annotation) if origin is not None else ()
+        if type(None) in args:
+            entry["nullable"] = True
+
         extra = field_info.json_schema_extra
         if isinstance(extra, dict):
             if "widget" in extra:
@@ -155,6 +183,15 @@ def build_dynamic_replay_field_metadata(config_class: type) -> dict[str, dict[st
             entry["group"] = ui["group"]
         if "visible_when" in ui:
             entry["visible_when"] = ui["visible_when"]
+        if "nullable" in ui:
+            entry["nullable"] = ui["nullable"]
+        if ui.get("hidden"):
+            entry["hidden"] = True
+        if "hidden_when" in ui:
+            entry["hidden_when"] = ui["hidden_when"]
+        if "options_from" in ui:
+            entry["options_from"] = ui["options_from"]
+            entry["widget"] = ui.get("widget", "select")
         if "widget" in ui and "widget" not in entry:
             entry["widget"] = ui["widget"]
 

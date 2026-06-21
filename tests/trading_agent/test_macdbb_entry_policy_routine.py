@@ -22,7 +22,7 @@ def _load_routine_module():
 
 
 def _strategy_params() -> dict:
-    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_mega_sweep_best"]
+    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"]
     keys = (
         "enable_dynamic_sizing",
         "enable_dynamic_barriers",
