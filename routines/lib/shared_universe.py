@@ -11,7 +11,7 @@ import aiohttp
 
 from routines.lib.hl_candles import trading_pair_to_hl_coin
 from routines.lib.pair_format import binance_pair_from_any, hl_pair_from_any
-from routines.macdbb_replay.report_backfill import fetch_binance_universe, fetch_hl_universe
+from routines.macdbb_scanner_aggressive_hl_replay.report_backfill import fetch_binance_universe, fetch_hl_universe
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_INTERSECTION_MANIFEST = ROOT_DIR / "data" / "shared_universe" / "intersection.json"

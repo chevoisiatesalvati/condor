@@ -11,25 +11,25 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from routines.macdbb_replay.dynamic_policy import DynamicReplayPolicy
-from routines.macdbb_replay.hl_prices import hl_prefetch_settings_from_config, prefetch_replay_hl_prices
-from routines.macdbb_replay.live_ledger import (
+from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import DynamicReplayPolicy
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import hl_prefetch_settings_from_config, prefetch_replay_hl_prices
+from routines.macdbb_scanner_aggressive_hl_replay.live_ledger import (
     compare_legs,
     extract_live_legs,
     format_comparison_report,
     parse_journal_live_pnl,
     sim_trades_to_legs,
 )
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.replay_loader import load_replay_sessions
-from routines.macdbb_replay.reports import build_reports_by_pair, load_reports_index
-from routines.macdbb_replay.session_config import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
+from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index
+from routines.macdbb_scanner_aggressive_hl_replay.session_config import (
     apply_policy_override,
     replay_config_from_session,
     session_has_dynamic_policy,
 )
-from routines.macdbb_replay.simulator import simulate_strategy_session
+from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
 
 
 def _parse_session_nums(raw: str) -> list[int]:

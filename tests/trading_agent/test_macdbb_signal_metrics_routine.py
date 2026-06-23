@@ -6,7 +6,7 @@ import asyncio
 import importlib.util
 from pathlib import Path
 
-from routines.macdbb_replay.presets import DYNAMIC_PRESET_OVERRIDES
+from routines.macdbb_scanner_aggressive_hl_replay.presets import DYNAMIC_PRESET_OVERRIDES
 
 
 def _load_routine_module():

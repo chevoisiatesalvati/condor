@@ -6,11 +6,11 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
-from routines.macdbb_replay.journal import parse_journal_ticks
-from routines.macdbb_replay.metrics import compute_metrics
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig, TickMeta
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.reports import (
+from routines.macdbb_scanner_aggressive_hl_replay.journal import parse_journal_ticks
+from routines.macdbb_scanner_aggressive_hl_replay.metrics import compute_metrics
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig, TickMeta
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ReportMeta,
     ScannerReportMeta,
     build_reports_by_pair,
@@ -21,10 +21,10 @@ from routines.macdbb_replay.reports import (
     nearest_report,
     nearest_scanner_report,
 )
-from routines.macdbb_replay.replay_data import is_report_driven_data_source
-from routines.macdbb_replay.scanner_queue import build_scanner_queue
-from routines.macdbb_replay.session_config import replay_config_from_session
-from routines.macdbb_replay.tick_schedule import (
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import is_report_driven_data_source
+from routines.macdbb_scanner_aggressive_hl_replay.scanner_queue import build_scanner_queue
+from routines.macdbb_scanner_aggressive_hl_replay.session_config import replay_config_from_session
+from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import (
     build_range_tick_schedule,
     parse_iso_utc,
     parse_tick_schedule_file,

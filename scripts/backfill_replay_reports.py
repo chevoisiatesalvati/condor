@@ -9,14 +9,14 @@ import datetime as dt
 import logging
 import sys
 
-from routines.macdbb_replay.models import parse_session_selector
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.report_backfill import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import parse_session_selector
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.report_backfill import (
     BackfillSettings,
     collect_session_tick_times,
     run_backfill,
 )
-from routines.macdbb_replay.reports import load_scanner_reports_index
+from routines.macdbb_scanner_aggressive_hl_replay.reports import load_scanner_reports_index
 def _first_live_scanner_time() -> dt.datetime | None:
     live = [
         row.created_at

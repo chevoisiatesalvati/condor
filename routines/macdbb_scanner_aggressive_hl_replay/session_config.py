@@ -9,7 +9,7 @@ import yaml
 
 from condor.trading_agent.policies.macdbb_dynamic import live_policy_config_from_params
 from condor.trading_agent.strategy_configs.registry import resolve_effective_strategy_params
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 
 # Replay driver fields must not be overwritten by session/config.yml defaults.
 _REPLAY_DRIVER_FIELDS = (

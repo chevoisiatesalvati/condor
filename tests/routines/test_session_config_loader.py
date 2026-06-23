@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.session_config import replay_config_from_session
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.session_config import replay_config_from_session
 
 STRATEGY_DIR = (
     Path(__file__).resolve().parents[2]

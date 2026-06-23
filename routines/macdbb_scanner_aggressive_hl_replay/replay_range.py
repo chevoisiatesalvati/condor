@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from routines.macdbb_replay.reports import load_scanner_reports_index
+from routines.macdbb_scanner_aggressive_hl_replay.reports import load_scanner_reports_index
 
 
 def iso_utc(dt: datetime) -> str:
@@ -25,7 +25,7 @@ def timeline_range_from_snapshots(
     snapshot_dir: Path | str | None = None,
 ) -> tuple[str, str]:
     """Return inclusive UTC range covered by parquet replay snapshots."""
-    from routines.macdbb_replay.snapshot_store import (
+    from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
         load_manifest,
         load_scanner_index,
         snapshot_dir_or_default,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from routines.macdbb_replay.tick_schedule import (
+from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import (
     build_range_tick_schedule,
     parse_tick_schedule,
 )

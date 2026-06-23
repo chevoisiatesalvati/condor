@@ -6,8 +6,8 @@ import datetime as dt
 import re
 from pathlib import Path
 
-from routines.macdbb_replay.journal import parse_dt
-from routines.macdbb_replay.models import TickMeta
+from routines.macdbb_scanner_aggressive_hl_replay.journal import parse_dt
+from routines.macdbb_scanner_aggressive_hl_replay.models import TickMeta
 
 _TICK_RE = re.compile(r"- tick#(\d+)\s+\|\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s+\|")
 

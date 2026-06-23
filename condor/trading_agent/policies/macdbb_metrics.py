@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from routines.macdbb_replay.models import JournalSignal1h, ParsedReport, ReplayConfigBase, StrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.models import JournalSignal1h, ParsedReport, ReplayConfigBase, StrategyReplayConfig
 
 _LIVE_METRICS_PARAM_KEYS: tuple[str, ...] = (
     "bb_proximity_epsilon_pct",

@@ -308,7 +308,7 @@ def _build_timeline_driver() -> dict[str, PresetValue]:
     """Timeline driver with default snapshot dir and full snapshot date span."""
     driver = dict(_DRIVER_TIMELINE)
     try:
-        from routines.macdbb_replay.replay_range import timeline_range_from_snapshots
+        from routines.macdbb_scanner_aggressive_hl_replay.replay_range import timeline_range_from_snapshots
 
         range_start, range_end = timeline_range_from_snapshots(
             DEFAULT_TIMELINE_SNAPSHOT_DIR
@@ -544,14 +544,14 @@ def resolve_timeline_range(config: ConfigT) -> ConfigT:
     range_end: str | None = None
     if data_source == "snapshots":
         try:
-            from routines.macdbb_replay.replay_range import timeline_range_from_snapshots
+            from routines.macdbb_scanner_aggressive_hl_replay.replay_range import timeline_range_from_snapshots
 
             range_start, range_end = timeline_range_from_snapshots(snapshot_dir)
         except ValueError:
             range_start = None
             range_end = None
     if not range_start or not range_end:
-        from routines.macdbb_replay.replay_range import timeline_range_from_reports
+        from routines.macdbb_scanner_aggressive_hl_replay.replay_range import timeline_range_from_reports
 
         range_start, range_end = timeline_range_from_reports()
     updates: dict[str, PresetValue] = {}

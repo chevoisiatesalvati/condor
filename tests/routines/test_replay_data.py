@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.replay_data import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import (
     configure_replay_data_sources,
     is_report_driven_data_source,
     uses_snapshot_store,
 )
-from routines.macdbb_replay.snapshot_store import configure_snapshot_dir, get_snapshot_dir
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import configure_snapshot_dir, get_snapshot_dir
 
 
 def test_is_report_driven_includes_snapshots():

@@ -1,6 +1,6 @@
 """Tests for dynamic strategy replay mega sweep helpers."""
 
-from routines.macdbb_replay.config_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     CURRENT_WINNER_OVERRIDES,
     CURRENT_WINNER_PRESET,
     DYNAMIC_MODE_PRESETS,
@@ -21,7 +21,7 @@ from routines.macdbb_replay.config_sweep import (
     iter_mega_dynamic_sweep_configs,
     iter_refine_sweep_configs,
 )
-from routines.macdbb_replay.presets import (
+from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     DYNAMIC_PRESET_OVERRIDES,
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
     capital_normalized_pnl,
@@ -78,7 +78,7 @@ def test_capital_normalized_pnl_scales_by_avg_notional():
 
 
 def test_sweep_and_routine_share_capital_benchmark_constant():
-    from routines.macdbb_replay.presets import (
+    from routines.macdbb_scanner_aggressive_hl_replay.presets import (
         FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL as PRESET_BENCHMARK,
     )
 
@@ -200,7 +200,7 @@ def test_mega_dynamic_both_on_samples():
 
 
 def test_refine_v5_winner_preset_matches_current_winner_base():
-    from routines.macdbb_replay.models import DynamicStrategyReplayConfig
+    from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 
     expected = {**CURRENT_WINNER_OVERRIDES, **DYNAMIC_MODE_PRESETS["both_on"]}
     resolved = resolve_config_with_preset(

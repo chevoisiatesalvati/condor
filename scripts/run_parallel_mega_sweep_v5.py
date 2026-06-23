@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from routines.macdbb_replay.config_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     MEGA_GRID_VERSION,
     default_min_configs_for_mode,
     _mega_dynamic_space_size,
@@ -68,7 +68,7 @@ def main() -> int:
     slug = _snapshot_slug(args.snapshot_dir)
     min_configs = args.min_configs or default_min_configs_for_mode(args.dynamic_mode)
     stem = args.output_stem or (
-        f"strategy_replay_dynamic_{args.dynamic_mode}_mega_timeline_{MEGA_GRID_VERSION}_{slug}"
+        f"macdbb_scanner_aggressive_hl_backtest_{args.dynamic_mode}_mega_timeline_{MEGA_GRID_VERSION}_{slug}"
     )
     log_path = args.output_dir / f"mega_sweep_{MEGA_GRID_VERSION}_{args.dynamic_mode}_{slug}.log"
     space = _mega_dynamic_space_size(args.dynamic_mode)

@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from routines.macdbb_replay.config_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     SweepResult,
     _apply_capital_metrics,
     _dynamic_sweep_base,
@@ -25,9 +25,9 @@ from routines.macdbb_replay.config_sweep import (
     iter_mega_dynamic_sweep_configs,
     iter_refine_sweep_configs,
 )
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.presets import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     DYNAMIC_PRESET_OVERRIDES,
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
     _DRIVER_TIMELINE,
@@ -36,13 +36,13 @@ from routines.macdbb_replay.presets import (
     _merge_preset_layers,
     resolve_config_with_preset,
 )
-from routines.macdbb_replay.replay_range import timeline_range_from_reports
-from routines.macdbb_replay.snapshot_store import load_manifest, snapshot_dir_or_default
-from routines.macdbb_replay.reports import (
+from routines.macdbb_scanner_aggressive_hl_replay.replay_range import timeline_range_from_reports
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest, snapshot_dir_or_default
+from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     build_reports_by_pair,
     load_reports_index,
 )
-from routines.strategy_replay_backtest_dynamic_amount import run as run_dynamic_replay
+from routines.macdbb_scanner_aggressive_hl_backtest import run as run_dynamic_replay
 
 DEFAULT_FREQUENCY_SEC = 1800
 DEFAULT_TIME_WINDOW_MIN = 15
@@ -193,11 +193,11 @@ async def run_timeline_dynamic_sweep(
             )
         )
     )
-    from routines.macdbb_replay.replay_data import configure_replay_data_sources
+    from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
 
     configure_replay_data_sources(load_config)
     if snapshot_dir:
-        from routines.macdbb_replay.snapshot_store import (
+        from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
             _ensure_parsed_macdbb_cache,
             _ensure_parsed_scanner_cache,
             snapshot_dir_or_default,
@@ -217,7 +217,7 @@ async def run_timeline_dynamic_sweep(
     tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
     reports_by_pair = build_reports_by_pair(load_reports_index())
 
-    stem = output_stem or f"strategy_replay_dynamic_{dynamic_mode}_mega_timeline"
+    stem = output_stem or f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline"
     baseline = f"dyn_{dynamic_mode}_timeline_baseline_winner"
     benchmark_avg_notional = FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
 
@@ -389,7 +389,7 @@ async def run_multi_snapshot_timeline_sweep(
     )
     config_count = len(config_items)
     global_total = config_count * len(dirs)
-    stem = output_stem or f"strategy_replay_dynamic_{dynamic_mode}_mega_timeline_all_snapshots"
+    stem = output_stem or f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline_all_snapshots"
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
     progress_file = progress_path or (
@@ -610,7 +610,7 @@ async def validate_top_configs_via_routine(
 
 
 def format_validation_log(rows: list[dict[str, Any]]) -> str:
-    lines = ["Timeline top-N routine validation (strategy_replay_backtest_dynamic_amount)"]
+    lines = ["Timeline top-N routine validation (macdbb_scanner_aggressive_hl_backtest)"]
     for row in rows:
         lines.append("")
         lines.append(f"=== Rank {row['rank']}: {row['name']} ===")
@@ -674,8 +674,8 @@ def apply_winner_to_presets(
     models_path: Path | None = None,
 ) -> None:
     preset_name = preset_name or TIMELINE_PRESET_NAME
-    presets_path = presets_path or Path("routines/macdbb_replay/presets.py")
-    models_path = models_path or Path("routines/macdbb_replay/models.py")
+    presets_path = presets_path or Path("routines/macdbb_scanner_aggressive_hl_replay/presets.py")
+    models_path = models_path or Path("routines/macdbb_scanner_aggressive_hl_replay/models.py")
     preset_text = presets_path.read_text(encoding="utf-8")
     if preset_name in preset_text:
         raise ValueError(f"Preset {preset_name!r} already exists in {presets_path}")

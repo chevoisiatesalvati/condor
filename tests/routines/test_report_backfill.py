@@ -6,11 +6,11 @@ import datetime as dt
 
 import numpy as np
 
-from routines.macdbb_replay.report_backfill import (
+from routines.macdbb_scanner_aggressive_hl_replay.report_backfill import (
     CandleCache,
     collect_session_tick_times,
 )
-from routines.macdbb_replay.tick_market_state import (
+from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import (
     compute_macdbb_from_closes,
     quote_volume_24h,
 )
@@ -43,7 +43,7 @@ def test_candle_cache_delegates_to_disk_cache(tmp_path, monkeypatch):
         return [{"timestamp_ms": 1.0, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}]
 
     monkeypatch.setattr(
-        "routines.macdbb_replay.report_backfill.fetch_hl_candles_between_cached",
+        "routines.macdbb_scanner_aggressive_hl_replay.report_backfill.fetch_hl_candles_between_cached",
         _fake_fetch,
     )
 

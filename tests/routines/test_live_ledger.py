@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from routines.macdbb_replay.live_ledger import (
+from routines.macdbb_scanner_aggressive_hl_replay.live_ledger import (
     compare_legs,
     extract_live_legs,
     parse_journal_live_pnl,
@@ -32,7 +32,7 @@ def test_extract_live_legs_session_60_core_legs():
 
 
 def test_compare_legs_matches_by_entry_tick_not_index_order():
-    from routines.macdbb_replay.live_ledger import LegRecord
+    from routines.macdbb_scanner_aggressive_hl_replay.live_ledger import LegRecord
 
     live = [
         LegRecord(1, 5, 7, "AERO-USD", "long", "adaptive_long", "x", "stop_loss_close_proxy", -1.0),

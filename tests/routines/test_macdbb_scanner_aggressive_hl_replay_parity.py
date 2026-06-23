@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import datetime as dt
 
-from routines.macdbb_replay.hl_prices import scan_barriers_between
-from routines.macdbb_replay.journal import (
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import scan_barriers_between
+from routines.macdbb_scanner_aggressive_hl_replay.journal import (
     _parse_barrier_events,
     _parse_decision_line,
     _parse_signals_1h,
     parse_dt,
 )
-from routines.macdbb_replay.metrics import compute_metrics, parsed_report_from_journal
-from routines.macdbb_replay.models import (
+from routines.macdbb_scanner_aggressive_hl_replay.metrics import compute_metrics, parsed_report_from_journal
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
     JournalCreatePlan,
     JournalSignal1h,
@@ -20,7 +20,7 @@ from routines.macdbb_replay.models import (
     StrategyReplayConfig,
     TickMeta,
 )
-from routines.macdbb_replay.simulator import (
+from routines.macdbb_scanner_aggressive_hl_replay.simulator import (
     _advance_simulated_streak,
     _adaptive_entry_allowed,
     _thesis_decay_reasons,
@@ -96,7 +96,7 @@ def test_advance_simulated_streak_does_not_increment_with_open_position():
 
 
 def test_session_parity_journal_blocks_hold_without_create_plan():
-    from routines.macdbb_replay.simulator import (
+    from routines.macdbb_scanner_aggressive_hl_replay.simulator import (
         _session_parity_journal_allows_entries,
         _session_parity_pair_allowed,
     )
@@ -362,7 +362,7 @@ def test_parse_barrier_events_ignores_open_pair_on_barrier_open_decision():
 
 def test_parse_snapshot_barrier_closes_from_barrier_section():
     from pathlib import Path
-    from routines.macdbb_replay.journal import (
+    from routines.macdbb_scanner_aggressive_hl_replay.journal import (
         _parse_snapshot_barrier_closes,
         parse_journal_ticks,
     )
@@ -385,9 +385,9 @@ def test_parse_snapshot_barrier_closes_from_barrier_section():
 def test_reports_only_resolve_snapshot_ignores_journal_signals():
     import datetime as dt
 
-    from routines.macdbb_replay.models import JournalSignal1h, TickMeta
-    from routines.macdbb_replay.signals import resolve_snapshot
-    from routines.macdbb_replay.models import DynamicStrategyReplayConfig
+    from routines.macdbb_scanner_aggressive_hl_replay.models import JournalSignal1h, TickMeta
+    from routines.macdbb_scanner_aggressive_hl_replay.signals import resolve_snapshot
+    from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 
     config = DynamicStrategyReplayConfig(
         preset="custom",

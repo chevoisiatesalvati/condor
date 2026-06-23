@@ -8,27 +8,27 @@ import numpy as np
 import pytest
 
 from routines.lib.binance_candle_cache import save_candles
-from routines.macdbb_replay.hl_prices import _aggregate_pair_requests
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig, TickMeta
-from routines.macdbb_replay.monitor_macdbb import (
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import _aggregate_pair_requests
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig, TickMeta
+from routines.macdbb_scanner_aggressive_hl_replay.monitor_macdbb import (
     batch_compute_macdbb_gaps,
     compute_macdbb_at_tick,
     flush_monitor_macdbb_buffer,
     parsed_report_to_macdbb_row,
     set_monitor_gap_recorder,
 )
-from routines.macdbb_replay.replay_data import configure_replay_data_sources
-from routines.macdbb_replay.replay_loader import load_replay_sessions
-from routines.macdbb_replay.reports import build_reports_by_pair, load_reports_index, nearest_report
-from routines.macdbb_replay.signals import resolve_snapshot
-from routines.macdbb_replay.snapshot_store import (
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
+from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
+from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index, nearest_report
+from routines.macdbb_scanner_aggressive_hl_replay.signals import resolve_snapshot
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
     append_monitor_macdbb_rows,
     configure_snapshot_dir,
     load_macdbb_index,
     load_manifest,
 )
-from routines.macdbb_replay.presets import resolve_config_with_preset
-from routines.macdbb_replay.timeline_sweep import merge_timeline_config
+from routines.macdbb_scanner_aggressive_hl_replay.presets import resolve_config_with_preset
+from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import merge_timeline_config
 
 
 def _write_1h_candles(

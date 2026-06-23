@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.presets import resolve_config_with_preset
-from routines.strategy_replay_backtest_dynamic_amount import run as run_dynamic_replay
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.presets import resolve_config_with_preset
+from routines.macdbb_scanner_aggressive_hl_backtest import run as run_dynamic_replay
 
 
 @dataclass(frozen=True)

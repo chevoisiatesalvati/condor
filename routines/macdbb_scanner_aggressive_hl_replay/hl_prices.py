@@ -19,7 +19,7 @@ from condor.trading_agent.policies.macdbb_dynamic import (
 )
 
 if TYPE_CHECKING:
-    from routines.macdbb_replay.models import TickMeta
+    from routines.macdbb_scanner_aggressive_hl_replay.models import TickMeta
 
 logger = logging.getLogger(__name__)
 

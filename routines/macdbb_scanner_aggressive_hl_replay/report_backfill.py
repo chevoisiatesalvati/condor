@@ -33,7 +33,7 @@ from routines.lib.hl_candles import (
     HL_INFO_URL,
     configure_hl_rate_limit,
 )
-from routines.macdbb_replay.tick_market_state import (
+from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import (
     HL_1M_MAX_AGE_DAYS,
     CANDLE_MINUTES,
     bars_for_hours,
@@ -44,17 +44,17 @@ from routines.macdbb_replay.tick_market_state import (
     quote_volume_window,
     scanner_interval_for_tick,
 )
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR, REPORTS_DIR, REPORTS_INDEX_PATH
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.reports import (
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR, REPORTS_DIR, REPORTS_INDEX_PATH
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ParsedScannerReport,
     ScannerPairRow,
     load_scanner_reports_index,
     nearest_scanner_report,
 )
-from routines.macdbb_replay.scanner_queue import build_scanner_queue
-from routines.macdbb_replay.session_builder import _default_strategy_params
-from routines.macdbb_replay.tick_schedule import parse_tick_schedule_file
+from routines.macdbb_scanner_aggressive_hl_replay.scanner_queue import build_scanner_queue
+from routines.macdbb_scanner_aggressive_hl_replay.session_builder import _default_strategy_params
+from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import parse_tick_schedule_file
 from routines.market_scanner import analyze_pair, classify_markets, format_volume
 
 logger = logging.getLogger(__name__)
@@ -439,7 +439,7 @@ def _has_scanner_report_at(
 
 
 def _analysis_rows_to_scanner_rows(items: list[dict[str, Any]]) -> list[ScannerPairRow]:
-    from routines.macdbb_replay.tick_market_state import analysis_rows_to_scanner_rows
+    from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import analysis_rows_to_scanner_rows
 
     return analysis_rows_to_scanner_rows(items)
 

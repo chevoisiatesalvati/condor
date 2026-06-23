@@ -6,12 +6,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from routines.macdbb_replay.journal import (
+from routines.macdbb_scanner_aggressive_hl_replay.journal import (
     _DECISION_RE,
     _parse_decision_line,
     parse_journal_ticks,
 )
-from routines.macdbb_replay.models import SimTrade
+from routines.macdbb_scanner_aggressive_hl_replay.models import SimTrade
 
 _TRIGGER_RE = re.compile(r"trigger=([a-z_]+)")
 _ENTRY_CLASS_FIELD_RE = re.compile(r"entry_class=([a-zA-Z0-9_]+)")

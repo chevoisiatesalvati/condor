@@ -22,7 +22,7 @@ from routines.lib.shared_universe import (
     load_intersection_manifest,
     trading_pairs_for_exchange,
 )
-from routines.macdbb_replay.report_backfill import fetch_binance_universe
+from routines.macdbb_scanner_aggressive_hl_replay.report_backfill import fetch_binance_universe
 
 
 def _parse_iso(value: str) -> dt.datetime:

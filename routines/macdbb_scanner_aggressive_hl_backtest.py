@@ -1,4 +1,4 @@
-"""MACD+BB strategy replay with dynamic position sizing and volatility-aware barriers."""
+"""Backtest simulator for trading_agents/macdbb_scanner_aggressive_hl (dynamic sizing + barriers)."""
 
 from __future__ import annotations
 
@@ -11,30 +11,30 @@ from typing import Any
 from telegram.ext import ContextTypes
 
 from routines.base import RoutineResult
-from routines.macdbb_replay.dynamic_policy import DynamicReplayPolicy
-from routines.macdbb_replay.hl_prices import (
+from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import DynamicReplayPolicy
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
     hl_prefetch_settings_from_config,
     prefetch_replay_hl_prices,
 )
-from routines.macdbb_replay.models import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
     write_csv,
 )
-from routines.macdbb_replay.replay_loader import load_replay_sessions
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay import presets
-from routines.macdbb_replay.presets import (
+from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay import presets
+from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
     capital_normalized_pnl,
     resolve_config_with_preset,
 )
-from routines.macdbb_replay.replay_data import (
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import (
     configure_replay_data_sources,
     is_report_driven_data_source,
     should_prefetch_replay_candles,
 )
-from routines.macdbb_replay.reports import build_reports_by_pair, load_reports_index
-from routines.macdbb_replay.simulator import simulate_strategy_session
+from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index
+from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
 
 logger = logging.getLogger(__name__)
 
@@ -342,21 +342,21 @@ async def run(
         if config.write_csv and config.replay_mode != "timeline_backtest":
             output_dir = sessions_dir / f"session_{session_num}"
             write_csv(
-                output_dir / "strategy_replay_dynamic_per_pair.csv",
+                output_dir / "macdbb_scanner_aggressive_hl_backtest_per_pair.csv",
                 per_pair_rows,
                 per_pair_columns,
             )
             write_csv(
-                output_dir / "strategy_replay_dynamic_per_tick.csv",
+                output_dir / "macdbb_scanner_aggressive_hl_backtest_per_tick.csv",
                 per_tick_rows,
                 PER_TICK_COLUMNS,
             )
             write_csv(
-                output_dir / "strategy_replay_dynamic_trades.csv",
+                output_dir / "macdbb_scanner_aggressive_hl_backtest_trades.csv",
                 _trade_rows(trades),
                 TRADE_COLUMNS,
             )
-            (output_dir / "strategy_replay_dynamic_summary.json").write_text(
+            (output_dir / "macdbb_scanner_aggressive_hl_backtest_summary.json").write_text(
                 json.dumps(summary, indent=2),
                 encoding="utf-8",
             )
@@ -392,7 +392,7 @@ async def run(
     mode_label = ", ".join(sizing_mode) if sizing_mode else "fixed (both disabled)"
 
     summary_lines = [
-        f"Strategy replay backtest (dynamic) — {config.strategy_slug}",
+        f"macdbb_scanner_aggressive_hl backtest — {config.strategy_slug}",
         f"Mode: {mode_label}",
         f"Preset: {config.preset} | Entry modes: {config.entry_modes}",
         f"Sessions requested: {', '.join(str(value) for value in selected_sessions)}",
@@ -501,10 +501,10 @@ async def run(
             (
                 f"{config.report_label} — dynamic replay"
                 if config.report_label
-                else f"Strategy replay backtest (dynamic): {config.strategy_slug}"
+                else f"macdbb_scanner_aggressive_hl backtest: {config.strategy_slug}"
             )
         )
-        builder.source("routine", "strategy_replay_backtest_dynamic_amount").tags(
+        builder.source("routine", "macdbb_scanner_aggressive_hl_backtest").tags(
             ["trading-agent", "backtest", "strategy", "dynamic-sizing"]
         )
         builder.manual_order()

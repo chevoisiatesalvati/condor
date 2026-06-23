@@ -16,35 +16,35 @@ from pathlib import Path
 from typing import Any
 
 from condor.trading_agent.policies.macdbb_dynamic import compute_dynamic_barriers
-from routines.macdbb_replay.dynamic_policy import DynamicReplayPolicy
-from routines.macdbb_replay.hl_prices import (
+from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import DynamicReplayPolicy
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
     hl_prefetch_settings_from_config,
     prefetch_replay_hl_prices,
 )
-from routines.macdbb_replay.journal import parse_journal_ticks
-from routines.macdbb_replay.models import (
+from routines.macdbb_scanner_aggressive_hl_replay.journal import parse_journal_ticks
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
     StrategyReplayConfig,
     parse_session_selector,
 )
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.presets import (
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     DYNAMIC_PRESET_OVERRIDES,
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
     capital_normalized_pnl,
     resolve_config_with_preset,
 )
-from routines.macdbb_replay.replay_data import (
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import (
     configure_replay_data_sources,
     is_report_driven_data_source,
 )
-from routines.macdbb_replay.reports import (
+from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ReportMeta,
     build_reports_by_pair,
     load_reports_index,
 )
-from routines.macdbb_replay.replay_loader import load_replay_sessions
-from routines.macdbb_replay.simulator import simulate_strategy_session
+from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
+from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
 
 # Timeline mega sweep anchor — refine v5 winner (``presets.py``).
 CURRENT_WINNER_PRESET = "hl_dynamic_timeline_refine_v5_winner_binance_1y"
@@ -699,7 +699,7 @@ async def _load_sessions(
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_vol_candle_cache: dict[str, list[dict[str, float]]] = {}
-    from routines.macdbb_replay.replay_data import should_prefetch_replay_candles
+    from routines.macdbb_scanner_aggressive_hl_replay.replay_data import should_prefetch_replay_candles
 
     if parsed_sessions and should_prefetch_replay_candles(config):
         (
@@ -945,7 +945,7 @@ async def run_dynamic_sweep(
     reports = load_reports_index()
     reports_by_pair = build_reports_by_pair(reports)
 
-    stem = output_stem or f"strategy_replay_dynamic_{dynamic_mode}_mega_all_sessions"
+    stem = output_stem or f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_all_sessions"
     baseline = baseline_name or f"dyn_{dynamic_mode}_baseline_winner"
     benchmark_avg_notional = FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
 
@@ -1095,7 +1095,7 @@ def main() -> None:
         all_results: list[tuple[str, list[SweepResult], str, Path]] = []
         for mode in sorted(DYNAMIC_MODE_PRESETS):
             print(f"\n{'=' * 72}\nDynamic mega sweep — mode={mode}\n{'=' * 72}")
-            stem = f"strategy_replay_dynamic_{mode}_mega_all_sessions"
+            stem = f"macdbb_scanner_aggressive_hl_backtest_{mode}_mega_all_sessions"
             results, baseline_name, benchmark_avg = asyncio.run(
                 run_dynamic_sweep(
                     dynamic_mode=mode,
@@ -1147,7 +1147,7 @@ def main() -> None:
             )
         return
 
-    stem = f"strategy_replay_dynamic_{args.dynamic_mode}_mega_all_sessions"
+    stem = f"macdbb_scanner_aggressive_hl_backtest_{args.dynamic_mode}_mega_all_sessions"
     results, baseline_name, benchmark_avg = asyncio.run(
         run_dynamic_sweep(
             dynamic_mode=args.dynamic_mode,

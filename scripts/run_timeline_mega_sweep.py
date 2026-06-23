@@ -9,12 +9,12 @@ import json
 import sys
 from pathlib import Path
 
-from routines.macdbb_replay.config_sweep import _mega_dynamic_space_size
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.presets import resolve_config_with_preset
-from routines.macdbb_replay.replay_data import configure_replay_data_sources
-from routines.macdbb_replay.snapshot_store import load_manifest
-from routines.macdbb_replay.timeline_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import _mega_dynamic_space_size
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.presets import resolve_config_with_preset
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest
+from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
     DEFAULT_CHECKPOINT_EVERY,
     DEFAULT_FREQUENCY_SEC,
     DEFAULT_TIME_WINDOW_MIN,
@@ -52,7 +52,7 @@ def _parse_args() -> argparse.Namespace:
     sweep.add_argument(
         "--output-stem",
         default="",
-        help="CSV filename stem (default: strategy_replay_dynamic_{mode}_mega_timeline)",
+        help="CSV filename stem (default: macdbb_scanner_aggressive_hl_backtest_{mode}_mega_timeline)",
     )
     sweep.add_argument(
         "--parent-csv",
@@ -90,7 +90,7 @@ def _parse_args() -> argparse.Namespace:
     sweep_all.add_argument("--time-window-min", type=int, default=DEFAULT_TIME_WINDOW_MIN)
     sweep_all.add_argument(
         "--output-stem",
-        default="strategy_replay_dynamic_both_on_mega_timeline_all_snapshots",
+        default="macdbb_scanner_aggressive_hl_backtest_both_on_mega_timeline_all_snapshots",
     )
 
     validate = sub.add_parser("validate", help="Validate top-N via dynamic replay routine")
@@ -151,7 +151,7 @@ def _parse_args() -> argparse.Namespace:
 async def _run_sweep(args: argparse.Namespace) -> Path:
     parent_overrides = None
     if args.parent_csv is not None:
-        from routines.macdbb_replay.config_sweep import load_sweep_winner_from_csv
+        from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import load_sweep_winner_from_csv
 
         _name, _diff, parent_overrides = load_sweep_winner_from_csv(args.parent_csv)
         print(f"Staged parent from {args.parent_csv}: {_name}")
@@ -169,7 +169,7 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         end = manifest["range_end_utc"]
     else:
         start, end = timeline_range_from_reports()
-    output_stem = args.output_stem or f"strategy_replay_dynamic_{args.dynamic_mode}_mega_timeline"
+    output_stem = args.output_stem or f"macdbb_scanner_aggressive_hl_backtest_{args.dynamic_mode}_mega_timeline"
     progress_path = args.output_dir / f"{output_stem}.progress.json"
     checkpoint_path = args.output_dir / f"{output_stem}.checkpoint.csv"
     print(
@@ -210,7 +210,7 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
 
 
 async def _run_sweep_all(args: argparse.Namespace) -> Path:
-    from routines.macdbb_replay.config_sweep import iter_mega_dynamic_sweep_configs
+    from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import iter_mega_dynamic_sweep_configs
 
     snapshot_dirs = discover_replay_snapshot_dirs()
     config_count = len(

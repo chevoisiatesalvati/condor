@@ -2,21 +2,21 @@ from __future__ import annotations
 
 import datetime as dt
 
-from routines.macdbb_replay.metrics import (
+from routines.macdbb_scanner_aggressive_hl_replay.metrics import (
     compute_metrics,
     infer_signal_label,
     parsed_report_from_journal,
 )
-from routines.macdbb_replay.models import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
     JournalSignal1h,
     ParsedReport,
     ReplayConfigBase,
     SignalSnapshot,
     TickMeta,
 )
-from routines.macdbb_replay.hl_prices import HlPriceCache, hl_cache_has_prices
-from routines.macdbb_replay.replay_data import is_report_driven_data_source
-from routines.macdbb_replay.reports import (
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import HlPriceCache, hl_cache_has_prices
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import is_report_driven_data_source
+from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ReportMeta,
     load_parsed_report,
     nearest_report,
@@ -85,7 +85,7 @@ def session_has_trusted_prices(
         getattr(config, "replay_mode", None) == "timeline_backtest"
         and is_report_driven_data_source(config.data_source)
     ):
-        from routines.macdbb_replay import snapshot_store
+        from routines.macdbb_scanner_aggressive_hl_replay import snapshot_store
 
         if snapshot_store.is_snapshot_store_active():
             return True
@@ -171,7 +171,7 @@ def resolve_snapshot(
     parsed_html = load_parsed_report(report_meta_1h) if report_meta_1h else None
     monitor_computed = False
     if parsed_html is None and monitor_pair and is_report_driven_data_source(config.data_source):
-        from routines.macdbb_replay import monitor_macdbb
+        from routines.macdbb_scanner_aggressive_hl_replay import monitor_macdbb
 
         monitor_macdbb.record_monitor_gap(pair, meta.timestamp)
         if monitor_macdbb.inline_compute_enabled():
@@ -207,7 +207,7 @@ def resolve_snapshot(
     source = "none"
     report_id = report_meta_1h.report_id if report_meta_1h else ""
     if monitor_computed:
-        from routines.macdbb_replay import monitor_macdbb
+        from routines.macdbb_scanner_aggressive_hl_replay import monitor_macdbb
 
         report_id = monitor_macdbb.monitor_report_id(pair, meta.timestamp)
     price, price_trusted, price_tag = _resolve_price(

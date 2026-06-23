@@ -13,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-from routines.macdbb_replay.config_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     MEGA_GRID_VERSION,
     MEGA_SWEEP_MIN_CONFIGS_BY_MODE,
     STAGED_PHASE_MODES,
@@ -22,10 +22,10 @@ from routines.macdbb_replay.config_sweep import (
     extract_barrier_overrides,
     load_sweep_winner_from_csv,
 )
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.replay_data import configure_replay_data_sources
-from routines.macdbb_replay.snapshot_store import load_manifest
-from routines.macdbb_replay.timeline_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest
+from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
     DEFAULT_CHECKPOINT_EVERY,
     run_timeline_dynamic_sweep,
     timeline_range_from_reports,
@@ -88,7 +88,7 @@ def _snapshot_slug(snapshot_dir: Path) -> str:
 def _phase_paths(args: argparse.Namespace, phase: str) -> tuple[Path, Path, Path, Path]:
     slug = _snapshot_slug(args.snapshot_dir)
     mode = STAGED_PHASE_MODES[phase]
-    stem = f"strategy_replay_dynamic_{mode}_mega_timeline_{MEGA_GRID_VERSION}_phase{phase}_{slug}"
+    stem = f"macdbb_scanner_aggressive_hl_backtest_{mode}_mega_timeline_{MEGA_GRID_VERSION}_phase{phase}_{slug}"
     csv_path = args.output_dir / f"{stem}.csv"
     progress_path = args.output_dir / f"{stem}.progress.json"
     checkpoint_path = args.output_dir / f"{stem}.checkpoint.csv"
@@ -105,7 +105,7 @@ async def _run_phase(
     mode = STAGED_PHASE_MODES[phase]
     min_configs = args.min_configs or default_min_configs_for_mode(mode)
     slug = _snapshot_slug(args.snapshot_dir)
-    stem = f"strategy_replay_dynamic_{mode}_mega_timeline_{MEGA_GRID_VERSION}_phase{phase}_{slug}"
+    stem = f"macdbb_scanner_aggressive_hl_backtest_{mode}_mega_timeline_{MEGA_GRID_VERSION}_phase{phase}_{slug}"
     csv_path, progress_path, checkpoint_path, _log_path = _phase_paths(args, phase)
 
     configure_replay_data_sources(

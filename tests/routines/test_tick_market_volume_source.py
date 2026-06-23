@@ -6,7 +6,7 @@ import datetime as dt
 
 import pytest
 
-from routines.macdbb_replay.tick_market_state import (
+from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import (
     TickMarketSettings,
     _quote_volume_for_pair,
     compute_tick_market_state,

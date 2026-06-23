@@ -17,7 +17,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from routines.macdbb_replay.config_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     REFINE_DYNAMIC_MODE,
     REFINE_MIN_CONFIGS_BY_PHASE,
     REFINE_STAGED_PHASES,
@@ -26,10 +26,10 @@ from routines.macdbb_replay.config_sweep import (
     iter_refine_sweep_configs,
     load_sweep_winner_from_csv,
 )
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.replay_data import configure_replay_data_sources
-from routines.macdbb_replay.snapshot_store import load_manifest
-from routines.macdbb_replay.timeline_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest
+from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
     DEFAULT_CHECKPOINT_EVERY,
     run_timeline_dynamic_sweep,
     timeline_range_from_reports,
@@ -122,7 +122,7 @@ def _snapshot_slug(snapshot_dir: Path) -> str:
 def _refine_paths(args: argparse.Namespace, phase: str) -> tuple[Path, Path, Path]:
     slug = _snapshot_slug(args.snapshot_dir)
     stem = (
-        f"strategy_replay_dynamic_{REFINE_DYNAMIC_MODE}_refine_{REFINE_SWEEP_VERSION}_"
+        f"macdbb_scanner_aggressive_hl_backtest_{REFINE_DYNAMIC_MODE}_refine_{REFINE_SWEEP_VERSION}_"
         f"phase{phase}_{slug}"
     )
     csv_path = args.output_dir / f"{stem}.csv"
@@ -168,7 +168,7 @@ async def _run_refine_phase(
     min_configs = args.min_configs or default_min_configs_for_refine_phase(phase)
     slug = _snapshot_slug(args.snapshot_dir)
     stem = (
-        f"strategy_replay_dynamic_{REFINE_DYNAMIC_MODE}_refine_{REFINE_SWEEP_VERSION}_"
+        f"macdbb_scanner_aggressive_hl_backtest_{REFINE_DYNAMIC_MODE}_refine_{REFINE_SWEEP_VERSION}_"
         f"phase{phase}_{slug}"
     )
     csv_path, progress_path, checkpoint_path = _refine_paths(args, phase)

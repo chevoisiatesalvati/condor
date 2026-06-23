@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from routines.macdbb_replay.reports import parse_scanner_report_html, parse_volume_usd
+from routines.macdbb_scanner_aggressive_hl_replay.reports import parse_scanner_report_html, parse_volume_usd
 
 
 SAMPLE_SCANNER_HTML = """

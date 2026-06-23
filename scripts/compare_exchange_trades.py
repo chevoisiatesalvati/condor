@@ -12,18 +12,18 @@ from pathlib import Path
 from typing import Any
 
 from routines.lib.pair_format import hl_pair_from_any
-from routines.macdbb_replay.dynamic_policy import DynamicReplayPolicy
-from routines.macdbb_replay.hl_prices import (
+from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import DynamicReplayPolicy
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
     hl_prefetch_settings_from_config,
     prefetch_replay_hl_prices,
 )
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.presets import resolve_config_with_preset
-from routines.macdbb_replay.replay_data import configure_replay_data_sources
-from routines.macdbb_replay.replay_loader import load_replay_sessions
-from routines.macdbb_replay.reports import build_reports_by_pair, load_reports_index
-from routines.macdbb_replay.simulator import simulate_strategy_session
-from routines.strategy_replay_backtest_dynamic_amount import _trade_rows
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.presets import resolve_config_with_preset
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
+from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
+from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index
+from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
+from routines.macdbb_scanner_aggressive_hl_backtest import _trade_rows
 
 
 @dataclass(frozen=True)

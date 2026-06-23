@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from routines.macdbb_replay.models import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
     AdaptiveReplayConfig,
     SimTrade,
     TickMeta,
     compute_return_pct,
 )
-from routines.macdbb_replay.reports import ReportMeta
-from routines.macdbb_replay.signals import build_tick_snapshots, session_has_trusted_prices
+from routines.macdbb_scanner_aggressive_hl_replay.reports import ReportMeta
+from routines.macdbb_scanner_aggressive_hl_replay.signals import build_tick_snapshots, session_has_trusted_prices
 
 
 def simulate_adaptive_session(

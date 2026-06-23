@@ -9,9 +9,9 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from routines.macdbb_replay.models import ParsedReport
-from routines.macdbb_replay.reports import ParsedScannerReport, ScannerPairRow
-from routines.macdbb_replay.scanner_queue import build_scanner_queue
+from routines.macdbb_scanner_aggressive_hl_replay.models import ParsedReport
+from routines.macdbb_scanner_aggressive_hl_replay.reports import ParsedScannerReport, ScannerPairRow
+from routines.macdbb_scanner_aggressive_hl_replay.scanner_queue import build_scanner_queue
 from routines.market_scanner import analyze_pair, classify_markets
 
 # HL 1m candleSnapshot retention is short; use 5m for older ticks.

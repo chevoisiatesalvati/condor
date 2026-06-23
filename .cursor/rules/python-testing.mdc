@@ -8,7 +8,7 @@ alwaysApply: true
 This repo keeps top-level packages at the project root (`condor/`, `routines/`). They are **not** installed as site-packages unless you do an editable install. Tests and scripts import them directly:
 
 ```python
-from routines.macdbb_replay.config_sweep import ...
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import ...
 from condor.trading_agent.policies.macdbb_dynamic import ...
 ```
 
@@ -34,7 +34,7 @@ PYTHONPATH=. .venv/bin/pytest tests/ -q
 Same rule: repo root must be on `PYTHONPATH`:
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m routines.macdbb_replay.config_sweep
+PYTHONPATH=. .venv/bin/python -m routines.macdbb_scanner_aggressive_hl_replay.config_sweep
 ```
 
 ## Common mistake

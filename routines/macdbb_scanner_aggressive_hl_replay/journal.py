@@ -5,7 +5,7 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
-from routines.macdbb_replay.models import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
     BarrierCloseEvent,
     Filter4h,
     JournalCreatePlan,

@@ -9,8 +9,8 @@ from condor.trading_agent.policies.macdbb_dynamic import (
     resolve_live_entry_policy,
 )
 from condor.trading_agent.strategy_configs.registry import duration_to_ticks
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.presets import DYNAMIC_PRESET_OVERRIDES
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.presets import DYNAMIC_PRESET_OVERRIDES
 
 
 def _preset_strategy_params() -> dict:

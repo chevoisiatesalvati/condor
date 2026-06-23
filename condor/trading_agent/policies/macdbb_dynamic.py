@@ -6,7 +6,7 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from routines.macdbb_replay.models import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
     JournalSignal1h,
     StrategyReplayConfig,

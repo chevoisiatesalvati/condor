@@ -429,7 +429,7 @@ class StrategyReplayConfig(ReplayConfigBase):
 
 
 class DynamicStrategyReplayConfig(StrategyReplayConfig):
-    """Strategy replay with dynamic position sizing and volatility-aware barriers."""
+    """Backtest macdbb_scanner_aggressive_hl with dynamic sizing and volatility-aware barriers."""
 
     preset: Literal[
         "custom",
@@ -503,13 +503,13 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
 
     @classmethod
     def get_routine_fields(cls) -> dict[str, dict[str, Any]]:
-        from routines.macdbb_replay.field_ui import build_dynamic_replay_field_metadata
+        from routines.macdbb_scanner_aggressive_hl_replay.field_ui import build_dynamic_replay_field_metadata
 
         return build_dynamic_replay_field_metadata(cls)
 
     @classmethod
     def get_routine_groups(cls) -> list[str]:
-        from routines.macdbb_replay.field_ui import REPLAY_FIELD_GROUPS
+        from routines.macdbb_scanner_aggressive_hl_replay.field_ui import REPLAY_FIELD_GROUPS
 
         return list(REPLAY_FIELD_GROUPS)
 

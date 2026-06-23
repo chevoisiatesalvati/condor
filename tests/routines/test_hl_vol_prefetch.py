@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 from condor.trading_agent.policies.macdbb_dynamic import SCANNER_NATR_MIN_BARS
-from routines.macdbb_replay.hl_prices import (
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
     HL_1M_API_MAX_AGE_DAYS,
     _vol_bars_in_lookback,
     _vol_series_usable,

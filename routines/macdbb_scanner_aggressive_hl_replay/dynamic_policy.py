@@ -22,13 +22,13 @@ from condor.trading_agent.policies.macdbb_dynamic import (
     scanner_natr_mean_from_candles,
     static_tier_volatility_pct,
 )
-from routines.macdbb_replay.models import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
     JournalSignal1h,
     StrategyReplayConfig,
     TickMeta,
 )
-from routines.macdbb_replay.replay_data import is_report_driven_data_source
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import is_report_driven_data_source
 
 __all__ = [
     "NATR_LOOKBACK_PERIODS",

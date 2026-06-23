@@ -19,15 +19,15 @@ from routines.lib.hl_candle_cache import (
     load_candles_in_range as load_hl_candles_in_range,
 )
 from routines.lib.pair_format import binance_pair_from_any
-from routines.macdbb_replay.models import ParsedReport
-from routines.macdbb_replay.snapshot_store import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import ParsedReport
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
     MONITOR_MACDBB_FILENAME,
     MONITOR_BACKFILL_VERSION,
     append_monitor_macdbb_rows,
     get_snapshot_dir,
     snapshot_dir_or_default,
 )
-from routines.macdbb_replay.tick_market_state import (
+from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import (
     compute_macdbb_from_closes,
     metrics_to_parsed_report,
 )
@@ -271,7 +271,7 @@ def update_monitor_manifest(
     snapshot_dir: Path | str | None = None,
     rows_added: int = 0,
 ) -> None:
-    from routines.macdbb_replay.snapshot_store import load_manifest, write_manifest
+    from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest, write_manifest
 
     root = snapshot_dir_or_default(snapshot_dir)
     manifest = load_manifest(snapshot_dir=root) or {}

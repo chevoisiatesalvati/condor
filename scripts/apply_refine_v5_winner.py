@@ -10,20 +10,20 @@ import sys
 import time
 from pathlib import Path
 
-from routines.macdbb_replay.config_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     REFINE_DYNAMIC_MODE,
     load_sweep_winner_from_csv,
 )
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.presets import resolve_config_with_preset
-from routines.macdbb_replay.snapshot_store import load_manifest
-from routines.macdbb_replay.timeline_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.presets import resolve_config_with_preset
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest
+from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
     DEFAULT_FREQUENCY_SEC,
     apply_winner_to_agent,
     apply_winner_to_presets,
     merge_timeline_config,
 )
-from routines.strategy_replay_backtest_dynamic_amount import run as run_dynamic_replay
+from routines.macdbb_scanner_aggressive_hl_backtest import run as run_dynamic_replay
 from scripts.apply_staged_v5_winner import (
     DEFAULT_PHASE_A,
     DEFAULT_PHASE_B,
@@ -186,7 +186,7 @@ async def _main() -> int:
 
     if not args.skip_routine:
         print(
-            "\nRunning strategy_replay_backtest_dynamic_amount "
+            "\nRunning macdbb_scanner_aggressive_hl_backtest "
             "(prefetch + full timeline sim — expect several minutes)...",
             flush=True,
         )

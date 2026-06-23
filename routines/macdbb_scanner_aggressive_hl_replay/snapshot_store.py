@@ -10,14 +10,14 @@ from typing import Any
 
 import pandas as pd
 
-from routines.macdbb_replay.models import ParsedReport, ReportMeta
-from routines.macdbb_replay.reports import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import ParsedReport, ReportMeta
+from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ParsedScannerReport,
     ScannerPairRow,
     ScannerReportMeta,
     parse_dt,
 )
-from routines.macdbb_replay.tick_market_state import TickMarketState
+from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import TickMarketState
 
 logger = logging.getLogger(__name__)
 

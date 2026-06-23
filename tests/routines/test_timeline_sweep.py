@@ -4,13 +4,13 @@ import csv
 
 import pytest
 
-from routines.macdbb_replay.config_sweep import SweepResult, _dynamic_sweep_base
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.presets import (
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import SweepResult, _dynamic_sweep_base
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     DYNAMIC_PRESET_OVERRIDES,
     resolve_config_with_preset,
 )
-from routines.macdbb_replay.timeline_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
     _should_write_checkpoint,
     merge_timeline_config,
     replay_config_to_agent_strategy_params,
@@ -59,27 +59,27 @@ async def test_run_timeline_dynamic_sweep_writes_periodic_checkpoint_csv(
         return ({1: {}}, {}, {}, {}, {}, [])
 
     monkeypatch.setattr(
-        "routines.macdbb_replay.timeline_sweep.iter_mega_dynamic_sweep_configs",
+        "routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep.iter_mega_dynamic_sweep_configs",
         fake_iter,
     )
     monkeypatch.setattr(
-        "routines.macdbb_replay.timeline_sweep._run_dynamic_config",
+        "routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep._run_dynamic_config",
         fake_run,
     )
     monkeypatch.setattr(
-        "routines.macdbb_replay.timeline_sweep._load_sessions",
+        "routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep._load_sessions",
         fake_load_sessions,
     )
     monkeypatch.setattr(
-        "routines.macdbb_replay.timeline_sweep._apply_capital_metrics",
+        "routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep._apply_capital_metrics",
         lambda result, benchmark: result,
     )
     monkeypatch.setattr(
-        "routines.macdbb_replay.timeline_sweep.build_reports_by_pair",
+        "routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep.build_reports_by_pair",
         lambda index: {},
     )
     monkeypatch.setattr(
-        "routines.macdbb_replay.timeline_sweep.load_reports_index",
+        "routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep.load_reports_index",
         lambda: {},
     )
 
@@ -191,7 +191,7 @@ def test_timeline_preset_respects_user_snapshot_dir():
 
 
 def test_timeline_range_from_snapshots_uses_manifest():
-    from routines.macdbb_replay.replay_range import timeline_range_from_snapshots
+    from routines.macdbb_scanner_aggressive_hl_replay.replay_range import timeline_range_from_snapshots
 
     start, end = timeline_range_from_snapshots("data/replay_snapshots_binance_1y")
     assert start.endswith("Z")

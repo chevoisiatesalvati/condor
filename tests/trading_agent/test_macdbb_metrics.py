@@ -9,8 +9,8 @@ from condor.trading_agent.policies.macdbb_metrics import (
     infer_signal_label,
     parsed_report_from_live_input,
 )
-from routines.macdbb_replay.models import StrategyReplayConfig
-from routines.macdbb_replay.presets import DYNAMIC_PRESET_OVERRIDES
+from routines.macdbb_scanner_aggressive_hl_replay.models import StrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.presets import DYNAMIC_PRESET_OVERRIDES
 
 
 def _v6_metrics_params() -> dict:

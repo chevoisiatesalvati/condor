@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from routines.macdbb_replay.journal import parse_journal_ticks
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig, parse_session_selector
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.replay_data import is_report_driven_data_source
-from routines.macdbb_replay.session_builder import (
+from routines.macdbb_scanner_aggressive_hl_replay.journal import parse_journal_ticks
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig, parse_session_selector
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import is_report_driven_data_source
+from routines.macdbb_scanner_aggressive_hl_replay.session_builder import (
     build_session_parity_ticks,
     hydrate_timeline_ticks,
 )
-from routines.macdbb_replay.session_config import replay_config_from_session
+from routines.macdbb_scanner_aggressive_hl_replay.session_config import replay_config_from_session
 
 
 def load_replay_sessions(

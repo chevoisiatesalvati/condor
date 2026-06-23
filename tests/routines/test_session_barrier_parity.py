@@ -6,15 +6,15 @@ import asyncio
 
 import pytest
 
-from routines.macdbb_replay.dynamic_policy import DynamicReplayPolicy
-from routines.macdbb_replay.replay_data import should_prefetch_replay_candles
-from routines.macdbb_replay.hl_prices import hl_prefetch_settings_from_config, prefetch_replay_hl_prices
-from routines.macdbb_replay.live_ledger import parse_journal_live_pnl
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.replay_loader import load_replay_sessions
-from routines.macdbb_replay.reports import build_reports_by_pair, load_reports_index
-from routines.macdbb_replay.simulator import simulate_strategy_session
+from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import DynamicReplayPolicy
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import should_prefetch_replay_candles
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import hl_prefetch_settings_from_config, prefetch_replay_hl_prices
+from routines.macdbb_scanner_aggressive_hl_replay.live_ledger import parse_journal_live_pnl
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
+from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index
+from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
 
 STRATEGY_SLUG = "macdbb_scanner_aggressive_hl"
 # Sessions with stable journal parity (exclude manual-stop / session-end gaps).
@@ -32,16 +32,16 @@ def test_timeline_snapshot_config_prefetches_barrier_candles():
 
 
 def test_hydrated_timeline_prefetch_discovers_pairs():
-    from routines.macdbb_replay.hl_prices import _aggregate_pair_requests
-    from routines.macdbb_replay.replay_data import configure_replay_data_sources
-    from routines.macdbb_replay.snapshot_store import load_manifest
-    from routines.macdbb_replay.timeline_sweep import merge_timeline_config
-    from routines.macdbb_replay.presets import resolve_config_with_preset
+    from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import _aggregate_pair_requests
+    from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
+    from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest
+    from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import merge_timeline_config
+    from routines.macdbb_scanner_aggressive_hl_replay.presets import resolve_config_with_preset
 
     snapshot_dir = "data/replay_snapshots_binance_1y"
     from pathlib import Path
 
-    from routines.macdbb_replay.snapshot_store import configure_snapshot_dir
+    from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import configure_snapshot_dir
 
     configure_snapshot_dir(Path(snapshot_dir))
     manifest = load_manifest(snapshot_dir=snapshot_dir) or {}
@@ -83,7 +83,7 @@ def test_session_parity_pnl_within_tolerance(session_num: int):
         config_source="session",
         write_csv=False,
     )
-    from routines.macdbb_replay.replay_data import configure_replay_data_sources
+    from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
 
     configure_replay_data_sources(config)
     tick_maps, session_configs, selected = load_replay_sessions(config)

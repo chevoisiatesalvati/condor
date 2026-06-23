@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from routines.macdbb_replay.reports import ParsedScannerReport, ScannerPairRow
+from routines.macdbb_scanner_aggressive_hl_replay.reports import ParsedScannerReport, ScannerPairRow
 
 
 @dataclass(frozen=True)

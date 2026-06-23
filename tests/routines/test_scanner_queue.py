@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from routines.macdbb_replay.reports import ParsedScannerReport, ScannerPairRow
-from routines.macdbb_replay.scanner_queue import build_scanner_queue
+from routines.macdbb_scanner_aggressive_hl_replay.reports import ParsedScannerReport, ScannerPairRow
+from routines.macdbb_scanner_aggressive_hl_replay.scanner_queue import build_scanner_queue
 
 
 def _sample_report() -> ParsedScannerReport:
@@ -30,7 +30,7 @@ def test_infer_regime_degen_when_degen_natr_cv_higher():
             ScannerPairRow("PUMP-USD", 5e7, 10.0, 1.20, 0.50, 0.8, 8.0),
         ],
     )
-    from routines.macdbb_replay.scanner_queue import _infer_regime
+    from routines.macdbb_scanner_aggressive_hl_replay.scanner_queue import _infer_regime
 
     assert _infer_regime(parsed) == "degen"
 

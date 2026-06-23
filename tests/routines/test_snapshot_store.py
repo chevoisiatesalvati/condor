@@ -6,8 +6,8 @@ import datetime as dt
 
 import numpy as np
 
-from routines.macdbb_replay.models import ParsedReport
-from routines.macdbb_replay.reports import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import ParsedReport
+from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ParsedScannerReport,
     ScannerPairRow,
     build_reports_by_pair,
@@ -18,13 +18,13 @@ from routines.macdbb_replay.reports import (
     nearest_report,
     nearest_scanner_report,
 )
-from routines.macdbb_replay.snapshot_store import (
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
     append_states,
     configure_snapshot_dir,
     load_parsed_macdbb_snapshot,
     load_parsed_scanner_snapshot,
 )
-from routines.macdbb_replay.tick_market_state import (
+from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import (
     TickMarketState,
     compute_macdbb_from_closes,
     metrics_to_parsed_report,

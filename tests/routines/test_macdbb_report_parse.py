@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from routines.macdbb_replay.reports import load_parsed_report, parse_report_html
-from routines.macdbb_replay.models import ReportMeta
+from routines.macdbb_scanner_aggressive_hl_replay.reports import load_parsed_report, parse_report_html
+from routines.macdbb_scanner_aggressive_hl_replay.models import ReportMeta
 import datetime as dt
 
 REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"

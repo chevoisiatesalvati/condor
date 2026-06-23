@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import datetime as dt
 
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.reports import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     build_reports_by_pair,
     load_reports_index,
     load_scanner_reports_index,
     nearest_report,
     nearest_scanner_report,
 )
-from routines.macdbb_replay.session_builder import build_session_parity_ticks
-from routines.macdbb_replay.tick_schedule import parse_tick_schedule_file
+from routines.macdbb_scanner_aggressive_hl_replay.session_builder import build_session_parity_ticks
+from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import parse_tick_schedule_file
 
 STRATEGY_SLUG = "macdbb_scanner_aggressive_hl"
 SESSIONS_DIR = TRADING_AGENTS_DIR / STRATEGY_SLUG / "sessions"

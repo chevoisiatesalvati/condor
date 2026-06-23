@@ -14,7 +14,7 @@ from pathlib import Path
 import aiohttp
 
 from routines.lib.binance_candle_cache import DEFAULT_CACHE_DIR
-from routines.macdbb_replay.report_backfill import fetch_binance_universe
+from routines.macdbb_scanner_aggressive_hl_replay.report_backfill import fetch_binance_universe
 
 
 def _parse_args() -> argparse.Namespace:

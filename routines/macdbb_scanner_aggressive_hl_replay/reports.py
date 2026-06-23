@@ -7,8 +7,8 @@ import json
 import re
 from dataclasses import dataclass
 
-from routines.macdbb_replay.models import ParsedReport, ReportMeta
-from routines.macdbb_replay.paths import REPORTS_DIR, REPORTS_INDEX_PATH
+from routines.macdbb_scanner_aggressive_hl_replay.models import ParsedReport, ReportMeta
+from routines.macdbb_scanner_aggressive_hl_replay.paths import REPORTS_DIR, REPORTS_INDEX_PATH
 
 _SCANNER_TITLE_RE = re.compile(
     r"Hyperliquid Market Scanner\s*\((\d+)h",
@@ -290,7 +290,7 @@ def parse_report_html(report_html: str) -> ParsedReport | None:
 
 
 def load_reports_index() -> list[ReportMeta]:
-    from routines.macdbb_replay import snapshot_store
+    from routines.macdbb_scanner_aggressive_hl_replay import snapshot_store
 
     if snapshot_store.is_snapshot_store_active():
         return snapshot_store.load_macdbb_index()
@@ -373,7 +373,7 @@ def nearest_report(
 
 def load_parsed_report(report_meta: ReportMeta) -> ParsedReport | None:
     if report_meta.filename.startswith("snapshot://"):
-        from routines.macdbb_replay import snapshot_store
+        from routines.macdbb_scanner_aggressive_hl_replay import snapshot_store
 
         return snapshot_store.load_parsed_macdbb_snapshot(report_meta)
     report_path = REPORTS_DIR / report_meta.filename
@@ -386,7 +386,7 @@ def load_parsed_report(report_meta: ReportMeta) -> ParsedReport | None:
 
 
 def load_scanner_reports_index() -> list[ScannerReportMeta]:
-    from routines.macdbb_replay import snapshot_store
+    from routines.macdbb_scanner_aggressive_hl_replay import snapshot_store
 
     if snapshot_store.is_snapshot_store_active():
         return snapshot_store.load_scanner_index()
@@ -441,7 +441,7 @@ def load_parsed_scanner_report(
     report_meta: ScannerReportMeta,
 ) -> ParsedScannerReport | None:
     if report_meta.filename.startswith("snapshot://"):
-        from routines.macdbb_replay import snapshot_store
+        from routines.macdbb_scanner_aggressive_hl_replay import snapshot_store
 
         return snapshot_store.load_parsed_scanner_snapshot(report_meta)
     report_path = REPORTS_DIR / report_meta.filename

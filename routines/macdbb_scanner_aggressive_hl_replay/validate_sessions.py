@@ -8,12 +8,12 @@ import re
 import sys
 from pathlib import Path
 
-from routines.macdbb_replay.dynamic_policy import DynamicReplayPolicy
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.replay_loader import load_replay_sessions
-from routines.macdbb_replay.reports import build_reports_by_pair, load_reports_index
-from routines.macdbb_replay.simulator import simulate_strategy_session
+from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import DynamicReplayPolicy
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
+from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index
+from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
 
 _SUMMARY_PNL_RE = re.compile(r"PnL:\s*\$([+-]?[0-9.]+)")
 

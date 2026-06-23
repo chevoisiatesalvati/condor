@@ -1,6 +1,6 @@
 """Tests for extended signals_1h journal telemetry parsing."""
 
-from routines.macdbb_replay.journal import _parse_decision_line, _parse_signals_1h, parse_dt
+from routines.macdbb_scanner_aggressive_hl_replay.journal import _parse_decision_line, _parse_signals_1h, parse_dt
 
 
 def test_parse_signals_1h_legacy_format():

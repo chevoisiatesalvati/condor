@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
-from routines.macdbb_replay.models import (
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
     JournalSignal1h,
     OpenPosition,
@@ -13,25 +13,25 @@ from routines.macdbb_replay.models import (
     TickMeta,
     compute_return_pct,
 )
-from routines.macdbb_replay.dynamic_policy import (
+from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import (
     DynamicReplayPolicy,
     EntryPolicyResult,
     resolve_fixed_entry_policy,
 )
-from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
-from routines.macdbb_replay.replay_data import is_report_driven_data_source
-from routines.macdbb_replay.reports import ReportMeta, ScannerReportMeta, load_scanner_reports_index
-from routines.macdbb_replay.session_builder import (
+from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.replay_data import is_report_driven_data_source
+from routines.macdbb_scanner_aggressive_hl_replay.reports import ReportMeta, ScannerReportMeta, load_scanner_reports_index
+from routines.macdbb_scanner_aggressive_hl_replay.session_builder import (
     _default_strategy_params,
     preserve_journal_queue_fields,
     refresh_tick_meta_from_reports,
 )
-from routines.macdbb_replay.session_config import replay_config_from_session
+from routines.macdbb_scanner_aggressive_hl_replay.session_config import replay_config_from_session
 import logging
-from routines.macdbb_replay.hl_prices import HlCandleCache, scan_barriers_between
+from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import HlCandleCache, scan_barriers_between
 
 logger = logging.getLogger(__name__)
-from routines.macdbb_replay.signals import (
+from routines.macdbb_scanner_aggressive_hl_replay.signals import (
     build_tick_snapshots,
     filter_4h_allows,
     session_has_trusted_prices,
@@ -1258,7 +1258,7 @@ def simulate_strategy_session(
     summary = _build_summary(simulated_trades)
     summary["status"] = "ok"
 
-    from routines.macdbb_replay import monitor_macdbb
+    from routines.macdbb_scanner_aggressive_hl_replay import monitor_macdbb
 
     flushed = monitor_macdbb.flush_monitor_macdbb_buffer(
         snapshot_dir=getattr(config, "snapshot_dir", None),

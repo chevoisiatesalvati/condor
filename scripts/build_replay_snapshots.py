@@ -18,31 +18,31 @@ from routines.lib.binance_candle_cache import DEFAULT_CACHE_DIR as BINANCE_DEFAU
 from routines.lib.hl_candle_cache import DEFAULT_CACHE_DIR as HL_DEFAULT_CACHE_DIR
 from routines.lib.binance_candles import configure_binance_rate_limit
 from routines.lib.hl_candles import configure_hl_rate_limit
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 from routines.lib.shared_universe import (
     load_intersection_manifest,
     universe_rows_for_exchange,
 )
-from routines.macdbb_replay.report_backfill import (
+from routines.macdbb_scanner_aggressive_hl_replay.report_backfill import (
     BackfillSettings,
     CandleCache,
     collect_session_tick_times,
     fetch_binance_universe,
     fetch_hl_universe,
 )
-from routines.macdbb_replay.session_builder import _default_strategy_params
-from routines.macdbb_replay.snapshot_store import (
+from routines.macdbb_scanner_aggressive_hl_replay.session_builder import _default_strategy_params
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
     DEFAULT_SNAPSHOT_DIR,
     append_states,
     existing_tick_ids,
     write_manifest,
 )
-from routines.macdbb_replay.tick_market_state import (
+from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import (
     TickMarketSettings,
     TickMarketState,
     compute_tick_market_state,
 )
-from routines.macdbb_replay.tick_schedule import build_range_tick_schedule, parse_iso_utc
+from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import build_range_tick_schedule, parse_iso_utc
 
 
 def _parse_args() -> argparse.Namespace:

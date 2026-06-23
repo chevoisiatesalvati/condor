@@ -8,28 +8,28 @@ import asyncio
 import sys
 from pathlib import Path
 
-from routines.macdbb_replay.config_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     _merge,
     extract_barrier_overrides,
     load_sweep_winner_from_csv,
 )
-from routines.macdbb_replay.snapshot_store import load_manifest
-from routines.macdbb_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_replay.presets import (
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest
+from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     _DYNAMIC_PRESET_INFRA,
     _STRATEGY_TIMELINE_MEGA_BEST,
     _build_timeline_driver,
     _merge_preset_layers,
     resolve_config_with_preset,
 )
-from routines.macdbb_replay.timeline_sweep import (
+from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
     DEFAULT_FREQUENCY_SEC,
     PRESET_STRIP_KEYS,
     apply_winner_to_agent,
     apply_winner_to_presets,
     merge_timeline_config,
 )
-from routines.strategy_replay_backtest_dynamic_amount import run as run_dynamic_replay
+from routines.macdbb_scanner_aggressive_hl_backtest import run as run_dynamic_replay
 
 
 def build_staged_winner_preset_overrides(config: DynamicStrategyReplayConfig) -> dict:
@@ -156,7 +156,7 @@ async def _main() -> int:
     )
 
     if not args.skip_routine:
-        print("\nRunning strategy_replay_backtest_dynamic_amount...")
+        print("\nRunning macdbb_scanner_aggressive_hl_backtest...")
         result = await run_dynamic_replay(config, None)
         text = result if isinstance(result, str) else getattr(result, "text", str(result))
         args.validation_log.parent.mkdir(parents=True, exist_ok=True)

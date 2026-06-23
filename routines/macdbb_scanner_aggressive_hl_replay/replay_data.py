@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from routines.macdbb_replay.snapshot_store import configure_snapshot_dir
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import configure_snapshot_dir
 
 if TYPE_CHECKING:
-    from routines.macdbb_replay.models import ReplayConfigBase
+    from routines.macdbb_scanner_aggressive_hl_replay.models import ReplayConfigBase
 
 
 def is_report_driven_data_source(data_source: str) -> bool:
@@ -34,7 +34,7 @@ def configure_replay_data_sources(config: ReplayConfigBase) -> None:
         if snapshot_dir:
             configure_snapshot_dir(Path(snapshot_dir))
         else:
-            from routines.macdbb_replay.snapshot_store import DEFAULT_SNAPSHOT_DIR
+            from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import DEFAULT_SNAPSHOT_DIR
 
             configure_snapshot_dir(DEFAULT_SNAPSHOT_DIR)
     else:
