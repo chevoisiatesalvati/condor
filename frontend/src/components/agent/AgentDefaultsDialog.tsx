@@ -63,7 +63,7 @@ export function AgentDefaultsDialog({
     if (!defaults) return;
     const cfg = defaults.default_config;
     setExecutionMode((cfg.execution_mode as ExecutionMode) || "loop");
-    setDefaultTradingContext(defaults.default_trading_context || "");
+    setDefaultTradingContext(defaults.trading_context || "");
     setServerName((cfg.server_name as string) || "");
     setAgentKey(defaults.agent_key || "");
     setModelBaseUrl(defaults.model_base_url || (cfg.model_base_url as string) || "");
@@ -98,7 +98,7 @@ export function AgentDefaultsDialog({
             ? { strategy_params: strategyParams }
             : {}),
         },
-        default_trading_context: defaultTradingContext,
+        trading_context: defaultTradingContext,
         agent_key: agentKey,
         model_base_url: modelBaseUrl,
       }),

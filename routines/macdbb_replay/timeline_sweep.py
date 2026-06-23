@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 import json
 import re
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,7 @@ from routines.macdbb_replay.config_sweep import (
     _run_dynamic_config,
     _write_sweep_csv,
     iter_mega_dynamic_sweep_configs,
+    iter_refine_sweep_configs,
 )
 from routines.macdbb_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
@@ -34,6 +37,7 @@ from routines.macdbb_replay.presets import (
     resolve_config_with_preset,
 )
 from routines.macdbb_replay.replay_range import timeline_range_from_reports
+from routines.macdbb_replay.snapshot_store import load_manifest, snapshot_dir_or_default
 from routines.macdbb_replay.reports import (
     build_reports_by_pair,
     load_reports_index,
@@ -47,6 +51,68 @@ AGENT_SLUG = "macdbb_scanner_aggressive_hl"
 PRESET_STRIP_KEYS = frozenset(
     {"preset", "session_nums", "range_start_utc", "range_end_utc"}
 )
+
+# Benchmark: binance_1y @ 1800s (~13.7k ticks) ≈ 153s per config on this machine.
+_BENCHMARK_TICK_COUNT = 13_719
+_BENCHMARK_SEC_PER_CONFIG = 153.0
+DEFAULT_CHECKPOINT_EVERY = 10
+
+
+def discover_replay_snapshot_dirs(data_dir: Path = Path("data")) -> list[Path]:
+    return sorted(
+        path
+        for path in data_dir.glob("replay_snapshots*")
+        if (path / "manifest.json").is_file()
+    )
+
+
+def estimate_timeline_sweep_seconds(
+    snapshot_dirs: list[Path],
+    *,
+    config_count: int,
+    benchmark_tick_count: int = _BENCHMARK_TICK_COUNT,
+    benchmark_sec_per_config: float = _BENCHMARK_SEC_PER_CONFIG,
+) -> float:
+    """Rough wall-clock estimate from tick count vs binance_1y benchmark."""
+    total = 0.0
+    for path in snapshot_dirs:
+        manifest = load_manifest(snapshot_dir=path)
+        ticks = int((manifest or {}).get("tick_count") or benchmark_tick_count)
+        scale = max(ticks / benchmark_tick_count, 0.01)
+        total += config_count * benchmark_sec_per_config * scale
+    return total
+
+
+def _write_sweep_progress(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _checkpoint_csv_path(output_dir: Path, stem: str) -> Path:
+    return output_dir / f"{stem}.checkpoint.csv"
+
+
+def _should_write_checkpoint(done: int, config_total: int, *, checkpoint_every: int) -> bool:
+    if checkpoint_every <= 0:
+        return False
+    return done == 1 or done % checkpoint_every == 0 or done == config_total
+
+
+def _write_checkpoint_csv(path: Path, results: list[SweepResult]) -> None:
+    ranked = sorted(results, key=lambda row: row.capital_normalized_pnl, reverse=True)
+    _write_sweep_csv(path, ranked)
+
+
+def _format_eta(seconds: float | None) -> str:
+    if seconds is None or seconds < 0:
+        return "?"
+    hours, rem = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
 
 
 def timeline_sweep_overrides(
@@ -103,6 +169,13 @@ async def run_timeline_dynamic_sweep(
     range_end_utc: str | None = None,
     snapshot_dir: str | None = None,
     top_n: int = 40,
+    progress_path: Path | None = None,
+    global_index_offset: int = 0,
+    global_total: int | None = None,
+    write_output: bool = True,
+    checkpoint_every: int = DEFAULT_CHECKPOINT_EVERY,
+    parent_overrides: dict[str, Any] | None = None,
+    config_items: list[tuple[str, dict[str, Any]]] | None = None,
 ) -> tuple[list[SweepResult], str, float, str, str]:
     timeline_fields = timeline_sweep_overrides(
         range_start_utc=range_start_utc,
@@ -113,7 +186,12 @@ async def run_timeline_dynamic_sweep(
     if snapshot_dir:
         timeline_fields = {**timeline_fields, "snapshot_dir": snapshot_dir}
     load_config = DynamicStrategyReplayConfig(
-        **_finalize_mega_dynamic_config(_merge(_dynamic_sweep_base(dynamic_mode), **timeline_fields))
+        **_finalize_mega_dynamic_config(
+            _merge(
+                _dynamic_sweep_base(dynamic_mode, parent_overrides=parent_overrides),
+                **timeline_fields,
+            )
+        )
     )
     from routines.macdbb_replay.replay_data import configure_replay_data_sources
 
@@ -149,10 +227,28 @@ async def run_timeline_dynamic_sweep(
         f"time_window={time_window_min}m | freq={frequency_sec}s"
     )
 
+    if parent_overrides is not None:
+        print(f"Staged sweep parent: derived from prior phase winner")
+
     results: list[SweepResult] = []
-    for _index, (name, overrides) in enumerate(
-        iter_mega_dynamic_sweep_configs(dynamic_mode, min_configs=min_configs, seed=seed)
-    ):
+    if config_items is None:
+        config_items = list(
+            iter_mega_dynamic_sweep_configs(
+                dynamic_mode,
+                min_configs=min_configs,
+                seed=seed,
+                parent_overrides=parent_overrides,
+            )
+        )
+    config_total = len(config_items)
+    sweep_started = time.monotonic()
+    snap_label = snapshot_dir or "default"
+    checkpoint_path: Path | None = None
+    if output_dir is not None and write_output:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = _checkpoint_csv_path(output_dir, stem)
+
+    for index, (name, overrides) in enumerate(config_items):
         merged = merge_timeline_config(
             overrides,
             frequency_sec=frequency_sec,
@@ -160,6 +256,8 @@ async def run_timeline_dynamic_sweep(
             range_start_utc=timeline_fields["range_start_utc"],
             range_end_utc=timeline_fields["range_end_utc"],
         )
+        if snapshot_dir:
+            merged["snapshot_dir"] = snapshot_dir
         result = _run_dynamic_config(
             name,
             merged,
@@ -170,14 +268,83 @@ async def run_timeline_dynamic_sweep(
             hl_barrier_candle_cache,
             hl_vol_candle_cache,
             reports_by_pair,
+            parent_overrides=parent_overrides,
         )
-        results.append(_apply_capital_metrics(result, benchmark_avg_notional))
+        result.snapshot_dir = snap_label
+        result = _apply_capital_metrics(result, benchmark_avg_notional)
+        results.append(result)
+
+        done = index + 1
+        elapsed = time.monotonic() - sweep_started
+        rate = done / elapsed if elapsed > 0 else 0.0
+        remaining_local = config_total - done
+        eta_local = remaining_local / rate if rate > 0 else None
+        global_done = global_index_offset + done
+        global_rem = (global_total - global_done) if global_total else None
+        eta_global = global_rem / rate if rate > 0 and global_rem is not None else eta_local
+
+        if checkpoint_path is not None and _should_write_checkpoint(
+            done, config_total, checkpoint_every=checkpoint_every
+        ):
+            _write_checkpoint_csv(checkpoint_path, results)
+
+        if progress_path is not None:
+            top_row = max(results, key=lambda row: row.capital_normalized_pnl)
+            progress_payload: dict[str, Any] = {
+                "status": "running",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "snapshot_dir": snap_label,
+                "config_index": done,
+                "config_total": config_total,
+                "global_index": global_done,
+                "global_total": global_total,
+                "last_config": name,
+                "last_capital_normalized_pnl": round(result.capital_normalized_pnl, 2),
+                "last_trades": result.trades,
+                "top_config": top_row.name,
+                "top_capital_normalized_pnl": round(top_row.capital_normalized_pnl, 2),
+                "elapsed_sec": round(elapsed, 1),
+                "eta_local_sec": round(eta_local, 1) if eta_local is not None else None,
+                "eta_global_sec": round(eta_global, 1) if eta_global is not None else None,
+                "configs_per_hour": round(rate * 3600, 2),
+            }
+            if checkpoint_path is not None:
+                progress_payload["checkpoint_csv"] = checkpoint_path.as_posix()
+                progress_payload["checkpoint_result_count"] = len(results)
+            _write_sweep_progress(progress_path, progress_payload)
+
+        if done == 1 or done % 5 == 0 or done == config_total:
+            print(
+                f"[{global_done}/{global_total or config_total}] "
+                f"{snap_label} {done}/{config_total} {name} "
+                f"cap_norm=${result.capital_normalized_pnl:+.2f} "
+                f"elapsed={_format_eta(elapsed)} eta={_format_eta(eta_global)}",
+                flush=True,
+            )
 
     results.sort(key=lambda row: row.capital_normalized_pnl, reverse=True)
 
-    if output_dir is not None:
-        output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir is not None and write_output:
         _write_sweep_csv(output_dir / f"{stem}.csv", results)
+
+    if progress_path is not None and results:
+        top_row = results[0]
+        completed_payload: dict[str, Any] = {
+            "status": "completed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "snapshot_dir": snap_label,
+            "config_index": config_total,
+            "config_total": config_total,
+            "global_index": global_index_offset + config_total,
+            "global_total": global_total,
+            "elapsed_sec": round(time.monotonic() - sweep_started, 1),
+            "result_count": len(results),
+            "top_config": top_row.name,
+            "top_capital_normalized_pnl": round(top_row.capital_normalized_pnl, 2),
+        }
+        if checkpoint_path is not None:
+            completed_payload["checkpoint_csv"] = checkpoint_path.as_posix()
+        _write_sweep_progress(progress_path, completed_payload)
 
     baseline_row = next((row for row in results if row.name.endswith("baseline_winner")), results[-1])
     _print_table(
@@ -197,6 +364,116 @@ async def run_timeline_dynamic_sweep(
         timeline_fields["range_start_utc"],
         timeline_fields["range_end_utc"],
     )
+
+
+async def run_multi_snapshot_timeline_sweep(
+    dynamic_mode: str = "both_on",
+    output_dir: Path | None = None,
+    *,
+    min_configs: int = 560,
+    seed: int = 42,
+    output_stem: str | None = None,
+    frequency_sec: int = DEFAULT_FREQUENCY_SEC,
+    time_window_min: int = DEFAULT_TIME_WINDOW_MIN,
+    snapshot_dirs: list[Path] | None = None,
+    top_n: int = 40,
+    progress_path: Path | None = None,
+) -> tuple[list[SweepResult], str, str]:
+    """Run mega sweep for each snapshot dir; rank combined results by cap-norm PnL."""
+    dirs = snapshot_dirs or discover_replay_snapshot_dirs()
+    if not dirs:
+        raise ValueError("No replay snapshot directories with manifest.json found")
+
+    config_items = list(
+        iter_mega_dynamic_sweep_configs(dynamic_mode, min_configs=min_configs, seed=seed)
+    )
+    config_count = len(config_items)
+    global_total = config_count * len(dirs)
+    stem = output_stem or f"strategy_replay_dynamic_{dynamic_mode}_mega_timeline_all_snapshots"
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    progress_file = progress_path or (
+        (output_dir or Path("data/strategy_replay_sweeps")) / f"{stem}.progress.json"
+    )
+
+    combined: list[SweepResult] = []
+    run_started = time.monotonic()
+    global_offset = 0
+
+    for snap_index, snap_path in enumerate(dirs, start=1):
+        snap = snap_path.as_posix()
+        manifest = load_manifest(snapshot_dir=snap_path)
+        if not manifest or not manifest.get("range_start_utc") or not manifest.get("range_end_utc"):
+            print(f"Skipping {snap}: manifest missing range", flush=True)
+            global_offset += config_count
+            continue
+
+        print(
+            f"\n=== Snapshot {snap_index}/{len(dirs)}: {snap} "
+            f"({manifest.get('tick_count', '?')} ticks) ===",
+            flush=True,
+        )
+        results, _baseline, _benchmark, range_start, range_end = await run_timeline_dynamic_sweep(
+            dynamic_mode=dynamic_mode,
+            output_dir=output_dir,
+            min_configs=min_configs,
+            seed=seed,
+            output_stem=f"{stem}__{snap_path.name}",
+            frequency_sec=frequency_sec,
+            time_window_min=time_window_min,
+            range_start_utc=str(manifest["range_start_utc"]),
+            range_end_utc=str(manifest["range_end_utc"]),
+            snapshot_dir=snap,
+            top_n=min(top_n, 10),
+            progress_path=progress_file,
+            global_index_offset=global_offset,
+            global_total=global_total,
+            write_output=False,
+        )
+        combined.extend(results)
+        global_offset += config_count
+
+        if output_dir is not None:
+            _write_checkpoint_csv(_checkpoint_csv_path(output_dir, stem), combined)
+
+    combined.sort(key=lambda row: row.capital_normalized_pnl, reverse=True)
+    if output_dir is not None:
+        _write_sweep_csv(output_dir / f"{stem}.csv", combined)
+
+    elapsed = time.monotonic() - run_started
+    _write_sweep_progress(
+        progress_file,
+        {
+            "status": "completed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "global_index": global_total,
+            "global_total": global_total,
+            "elapsed_sec": round(elapsed, 1),
+            "snapshot_dirs": [path.as_posix() for path in dirs],
+            "result_count": len(combined),
+            "top_capital_normalized_pnl": round(combined[0].capital_normalized_pnl, 2)
+            if combined
+            else None,
+            "top_snapshot_dir": combined[0].snapshot_dir if combined else None,
+            "top_config": combined[0].name if combined else None,
+        },
+    )
+
+    baseline_row = combined[-1] if combined else None
+    if baseline_row:
+        _print_table(
+            combined,
+            baseline_row.pnl,
+            top_n=top_n,
+            dynamic=True,
+            benchmark_avg_notional=FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
+            baseline_capital_normalized_pnl=baseline_row.capital_normalized_pnl,
+            rank_by_normalized=True,
+        )
+
+    range_start = combined[0].overrides.get("range_start_utc", "") if combined else ""
+    range_end = combined[0].overrides.get("range_end_utc", "") if combined else ""
+    return combined, range_start, range_end
 
 
 def full_replay_overrides(
@@ -392,28 +669,30 @@ def render_preset_block(preset_name: str, overrides: dict[str, Any]) -> str:
 def apply_winner_to_presets(
     preset_overrides: dict[str, Any],
     *,
+    preset_name: str | None = None,
     presets_path: Path | None = None,
     models_path: Path | None = None,
 ) -> None:
+    preset_name = preset_name or TIMELINE_PRESET_NAME
     presets_path = presets_path or Path("routines/macdbb_replay/presets.py")
     models_path = models_path or Path("routines/macdbb_replay/models.py")
     preset_text = presets_path.read_text(encoding="utf-8")
-    if TIMELINE_PRESET_NAME in preset_text:
-        return
-    marker = '    "hl_dynamic_session_parity": {'
+    if preset_name in preset_text:
+        raise ValueError(f"Preset {preset_name!r} already exists in {presets_path}")
+    marker = '    "hl_dynamic_session_parity": _merge_preset_layers('
     filtered = {
         key: value
         for key, value in preset_overrides.items()
         if key not in PRESET_STRIP_KEYS
     }
-    block = render_preset_block(TIMELINE_PRESET_NAME, filtered)
+    block = render_preset_block(preset_name, filtered)
     preset_text = preset_text.replace(marker, block + "\n" + marker, 1)
     presets_path.write_text(preset_text, encoding="utf-8")
 
     models_text = models_path.read_text(encoding="utf-8")
-    if TIMELINE_PRESET_NAME not in models_text:
+    if preset_name not in models_text:
         models_text = models_text.replace(
             '"hl_dynamic_session_parity",',
-            f'"hl_dynamic_session_parity",\n        "{TIMELINE_PRESET_NAME}",',
+            f'"hl_dynamic_session_parity",\n        "{preset_name}",',
         )
     models_path.write_text(models_text, encoding="utf-8")

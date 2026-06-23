@@ -15,14 +15,18 @@ from routines.macdbb_replay.presets import resolve_config_with_preset
 from routines.macdbb_replay.replay_data import configure_replay_data_sources
 from routines.macdbb_replay.snapshot_store import load_manifest
 from routines.macdbb_replay.timeline_sweep import (
+    DEFAULT_CHECKPOINT_EVERY,
     DEFAULT_FREQUENCY_SEC,
     DEFAULT_TIME_WINDOW_MIN,
     TIMELINE_PRESET_NAME,
     apply_winner_to_agent,
     apply_winner_to_presets,
     build_timeline_preset_overrides,
+    discover_replay_snapshot_dirs,
+    estimate_timeline_sweep_seconds,
     format_validation_log,
     full_replay_overrides,
+    run_multi_snapshot_timeline_sweep,
     run_timeline_dynamic_sweep,
     timeline_range_from_reports,
     validate_top_configs_via_routine,
@@ -51,10 +55,42 @@ def _parse_args() -> argparse.Namespace:
         help="CSV filename stem (default: strategy_replay_dynamic_{mode}_mega_timeline)",
     )
     sweep.add_argument(
+        "--parent-csv",
+        type=Path,
+        default=None,
+        help="Prior phase winner CSV; merged config becomes staged sweep base",
+    )
+    sweep.add_argument(
         "--snapshot-dir",
         type=Path,
-        default=Path("data/replay_snapshots"),
+        default=Path("data/replay_snapshots_binance_1y"),
         help="Parquet snapshot directory for timeline replay",
+    )
+    sweep.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=DEFAULT_CHECKPOINT_EVERY,
+        help="Write checkpoint CSV every N configs (0 disables)",
+    )
+
+    sweep_all = sub.add_parser(
+        "sweep-all",
+        help="Run mega sweep across every replay_snapshots* directory",
+    )
+    sweep_all.add_argument("--dynamic-mode", default="both_on")
+    sweep_all.add_argument("--min-configs", type=int, default=560)
+    sweep_all.add_argument("--seed", type=int, default=42)
+    sweep_all.add_argument("--top", type=int, default=40)
+    sweep_all.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("data/strategy_replay_sweeps"),
+    )
+    sweep_all.add_argument("--frequency-sec", type=int, default=DEFAULT_FREQUENCY_SEC)
+    sweep_all.add_argument("--time-window-min", type=int, default=DEFAULT_TIME_WINDOW_MIN)
+    sweep_all.add_argument(
+        "--output-stem",
+        default="strategy_replay_dynamic_both_on_mega_timeline_all_snapshots",
     )
 
     validate = sub.add_parser("validate", help="Validate top-N via dynamic replay routine")
@@ -113,6 +149,13 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def _run_sweep(args: argparse.Namespace) -> Path:
+    parent_overrides = None
+    if args.parent_csv is not None:
+        from routines.macdbb_replay.config_sweep import load_sweep_winner_from_csv
+
+        _name, _diff, parent_overrides = load_sweep_winner_from_csv(args.parent_csv)
+        print(f"Staged parent from {args.parent_csv}: {_name}")
+
     configure_replay_data_sources(
         DynamicStrategyReplayConfig(
             data_source="snapshots",
@@ -127,11 +170,14 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
     else:
         start, end = timeline_range_from_reports()
     output_stem = args.output_stem or f"strategy_replay_dynamic_{args.dynamic_mode}_mega_timeline"
+    progress_path = args.output_dir / f"{output_stem}.progress.json"
+    checkpoint_path = args.output_dir / f"{output_stem}.checkpoint.csv"
     print(
         f"Dynamic mega timeline sweep mode={args.dynamic_mode} | "
         f"space~{_mega_dynamic_space_size(args.dynamic_mode):,} | "
         f"min_configs={args.min_configs} | range {start} -> {end} | snapshots={args.snapshot_dir}"
     )
+    print(f"Checkpoint CSV (every {args.checkpoint_every} configs): {checkpoint_path}")
     results, _baseline, _benchmark, range_start, range_end = await run_timeline_dynamic_sweep(
         dynamic_mode=args.dynamic_mode,
         output_dir=args.output_dir,
@@ -144,6 +190,9 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         range_end_utc=end,
         snapshot_dir=str(args.snapshot_dir),
         top_n=args.top,
+        progress_path=progress_path,
+        parent_overrides=parent_overrides,
+        checkpoint_every=args.checkpoint_every,
     )
     csv_path = args.output_dir / f"{output_stem}.csv"
     if results:
@@ -153,6 +202,57 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
             f"RawPnL=${winner.pnl:+.2f}  trades={winner.trades}  "
             f"avg_notional=${winner.avg_notional:.0f}  "
             f"overrides={json.dumps(winner.overrides, sort_keys=True)}"
+        )
+        print(f"Range: {range_start} -> {range_end}")
+    print(f"\nWrote {csv_path}")
+    print(f"Progress: {progress_path}")
+    return csv_path
+
+
+async def _run_sweep_all(args: argparse.Namespace) -> Path:
+    from routines.macdbb_replay.config_sweep import iter_mega_dynamic_sweep_configs
+
+    snapshot_dirs = discover_replay_snapshot_dirs()
+    config_count = len(
+        list(iter_mega_dynamic_sweep_configs(args.dynamic_mode, min_configs=args.min_configs, seed=args.seed))
+    )
+    est_sec = estimate_timeline_sweep_seconds(snapshot_dirs, config_count=config_count)
+    est_hours = est_sec / 3600
+    progress_path = args.output_dir / f"{args.output_stem}.progress.json"
+    csv_path = args.output_dir / f"{args.output_stem}.csv"
+
+    print("=== Multi-snapshot mega sweep plan ===")
+    print(f"  Snapshot dirs : {len(snapshot_dirs)}")
+    for path in snapshot_dirs:
+        manifest = load_manifest(snapshot_dir=path)
+        ticks = (manifest or {}).get("tick_count", "?")
+        print(f"    - {path.as_posix()} ({ticks} ticks)")
+    print(f"  Configs/dir   : {config_count} (min_configs={args.min_configs})")
+    print(f"  Total runs    : {config_count * len(snapshot_dirs):,}")
+    print(f"  Est. runtime  : ~{est_hours:.1f} hours ({est_sec / 60:.0f} min)")
+    print(f"  Output CSV    : {csv_path}")
+    print(f"  Progress file : {progress_path}")
+    print(f"  Checkpoint    : {args.output_dir / f'{args.output_stem}.checkpoint.csv'}")
+    print("======================================\n")
+
+    results, range_start, range_end = await run_multi_snapshot_timeline_sweep(
+        dynamic_mode=args.dynamic_mode,
+        output_dir=args.output_dir,
+        min_configs=args.min_configs,
+        seed=args.seed,
+        output_stem=args.output_stem,
+        frequency_sec=args.frequency_sec,
+        time_window_min=args.time_window_min,
+        snapshot_dirs=snapshot_dirs,
+        top_n=args.top,
+        progress_path=progress_path,
+    )
+    if results:
+        winner = results[0]
+        print(
+            f"\nTop overall: {winner.name} @ {winner.snapshot_dir}  "
+            f"CapNorm=${winner.capital_normalized_pnl:+.2f}  RawPnL=${winner.pnl:+.2f}  "
+            f"trades={winner.trades}"
         )
         print(f"Range: {range_start} -> {range_end}")
     print(f"\nWrote {csv_path}")
@@ -198,6 +298,9 @@ async def main() -> int:
     args = _parse_args()
     if args.command == "sweep":
         await _run_sweep(args)
+        return 0
+    if args.command == "sweep-all":
+        await _run_sweep_all(args)
         return 0
     if args.command == "validate":
         await _run_validate(args)

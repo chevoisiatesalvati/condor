@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
+import numpy as np
 
 from condor.trading_agent.policies.macdbb_dynamic import (
     SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,
@@ -56,10 +57,12 @@ class HlPrefetchSettings:
     refresh_cache: bool = False
     cache_dir: Path | None = None
     candle_source: str = "hyperliquid"
+    build_session_prices: bool = True
 
 
-def _is_binance_source(source: str) -> bool:
-    return source == "binance_perpetual"
+def _needs_session_price_cache(config: object) -> bool:
+    price_source = getattr(config, "price_source", "auto")
+    return price_source in ("auto", "hl_candles", "binance_candles")
 
 
 def hl_prefetch_settings_from_config(config: object) -> HlPrefetchSettings:
@@ -79,7 +82,62 @@ def hl_prefetch_settings_from_config(config: object) -> HlPrefetchSettings:
         refresh_cache=getattr(config, "hl_refresh_cache", False),
         cache_dir=cache_dir,
         candle_source=candle_source,
+        build_session_prices=_needs_session_price_cache(config),
     )
+
+
+def _is_binance_source(source: str) -> bool:
+    return source == "binance_perpetual"
+
+
+def _fill_session_prices_for_pair(
+    candles: list[dict[str, float]],
+    requests: list[tuple[int, int, dt.datetime, str]],
+    session_caches: dict[int, HlPriceCache],
+    *,
+    max_delta_ms: int,
+) -> int:
+    """Vectorized nearest-close lookup for one pair across all tick times."""
+    if not candles or not requests:
+        return 0
+
+    timestamps = np.array(
+        [int(c["timestamp_ms"]) for c in candles if "timestamp_ms" in c],
+        dtype=np.int64,
+    )
+    closes = np.array(
+        [float(c["close"]) for c in candles if "timestamp_ms" in c],
+        dtype=np.float64,
+    )
+    if timestamps.size == 0:
+        return 0
+
+    order = np.argsort(timestamps)
+    timestamps = timestamps[order]
+    closes = closes[order]
+
+    tick_ms = np.array(
+        [int(tick_time.timestamp() * 1000) for _, _, tick_time, _ in requests],
+        dtype=np.int64,
+    )
+    right = np.searchsorted(timestamps, tick_ms, side="left")
+    left = np.clip(right - 1, 0, timestamps.size - 1)
+    right = np.clip(right, 0, timestamps.size - 1)
+    pick_left = np.abs(timestamps[left] - tick_ms) <= np.abs(timestamps[right] - tick_ms)
+    indices = np.where(pick_left, left, right)
+    deltas = np.abs(timestamps[indices] - tick_ms)
+    hits = deltas <= max_delta_ms
+
+    filled = 0
+    for index, (session_num, tick_num, _tick_time, journal_pair) in enumerate(requests):
+        if not hits[index]:
+            continue
+        price = float(closes[indices[index]])
+        if price <= 0:
+            continue
+        session_caches[session_num][(journal_pair, tick_num)] = price
+        filled += 1
+    return filled
 
 
 def _load_hl_candles():
@@ -193,6 +251,7 @@ def _tick_pairs(meta: TickMeta) -> set[str]:
 
 def _aggregate_pair_requests(
     session_tick_maps: dict[int, dict[int, TickMeta]],
+    extra_pairs: set[str] | None = None,
 ) -> dict[str, list[tuple[int, int, dt.datetime, str]]]:
     """Canonical pair -> [(session_num, tick_num, tick_time, journal_pair), ...]."""
     pair_requests: dict[str, list[tuple[int, int, dt.datetime, str]]] = {}
@@ -201,6 +260,8 @@ def _aggregate_pair_requests(
 
     for session_num, tick_meta_map in session_tick_maps.items():
         pairs: set[str] = set()
+        if extra_pairs:
+            pairs.update(_canonical_trading_pair(pair) for pair in extra_pairs)
         ticks: list[tuple[int, dt.datetime]] = []
         for tick_num, meta in sorted(tick_meta_map.items()):
             ticks.append((tick_num, meta.timestamp))
@@ -304,6 +365,7 @@ async def prefetch_replay_hl_prices(
     session_tick_maps: dict[int, dict[int, TickMeta]],
     *,
     settings: HlPrefetchSettings | None = None,
+    extra_pairs: set[str] | None = None,
 ) -> ReplayHlPrefetch:
     """Fetch tick-close prices and OHLC series for replay (price + barrier + vol)."""
     if not session_tick_maps:
@@ -317,20 +379,18 @@ async def prefetch_replay_hl_prices(
         candle_mod = _load_binance_candles()
         candle_cache_mod = _load_binance_candle_cache()
         fetch_between_cached = candle_cache_mod.fetch_binance_candles_between_cached
-        close_nearest = candle_mod.close_nearest
         pair_label = lambda pair: candle_mod.trading_pair_to_symbol(_cache_pair_for_source(pair, opts.candle_source))
     else:
         candle_mod = _load_hl_candles()
         candle_cache_mod = _load_hl_candle_cache()
         fetch_between_cached = candle_cache_mod.fetch_hl_candles_between_cached
-        close_nearest = candle_mod.hl_close_nearest
         pair_label = lambda pair: candle_mod.trading_pair_to_hl_coin(pair)
 
     interval_ms = candle_mod._INTERVAL_MS.get(opts.interval)
     barrier_interval_ms = candle_mod._INTERVAL_MS.get(opts.barrier_interval)
     max_delta_ms = _max_nearest_delta_ms(opts.interval, interval_ms)
 
-    pair_requests = _aggregate_pair_requests(session_tick_maps)
+    pair_requests = _aggregate_pair_requests(session_tick_maps, extra_pairs=extra_pairs)
     if not pair_requests:
         return {session_num: {} for session_num in session_tick_maps}, {}, {}, {}
 
@@ -343,6 +403,7 @@ async def prefetch_replay_hl_prices(
     semaphore = asyncio.Semaphore(max(1, opts.max_concurrent))
     pairs_sorted = sorted(pair_requests)
     load_barrier_series = opts.barrier_interval != opts.interval
+    source_label = "Binance" if use_binance else "HL"
 
     async with aiohttp.ClientSession() as session:
 
@@ -552,26 +613,45 @@ async def prefetch_replay_hl_prices(
             )
             pair_barrier_candles[pair] = barrier_1m or vol_candles
 
-        await asyncio.gather(
-            *[load_pair(pair) for pair in pairs_sorted],
-            return_exceptions=True,
+        total_pairs = len(pairs_sorted)
+        logger.info(
+            "%s replay prefetch: loading %d pairs (%s price, %s barrier/vol)...",
+            source_label,
+            total_pairs,
+            opts.interval,
+            opts.barrier_interval,
         )
+        completed = 0
+        for pair in pairs_sorted:
+            try:
+                await load_pair(pair)
+            except Exception as error:
+                logger.warning("Prefetch failed for %s: %s", pair, error)
+            completed += 1
+            if completed == 1 or completed % 5 == 0 or completed == total_pairs:
+                logger.info("Prefetch progress: %d/%d pairs", completed, total_pairs)
 
     for pair, requests in pair_requests.items():
         candles = pair_candles.get(pair)
         if not candles:
             continue
-        for session_num, tick_num, tick_time, journal_pair in requests:
-            close = close_nearest(
-                candles,
-                tick_time,
-                max_delta_ms=max_delta_ms,
-            )
-            if close and close > 0:
-                session_caches[session_num][(journal_pair, tick_num)] = close
+        if not opts.build_session_prices:
+            continue
+        _fill_session_prices_for_pair(
+            candles,
+            requests,
+            session_caches,
+            max_delta_ms=max_delta_ms,
+        )
+
+    if not opts.build_session_prices:
+        logger.info(
+            "%s replay prefetch: skipped tick price map (price_source=reports; "
+            "barrier/vol series only)",
+            source_label,
+        )
 
     total_prices = sum(len(cache) for cache in session_caches.values())
-    source_label = "Binance" if use_binance else "HL"
     logger.info(
         "%s replay prefetch: %d prices across %d sessions "
         "(%d unique pairs, %d price series, %d barrier series, %d vol series)",

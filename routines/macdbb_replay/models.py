@@ -208,6 +208,8 @@ class ReplayConfigBase(BaseModel):
         "hl_mega_sweep_best",
         "hl_dynamic_mega_sweep_best",
         "hl_dynamic_session_parity",
+        "hl_dynamic_timeline_refine_v5_winner_binance_1y",
+        "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
         "hl_dynamic_timeline_mega_best",
     ] = (
         Field(
@@ -432,13 +434,16 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
     preset: Literal[
         "custom",
         "hl_dynamic_session_parity",
+        "hl_dynamic_timeline_refine_v5_winner_binance_1y",
+        "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
         "hl_dynamic_timeline_mega_best",
     ] = Field(
         default="hl_dynamic_timeline_mega_best",
         description=(
-            "hl_dynamic_timeline_mega_best = timeline mega sweep winner on "
-            "data/replay_snapshots_binance_1y (full snapshot span). "
-            "hl_dynamic_session_parity = session journal validation (mega sweep params)."
+            "hl_dynamic_timeline_mega_best = prior timeline mega sweep winner. "
+            "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y = v5 staged A→B→C "
+            "winner on binance_1y (~+$3066 cap-norm). "
+            "hl_dynamic_session_parity = session journal validation."
         ),
     )
 

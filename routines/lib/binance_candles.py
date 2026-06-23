@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import datetime as dt
 import logging
 import time
@@ -252,13 +253,24 @@ def close_nearest(
     if not candles:
         return None
     target_ms = int(target.astimezone(dt.timezone.utc).timestamp() * 1000)
-    with_ts = [candle for candle in candles if "timestamp_ms" in candle]
+    with_ts = [(int(c["timestamp_ms"]), float(c["close"])) for c in candles if "timestamp_ms" in c]
     if not with_ts:
         return None
-    best = min(with_ts, key=lambda candle: abs(candle["timestamp_ms"] - target_ms))
-    if abs(best["timestamp_ms"] - target_ms) > max_delta_ms:
+    with_ts.sort(key=lambda item: item[0])
+    timestamps = [item[0] for item in with_ts]
+    closes = [item[1] for item in with_ts]
+    idx = bisect.bisect_left(timestamps, target_ms)
+    best_idx: int | None = None
+    best_delta = max_delta_ms + 1
+    for candidate in (idx - 1, idx):
+        if 0 <= candidate < len(timestamps):
+            delta = abs(timestamps[candidate] - target_ms)
+            if delta < best_delta:
+                best_delta = delta
+                best_idx = candidate
+    if best_idx is None or best_delta > max_delta_ms:
         return None
-    return float(best["close"])
+    return closes[best_idx]
 
 
 __all__ = [

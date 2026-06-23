@@ -19,6 +19,14 @@ def uses_snapshot_store(config: ReplayConfigBase) -> bool:
     return config.data_source == "snapshots" or bool(getattr(config, "snapshot_dir", None))
 
 
+def should_prefetch_replay_candles(config: ReplayConfigBase) -> bool:
+    """Prefetch 1m candles for intrabar SL/TP when barriers or candle prices are used."""
+    if config.price_source in ("auto", "hl_candles", "binance_candles"):
+        return True
+    enable_barriers = getattr(config, "enable_dynamic_barriers", False)
+    return bool(enable_barriers)
+
+
 def configure_replay_data_sources(config: ReplayConfigBase) -> None:
     """Apply snapshot store configuration from replay config."""
     snapshot_dir = getattr(config, "snapshot_dir", None)

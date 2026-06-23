@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from condor.trading_agent.policies.macdbb_dynamic import compute_dynamic_barriers
 from routines.macdbb_replay.dynamic_policy import DynamicReplayPolicy
 from routines.macdbb_replay.hl_prices import (
     hl_prefetch_settings_from_config,
@@ -72,11 +73,64 @@ DYNAMIC_MODE_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Mega sweep grid v4 — both_on exploration around the current winner neighborhood.
-# max_open_executors is swept (was fixed at 3 in earlier sweeps).
+MEGA_GRID_VERSION = "v5"
+
+# Typical 1h BB-width vol (%%) for HL alts — used to reject fully clamped barrier combos.
+BARRIER_MEDIAN_VOL_PCT = 2.5
+
+# ref_volatility_pct scales differ by vol source; stratified sampling uses these buckets.
+NATR_REF_VOLATILITY_PCT: tuple[float, ...] = (0.08, 0.12, 0.18, 0.25, 0.35, 0.45)
+BB_REF_VOLATILITY_PCT: tuple[float, ...] = (1.0, 1.5, 2.0, 2.5, 3.0, 3.5)
+
+# Live agent.md default_config strategy_params (Hyperliquid deployment target).
+LIVE_AGENT_DEFAULT_OVERRIDES: dict[str, Any] = {
+    "preset": "custom",
+    "sl_pct": 4.5,
+    "tp_pct": 6.2,
+    "leverage": 30,
+    "max_open_executors": 10,
+    "adaptive_long_bb_pos_max": 82.0,
+    "adaptive_short_bb_pos_min": 88.0,
+    "adaptive_strong_long_bb_pos_max": 38.0,
+    "adaptive_strong_short_bb_pos_min": 95.0,
+    "adaptive_min_macd_gap_ratio": 0.15,
+    "adaptive_min_hist_ratio": 0.07,
+    "adaptive_score_open_min": 1.8,
+    "adaptive_score_open_min_extreme": 1.8,
+    "adaptive_hist_sign_bonus": 0.48,
+    "adaptive_hist_sign_penalty": 0.28,
+    "adaptive_momentum_bonus": 0.38,
+    "adaptive_momentum_penalty": 0.06,
+    "bb_proximity_epsilon_pct": 0.06,
+    "thesis_decay_exit_ticks": 28,
+    "thesis_bb_drift_pts": 18.0,
+    "enable_dynamic_sizing": True,
+    "enable_dynamic_barriers": True,
+    "min_notional_quote": 200.0,
+    "max_notional_quote": 1100.0,
+    "min_conviction_mult": 0.7,
+    "max_conviction_mult": 1.4,
+    "strength_mult_per_unit": 0.16,
+    "extreme_displacement_mult": 1.35,
+    "thin_universe_mult": 0.82,
+    "mature_tape_low_vol_mult": 1.12,
+    "vol_inverse_sizing": True,
+    "min_vol_mult": 0.82,
+    "max_vol_mult": 1.75,
+    "ref_volatility_pct": 0.68,
+    "sl_vol_exponent": 1.05,
+    "tp_vol_exponent": 0.75,
+    "sl_min_pct": 2.2,
+    "sl_max_pct": 7.5,
+    "tp_min_pct": 5.5,
+    "tp_max_pct": 11.0,
+    "volatility_source": "bb_width",
+}
+
+# Mega sweep grid v5 — de-saturate dynamic barriers; trim redundant SL/TP grid values.
 MEGA_SWEEP_GRID: dict[str, tuple[Any, ...]] = {
     "max_open_executors": (3, 5, 8, 10),
-    "adaptive_long_bb_pos_max": (48.0, 58.0, 64.0, 68.0, 82.0),
+    "adaptive_long_bb_pos_max": (48.0, 58.0, 64.0, 68.0, 72.0, 76.0, 82.0),
     "adaptive_short_bb_pos_min": (80.0, 82.0, 88.0, 92.0, 94.0),
     "adaptive_strong_long_bb_pos_max": (20.0, 26.0, 36.0, 38.0),
     "adaptive_strong_short_bb_pos_min": (82.0, 88.0, 91.0, 95.0),
@@ -88,9 +142,9 @@ MEGA_SWEEP_GRID: dict[str, tuple[Any, ...]] = {
     "adaptive_hist_sign_penalty": (0.20, 0.28, 0.42, 0.58),
     "adaptive_momentum_bonus": (0.11, 0.22, 0.38, 0.42),
     "adaptive_momentum_penalty": (0.06, 0.16, 0.18, 0.28),
-    "sl_pct": (1.6, 2.5, 3.2, 3.4, 3.8, 4.5, 5.0),
-    "tp_pct": (5.0, 5.5, 6.2, 6.8, 7.8, 8.2, 8.8, 9.2, 10.5, 13.0, 17.0),
-    "thesis_decay_exit_ticks": (6, 14, 28, 44, 64),
+    "sl_pct": (2.0, 3.2, 3.8, 4.5, 5.0),
+    "tp_pct": (5.0, 5.5, 6.2, 8.0, 10.0, 13.0),
+    "thesis_decay_exit_ticks": (6, 14, 20, 24, 28, 44, 64),
     "thesis_bb_drift_pts": (18.0, 28.0, 38.0, 55.0, 72.0, 78.0),
     "bb_proximity_epsilon_pct": (0.04, 0.06, 0.11, 0.18, 0.25, 0.28),
 }
@@ -102,7 +156,7 @@ MEGA_SIZING_GRID: dict[str, tuple[Any, ...]] = {
     "extreme_displacement_mult": (0.95, 1.15, 1.35, 1.55, 1.65),
     "thin_universe_mult": (0.72, 0.82, 0.88, 0.96),
     "mature_tape_low_vol_mult": (0.78, 0.92, 0.99, 1.08, 1.12),
-    "ref_volatility_pct": (0.28, 0.45, 0.48, 0.68, 0.75, 0.95),
+    "ref_volatility_pct": (0.45, 0.68, 0.95, 1.5, 2.0, 2.5),
     "min_vol_mult": (0.42, 0.58, 0.65, 0.82, 0.88),
     "max_vol_mult": (1.05, 1.22, 1.48, 1.55, 1.75),
     "vol_inverse_sizing": (True, False),
@@ -111,15 +165,101 @@ MEGA_SIZING_GRID: dict[str, tuple[Any, ...]] = {
 }
 
 MEGA_BARRIER_GRID: dict[str, tuple[Any, ...]] = {
-    "sl_vol_exponent": (0.40, 0.65, 0.95, 1.05, 1.15),
-    "tp_vol_exponent": (0.60, 0.75, 1.35, 1.45),
-    "sl_min_pct": (0.6, 1.4, 2.0, 2.2),
-    "sl_max_pct": (3.2, 4.5, 5.5, 7.0, 7.5),
-    "tp_min_pct": (3.5, 5.5, 6.5, 7.5, 7.8),
-    "tp_max_pct": (7.5, 11.0, 20.0, 22.0),
-    "ignore_journal_barriers_when_dynamic": (True, False),
+    "sl_vol_exponent": (0.55, 0.85, 1.05, 1.15),
+    "tp_vol_exponent": (0.60, 0.75, 1.0, 1.35),
+    "sl_min_pct": (1.0, 1.4, 2.0, 2.2),
+    "sl_max_pct": (4.0, 5.5, 6.5, 7.5, 9.0),
+    "tp_min_pct": (3.5, 4.5, 5.5, 6.5, 7.5),
+    "tp_max_pct": (8.0, 10.0, 11.0, 15.0, 20.0, 22.0),
+    "volatility_source": ("bb_width", "natr", "auto"),
+    "ref_volatility_pct": BB_REF_VOLATILITY_PCT,
+}
+
+# Per-mode default sample counts for phased sequential sweeps (A → B → C).
+MEGA_SWEEP_MIN_CONFIGS_BY_MODE: dict[str, int] = {
+    "sizing_only": 500,
+    "barriers_only": 350,
+    "both_on": 250,
+    "both_keep_journal": 250,
+}
+
+STAGED_PHASE_MODES: dict[str, str] = {
+    "A": "sizing_only",
+    "B": "barriers_only",
+    "C": "both_on",
+}
+
+REFINE_SWEEP_VERSION = "v5_winner"
+REFINE_DYNAMIC_MODE = "both_on"
+
+REFINE_STAGED_PHASES: tuple[str, ...] = ("A", "B", "C", "D")
+
+# Narrow grids around staged v5 Phase C winner (trade-analysis driven).
+REFINE_PHASE_A_GRID: dict[str, tuple[Any, ...]] = {
+    "sl_min_pct": (1.4, 1.6, 1.8, 2.0, 2.2, 2.4),
+    "tp_min_pct": (6.5, 7.5, 8.5, 9.5, 10.0),
+    "ref_volatility_pct": (2.5, 3.0, 3.5, 4.0, 4.5, 5.0),
+    "sl_vol_exponent": (0.85, 1.05, 1.25),
+    "tp_vol_exponent": (1.0, 1.35, 1.6),
+    "sl_pct": (3.2, 3.8, 4.2),
+    "tp_pct": (5.0, 5.5, 6.5),
     "volatility_source": ("auto", "bb_width", "natr"),
 }
+
+REFINE_PHASE_B_GRID: dict[str, tuple[Any, ...]] = {
+    "max_conviction_mult": (1.5, 1.7, 1.9, 2.0, 2.15),
+    "strength_mult_per_unit": (0.20, 0.26, 0.32, 0.38),
+    "min_conviction_mult": (0.85, 0.92, 1.0),
+    "max_notional_quote": (850.0, 950.0, 1100.0, 1250.0),
+    "min_notional_quote": (125.0, 150.0, 200.0),
+    "extreme_displacement_mult": (1.35, 1.55, 1.65),
+    "thin_universe_mult": (0.82, 0.88, 0.96),
+}
+
+REFINE_PHASE_C_GRID: dict[str, tuple[Any, ...]] = {
+    "adaptive_long_bb_pos_max": (68.0, 72.0, 76.0, 80.0),
+    "adaptive_score_open_min": (1.8, 2.2, 2.6, 3.0),
+    "adaptive_min_hist_ratio": (0.17, 0.22, 0.26),
+    "adaptive_score_open_min_extreme": (0.6, 0.85, 1.2),
+    "adaptive_min_macd_gap_ratio": (0.03, 0.07, 0.11),
+    "adaptive_momentum_penalty": (0.06, 0.12, 0.18),
+    "sl_symbol_cooldown_ticks": (2, 4, 8, 12),
+    "flip_cooldown_ticks": (4, 8, 16),
+    "thesis_decay_exit_ticks": (16, 32, 48, 64),
+}
+
+REFINE_PHASE_D_GRID: dict[str, tuple[Any, ...]] = {
+    "sl_min_pct": (1.6, 1.8, 2.0, 2.2),
+    "tp_min_pct": (7.5, 8.5, 9.5),
+    "ref_volatility_pct": (3.0, 3.5, 4.0),
+    "max_conviction_mult": (1.7, 1.9, 2.15),
+    "strength_mult_per_unit": (0.26, 0.32),
+    "adaptive_long_bb_pos_max": (68.0, 72.0, 76.0),
+    "adaptive_score_open_min": (2.2, 2.6),
+    "sl_symbol_cooldown_ticks": (4, 8),
+}
+
+REFINE_PHASE_GRIDS: dict[str, dict[str, tuple[Any, ...]]] = {
+    "A": REFINE_PHASE_A_GRID,
+    "B": REFINE_PHASE_B_GRID,
+    "C": REFINE_PHASE_C_GRID,
+    "D": REFINE_PHASE_D_GRID,
+}
+
+REFINE_MIN_CONFIGS_BY_PHASE: dict[str, int] = {
+    "A": 160,
+    "B": 120,
+    "C": 130,
+    "D": 90,
+}
+
+_BARRIER_PARAM_KEYS: frozenset[str] = frozenset(
+    {
+        *MEGA_BARRIER_GRID.keys(),
+        "sl_pct",
+        "tp_pct",
+    }
+)
 
 # Applied to every mega sample (not swept).
 MEGA_GRID_FIXED_OVERRIDES: dict[str, Any] = {
@@ -145,7 +285,10 @@ class SweepResult:
     avg_size_mult: float = 0.0
     avg_sl_pct: float = 0.0
     avg_tp_pct: float = 0.0
+    sl_saturation_pct: float = 0.0
+    tp_saturation_pct: float = 0.0
     dynamic_mode: str = ""
+    snapshot_dir: str = ""
 
 
 def _merge(base: dict[str, Any], **overrides: Any) -> dict[str, Any]:
@@ -163,8 +306,32 @@ _SENSIBLE_MIN_MAX_PAIRS: tuple[tuple[str, str], ...] = (
 )
 
 
-def is_sensible_replay_config(overrides: dict[str, Any]) -> bool:
-    """Reject parameter combos where a min bound exceeds its max (e.g. tp_min > tp_max)."""
+def _replay_config_from_overrides(overrides: dict[str, Any]) -> DynamicStrategyReplayConfig:
+    allowed = set(DynamicStrategyReplayConfig.model_fields)
+    payload = {key: value for key, value in overrides.items() if key in allowed}
+    payload.setdefault("preset", "custom")
+    payload.setdefault("formal_notional_quote", 500.0)
+    return DynamicStrategyReplayConfig(**payload)
+
+
+def _barriers_saturated_at_median_vol(overrides: dict[str, Any]) -> bool:
+    """True when SL and TP both hit max clamp at typical alt BB-width vol."""
+    if not overrides.get("enable_dynamic_barriers"):
+        return False
+    config = _replay_config_from_overrides(overrides)
+    sl_pct, tp_pct = compute_dynamic_barriers(BARRIER_MEDIAN_VOL_PCT, config)
+    return (
+        sl_pct >= config.sl_max_pct - 1e-9
+        and tp_pct >= config.tp_max_pct - 1e-9
+    )
+
+
+def is_sensible_replay_config(
+    overrides: dict[str, Any],
+    *,
+    reject_saturated_barriers: bool = True,
+) -> bool:
+    """Reject invalid min/max pairs, adaptive ordering inversions, and clamped barriers."""
     for lo_key, hi_key in _SENSIBLE_MIN_MAX_PAIRS:
         lo = overrides.get(lo_key)
         hi = overrides.get(hi_key)
@@ -172,14 +339,69 @@ def is_sensible_replay_config(overrides: dict[str, Any]) -> bool:
             continue
         if float(lo) > float(hi):
             return False
+
+    strong_long = overrides.get("adaptive_strong_long_bb_pos_max")
+    long_max = overrides.get("adaptive_long_bb_pos_max")
+    if strong_long is not None and long_max is not None:
+        if float(strong_long) >= float(long_max):
+            return False
+
+    if reject_saturated_barriers and _barriers_saturated_at_median_vol(overrides):
+        return False
+
     return True
 
 
-def _dynamic_sweep_base(mode: str) -> dict[str, Any]:
+def _dynamic_sweep_base(
+    mode: str,
+    *,
+    parent_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if mode not in DYNAMIC_MODE_PRESETS:
         valid = ", ".join(sorted(DYNAMIC_MODE_PRESETS))
         raise ValueError(f"Unknown dynamic mode {mode!r}; choose one of: {valid}")
-    return _merge(dict(CURRENT_WINNER_OVERRIDES), **DYNAMIC_MODE_PRESETS[mode])
+    root = dict(parent_overrides) if parent_overrides is not None else dict(CURRENT_WINNER_OVERRIDES)
+    root["preset"] = "custom"
+    return _merge(root, **DYNAMIC_MODE_PRESETS[mode])
+
+
+def extract_barrier_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+    """Pull SL/TP base + dynamic barrier keys from a full sweep config."""
+    return {
+        key: value
+        for key, value in overrides.items()
+        if key in _BARRIER_PARAM_KEYS
+    }
+
+
+def reconstruct_sweep_overrides(
+    mode: str,
+    diff: dict[str, Any],
+    *,
+    parent_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rebuild full config from sweep CSV diff + optional staged parent."""
+    base = _dynamic_sweep_base(mode, parent_overrides=parent_overrides)
+    return _finalize_mega_dynamic_config(_merge(base, **diff))
+
+
+def load_sweep_winner_from_csv(
+    csv_path: Path,
+    *,
+    mode: str | None = None,
+    parent_overrides: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Load rank-1 row; return (name, diff, full merged overrides)."""
+    with csv_path.open(encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    winner_mode = mode or row.get("dynamic_mode") or "both_on"
+    diff = json.loads(row["overrides_json"])
+    full = reconstruct_sweep_overrides(
+        winner_mode,
+        diff,
+        parent_overrides=parent_overrides,
+    )
+    return row["name"], diff, full
 
 
 def _dynamic_grid_for_mode(mode: str) -> dict[str, tuple[Any, ...]]:
@@ -223,7 +445,9 @@ def _mega_dynamic_config_name(overrides: dict[str, Any], mode: str) -> str:
         dynamic_bits.append(
             f"sle{overrides.get('sl_vol_exponent', 0)}_tle{overrides.get('tp_vol_exponent', 0)}"
         )
-        dynamic_bits.append(f"tpmax{int(overrides.get('tp_max_pct', 0))}")
+        dynamic_bits.append(f"slmax{overrides.get('sl_max_pct', 0)}")
+        dynamic_bits.append(f"tpmax{overrides.get('tp_max_pct', 0)}")
+        dynamic_bits.append(f"vs{overrides.get('volatility_source', 'bb')}")
         dynamic_bits.append(
             f"j{int(not overrides.get('ignore_journal_barriers_when_dynamic', True))}"
         )
@@ -236,39 +460,176 @@ def _finalize_mega_dynamic_config(overrides: dict[str, Any]) -> dict[str, Any]:
     return _merge(overrides, **MEGA_GRID_FIXED_OVERRIDES)
 
 
+def _sample_ref_volatility_pct(
+    rng: random.Random,
+    volatility_source: str | None,
+) -> float | None:
+    if volatility_source == "natr":
+        return rng.choice(NATR_REF_VOLATILITY_PCT)
+    if volatility_source in ("bb_width", "auto"):
+        return rng.choice(BB_REF_VOLATILITY_PCT)
+    return None
+
+
 def _random_dynamic_mega_combo(rng: random.Random, mode: str) -> dict[str, Any]:
     grid = _dynamic_grid_for_mode(mode)
-    return {key: rng.choice(values) for key, values in grid.items()}
+    combo = {key: rng.choice(values) for key, values in grid.items()}
+    if "ref_volatility_pct" in combo:
+        source = combo.get("volatility_source")
+        resampled = _sample_ref_volatility_pct(rng, source)
+        if resampled is not None:
+            combo["ref_volatility_pct"] = resampled
+    return combo
+
+
+def default_min_configs_for_mode(mode: str) -> int:
+    return MEGA_SWEEP_MIN_CONFIGS_BY_MODE.get(mode, 560)
+
+
+def default_min_configs_for_refine_phase(phase: str) -> int:
+    if phase not in REFINE_MIN_CONFIGS_BY_PHASE:
+        valid = ", ".join(REFINE_STAGED_PHASES)
+        raise ValueError(f"Unknown refine phase {phase!r}; choose one of: {valid}")
+    return REFINE_MIN_CONFIGS_BY_PHASE[phase]
+
+
+def _refine_grid_for_phase(phase: str) -> dict[str, tuple[Any, ...]]:
+    if phase not in REFINE_PHASE_GRIDS:
+        valid = ", ".join(REFINE_STAGED_PHASES)
+        raise ValueError(f"Unknown refine phase {phase!r}; choose one of: {valid}")
+    return REFINE_PHASE_GRIDS[phase]
+
+
+def _random_refine_combo(rng: random.Random, phase: str) -> dict[str, Any]:
+    grid = _refine_grid_for_phase(phase)
+    combo = {key: rng.choice(values) for key, values in grid.items()}
+    if "ref_volatility_pct" in combo:
+        source = combo.get("volatility_source", "auto")
+        resampled = _sample_ref_volatility_pct(rng, source)
+        if resampled is not None and "volatility_source" in grid:
+            combo["ref_volatility_pct"] = resampled
+    return combo
+
+
+def _refine_config_name(overrides: dict[str, Any], phase: str) -> str:
+    bits: list[str] = [f"refine_{phase}"]
+    if "sl_min_pct" in overrides:
+        bits.append(f"slmin{overrides['sl_min_pct']}")
+    if "tp_min_pct" in overrides:
+        bits.append(f"tpmin{overrides['tp_min_pct']}")
+    if "ref_volatility_pct" in overrides:
+        bits.append(f"rv{overrides['ref_volatility_pct']}")
+    if "max_conviction_mult" in overrides:
+        bits.append(f"cm{overrides['max_conviction_mult']}")
+    if "strength_mult_per_unit" in overrides:
+        bits.append(f"str{overrides['strength_mult_per_unit']}")
+    if "adaptive_long_bb_pos_max" in overrides:
+        bits.append(f"L{int(overrides['adaptive_long_bb_pos_max'])}")
+    if "adaptive_score_open_min" in overrides:
+        bits.append(f"sc{overrides['adaptive_score_open_min']}")
+    if "sl_symbol_cooldown_ticks" in overrides:
+        bits.append(f"slcd{overrides['sl_symbol_cooldown_ticks']}")
+    if "thesis_decay_exit_ticks" in overrides:
+        bits.append(f"td{overrides['thesis_decay_exit_ticks']}")
+    return "_".join(bits)
+
+
+def iter_refine_sweep_configs(
+    phase: str,
+    *,
+    min_configs: int | None = None,
+    seed: int = 42,
+    parent_overrides: dict[str, Any],
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield refine configs around a parent winner (staged v5 Phase C by default).
+
+    Each phase sweeps a focused parameter subset while keeping ``both_on`` dynamic
+    mode. Random samples are merged onto ``parent_overrides`` (prior phase winner
+    or the v5 staged ABC winner for phase A).
+    """
+    if phase not in REFINE_PHASE_GRIDS:
+        valid = ", ".join(REFINE_STAGED_PHASES)
+        raise ValueError(f"Unknown refine phase {phase!r}; choose one of: {valid}")
+
+    mode = REFINE_DYNAMIC_MODE
+    base = _finalize_mega_dynamic_config(
+        _dynamic_sweep_base(mode, parent_overrides=parent_overrides)
+    )
+    anchor_name = f"refine_{phase}_baseline_winner"
+    if not is_sensible_replay_config(base, reject_saturated_barriers=False):
+        raise ValueError(f"refine sweep anchor failed sanity check: {anchor_name}")
+    yield anchor_name, dict(base)
+
+    target = max(min_configs or default_min_configs_for_refine_phase(phase), 1)
+    rng = random.Random(seed)
+    seen_names: set[str] = {anchor_name}
+    emitted = 0
+    attempts = 0
+    max_attempts = target * 50
+
+    while emitted < target and attempts < max_attempts:
+        attempts += 1
+        combo = _random_refine_combo(rng, phase)
+        merged = _finalize_mega_dynamic_config(_merge(base, **combo))
+        if not is_sensible_replay_config(merged):
+            continue
+        name = _refine_config_name(merged, phase)
+        if name in seen_names:
+            name = f"{name}_n{emitted}"
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        yield name, merged
+        emitted += 1
 
 
 def iter_mega_dynamic_sweep_configs(
     mode: str = "both_on",
     *,
-    min_configs: int = 560,
+    min_configs: int | None = None,
     seed: int = 42,
+    parent_overrides: dict[str, Any] | None = None,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
-    """Yield dynamic mega configs; strategy grid + mode-specific dynamic params."""
-    base = _finalize_mega_dynamic_config(_dynamic_sweep_base(mode))
+    """Yield dynamic mega configs; strategy grid + mode-specific dynamic params.
+
+    When ``parent_overrides`` is set (staged phases B/C), the parent full config
+    replaces CURRENT_WINNER_OVERRIDES as the merge root before mode flags apply.
+    """
+    if min_configs is None:
+        min_configs = default_min_configs_for_mode(mode)
+    base = _finalize_mega_dynamic_config(
+        _dynamic_sweep_base(mode, parent_overrides=parent_overrides)
+    )
+    staged = parent_overrides is not None
     anchors: list[tuple[str, dict[str, Any]]] = [
         (f"dyn_{mode}_baseline_winner", dict(base)),
-        (
-            f"dyn_{mode}_anchor_hl_dynamic_session_parity",
-            _finalize_mega_dynamic_config(
-                _merge(_dynamic_sweep_base(mode), **CURRENT_WINNER_OVERRIDES)
-            ),
-        ),
     ]
+    if not staged:
+        live_anchor = _finalize_mega_dynamic_config(
+            _merge(_dynamic_sweep_base(mode), **LIVE_AGENT_DEFAULT_OVERRIDES)
+        )
+        anchors.extend(
+            [
+                (
+                    f"dyn_{mode}_anchor_hl_dynamic_session_parity",
+                    _finalize_mega_dynamic_config(
+                        _merge(_dynamic_sweep_base(mode), **CURRENT_WINNER_OVERRIDES)
+                    ),
+                ),
+                (f"dyn_{mode}_anchor_live_agent_default", live_anchor),
+            ]
+        )
     for name, overrides in anchors:
-        if not is_sensible_replay_config(overrides):
+        if not is_sensible_replay_config(overrides, reject_saturated_barriers=False):
             raise ValueError(f"mega sweep anchor failed sanity check: {name}")
         yield name, overrides
 
     rng = random.Random(seed)
     seen_names: set[str] = {name for name, _ in anchors}
-    target = max(min_configs, 560)
+    target = max(min_configs, 1)
     emitted = 0
     attempts = 0
-    max_attempts = target * 25
+    max_attempts = target * 50
 
     while emitted < target and attempts < max_attempts:
         attempts += 1
@@ -336,11 +697,9 @@ async def _load_sessions(
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_vol_candle_cache: dict[str, list[dict[str, float]]] = {}
-    skip_price_prefetch = (
-        getattr(config, "replay_mode", None) == "timeline_backtest"
-        and is_report_driven_data_source(config.data_source)
-    )
-    if parsed_sessions and not skip_price_prefetch:
+    from routines.macdbb_replay.replay_data import should_prefetch_replay_candles
+
+    if parsed_sessions and should_prefetch_replay_candles(config):
         (
             hl_caches_by_session,
             hl_candle_cache,
@@ -371,6 +730,8 @@ def _run_dynamic_config(
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]],
     hl_vol_candle_cache: dict[str, list[dict[str, float]]],
     reports_by_pair: dict[str, list[ReportMeta]],
+    *,
+    parent_overrides: dict[str, Any] | None = None,
 ) -> SweepResult:
     config = resolve_config_with_preset(DynamicStrategyReplayConfig(**overrides))
     policy = DynamicReplayPolicy(config)
@@ -384,6 +745,8 @@ def _run_dynamic_config(
     size_mult_sum = 0.0
     sl_sum = 0.0
     tp_sum = 0.0
+    sl_at_max = 0
+    tp_at_max = 0
 
     for session_num, tick_meta_map in parsed_sessions.items():
         hl_price_cache = hl_caches_by_session.get(session_num)
@@ -407,6 +770,10 @@ def _run_dynamic_config(
             size_mult_sum += trade.sizing_multiplier
             sl_sum += trade.sl_pct_used
             tp_sum += trade.tp_pct_used
+            if config.sl_max_pct and trade.sl_pct_used >= config.sl_max_pct - 1e-6:
+                sl_at_max += 1
+            if config.tp_max_pct and trade.tp_pct_used >= config.tp_max_pct - 1e-6:
+                tp_at_max += 1
             if trade.pnl_quote > 0:
                 wins += 1
             if trade.entry_class == "formal":
@@ -416,7 +783,7 @@ def _run_dynamic_config(
             exit_counts[trade.exit_reason] += 1
 
     win_rate = (wins / total_trades) if total_trades else 0.0
-    base = _dynamic_sweep_base(dynamic_mode)
+    base = _dynamic_sweep_base(dynamic_mode, parent_overrides=parent_overrides)
     diff_keys = {
         key: value
         for key, value in overrides.items()
@@ -438,6 +805,8 @@ def _run_dynamic_config(
         avg_size_mult=(size_mult_sum / total_trades) if total_trades else 0.0,
         avg_sl_pct=(sl_sum / total_trades) if total_trades else 0.0,
         avg_tp_pct=(tp_sum / total_trades) if total_trades else 0.0,
+        sl_saturation_pct=(sl_at_max / total_trades * 100.0) if total_trades else 0.0,
+        tp_saturation_pct=(tp_at_max / total_trades * 100.0) if total_trades else 0.0,
         dynamic_mode=dynamic_mode,
     )
 
@@ -467,7 +836,10 @@ SWEEP_CSV_FIELDS = [
     "avg_size_mult",
     "avg_sl_pct",
     "avg_tp_pct",
+    "sl_saturation_pct",
+    "tp_saturation_pct",
     "dynamic_mode",
+    "snapshot_dir",
     "overrides_json",
 ]
 
@@ -505,7 +877,10 @@ def _result_to_csv_row(rank: int, row: SweepResult) -> dict[str, Any]:
         "avg_size_mult": round(row.avg_size_mult, 4),
         "avg_sl_pct": round(row.avg_sl_pct, 3),
         "avg_tp_pct": round(row.avg_tp_pct, 3),
+        "sl_saturation_pct": round(row.sl_saturation_pct, 1),
+        "tp_saturation_pct": round(row.tp_saturation_pct, 1),
         "dynamic_mode": row.dynamic_mode,
+        "snapshot_dir": row.snapshot_dir,
         "overrides_json": json.dumps(row.overrides, sort_keys=True),
     }
 
@@ -675,7 +1050,7 @@ def _print_table(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="MACD+BB dynamic strategy replay mega sweep (grid v4, all sessions)"
+        description="MACD+BB dynamic strategy replay mega sweep (grid v5, all sessions)"
     )
     parser.add_argument(
         "--all-dynamic-modes",

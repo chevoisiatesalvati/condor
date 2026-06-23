@@ -10,7 +10,7 @@ from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
 from routines.macdbb_replay.replay_data import is_report_driven_data_source
 from routines.macdbb_replay.session_builder import (
     build_session_parity_ticks,
-    build_timeline_ticks,
+    hydrate_timeline_ticks,
 )
 from routines.macdbb_replay.session_config import replay_config_from_session
 
@@ -20,7 +20,7 @@ def load_replay_sessions(
 ) -> tuple[dict[int, dict[int, Any]], dict[int, DynamicStrategyReplayConfig], list[int]]:
     """Return tick maps, per-session configs, and session numbers to simulate."""
     if config.replay_mode == "timeline_backtest":
-        tick_map = build_timeline_ticks(config)
+        tick_map = hydrate_timeline_ticks(config)
         if not tick_map:
             return {}, {}, []
         return {0: tick_map}, {0: config}, [0]

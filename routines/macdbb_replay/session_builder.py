@@ -6,9 +6,10 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
+from routines.macdbb_replay.journal import parse_journal_ticks
 from routines.macdbb_replay.metrics import compute_metrics
 from routines.macdbb_replay.models import DynamicStrategyReplayConfig, TickMeta
-from routines.macdbb_replay.journal import parse_journal_ticks
+from routines.macdbb_replay.paths import TRADING_AGENTS_DIR
 from routines.macdbb_replay.reports import (
     ReportMeta,
     ScannerReportMeta,
@@ -20,6 +21,7 @@ from routines.macdbb_replay.reports import (
     nearest_report,
     nearest_scanner_report,
 )
+from routines.macdbb_replay.replay_data import is_report_driven_data_source
 from routines.macdbb_replay.scanner_queue import build_scanner_queue
 from routines.macdbb_replay.session_config import replay_config_from_session
 from routines.macdbb_replay.tick_schedule import (
@@ -41,6 +43,48 @@ def _default_strategy_params(config: DynamicStrategyReplayConfig) -> dict[str, A
         "min_tradeable_for_adaptive": config.min_tradeable_count,
         "min_scanner_analyzed": 3,
     }
+
+
+def load_timeline_strategy_params(config: DynamicStrategyReplayConfig) -> dict[str, Any]:
+    """Strategy params for timeline tick hydration (scanner queue sizing)."""
+    params = _default_strategy_params(config)
+    agent_path = TRADING_AGENTS_DIR / config.strategy_slug / "agent.md"
+    if not agent_path.is_file():
+        return params
+    try:
+        import yaml
+
+        text = agent_path.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            return params
+        end = text.find("---", 3)
+        if end == -1:
+            return params
+        front = yaml.safe_load(text[3:end]) or {}
+        agent_params = (front.get("default_config") or {}).get("strategy_params") or {}
+        if isinstance(agent_params, dict):
+            params = {**params, **agent_params}
+    except Exception:
+        return params
+    params["min_tradeable_for_adaptive"] = config.min_tradeable_count
+    return params
+
+
+def hydrate_timeline_ticks(
+    config: DynamicStrategyReplayConfig,
+    schedule: dict[int, TickMeta] | None = None,
+) -> dict[int, TickMeta]:
+    """Populate scanner queue fields on a bare timeline schedule."""
+    tick_map = schedule if schedule is not None else build_timeline_ticks(config)
+    if not tick_map:
+        return {}
+    if not is_report_driven_data_source(config.data_source):
+        return tick_map
+    return build_report_driven_ticks(
+        tick_map,
+        config,
+        load_timeline_strategy_params(config),
+    )
 
 
 def _populate_tick_from_reports(

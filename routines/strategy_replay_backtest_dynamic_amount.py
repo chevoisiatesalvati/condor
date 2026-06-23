@@ -31,6 +31,7 @@ from routines.macdbb_replay.presets import (
 from routines.macdbb_replay.replay_data import (
     configure_replay_data_sources,
     is_report_driven_data_source,
+    should_prefetch_replay_candles,
 )
 from routines.macdbb_replay.reports import build_reports_by_pair, load_reports_index
 from routines.macdbb_replay.simulator import simulate_strategy_session
@@ -197,6 +198,13 @@ async def run(
     strategy_dir = TRADING_AGENTS_DIR / config.strategy_slug
     sessions_dir = strategy_dir / "sessions"
 
+    logger.info(
+        "Dynamic replay: mode=%s data_source=%s preset=%s",
+        config.replay_mode,
+        config.data_source,
+        config.preset,
+    )
+
     if config.replay_mode == "timeline_backtest":
         if not config.range_start_utc or not config.range_end_utc:
             return (
@@ -214,6 +222,15 @@ async def run(
                 "Check range_start_utc / range_end_utc and frequency_sec."
             )
         return "No sessions matched the requested selector."
+
+    tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
+    logger.info(
+        "Loaded %d session(s), %d total ticks (range %s → %s)",
+        len(selected_sessions),
+        tick_count,
+        config.range_start_utc or "?",
+        config.range_end_utc or "?",
+    )
 
     reports = load_reports_index()
     if not reports and is_report_driven_data_source(config.data_source):
@@ -243,7 +260,8 @@ async def run(
     hl_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_barrier_candle_cache: dict[str, list[dict[str, float]]] = {}
     hl_vol_candle_cache: dict[str, list[dict[str, float]]] = {}
-    if config.price_source in ("auto", "hl_candles", "binance_candles") and parsed_sessions:
+    if should_prefetch_replay_candles(config) and parsed_sessions:
+        logger.info("Prefetching candle prices (this can take several minutes)...")
         (
             hl_caches_by_session,
             hl_candle_cache,
@@ -253,8 +271,18 @@ async def run(
             parsed_sessions,
             settings=hl_prefetch_settings_from_config(config),
         )
+        logger.info(
+            "Prefetch complete: %d price series, %d barrier series",
+            len(hl_candle_cache),
+            len(hl_barrier_candle_cache),
+        )
 
     for session_num, tick_meta_map in parsed_sessions.items():
+        logger.info(
+            "Simulating session %s (%d ticks)...",
+            session_num,
+            len(tick_meta_map),
+        )
         hl_price_cache = hl_caches_by_session.get(session_num)
         session_config = session_configs.get(session_num, config)
         replay_policy = DynamicReplayPolicy(session_config)

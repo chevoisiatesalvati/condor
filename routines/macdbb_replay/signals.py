@@ -169,6 +169,25 @@ def resolve_snapshot(
         interval="1h",
     )
     parsed_html = load_parsed_report(report_meta_1h) if report_meta_1h else None
+    monitor_computed = False
+    if parsed_html is None and monitor_pair and is_report_driven_data_source(config.data_source):
+        from routines.macdbb_replay import monitor_macdbb
+
+        monitor_macdbb.record_monitor_gap(pair, meta.timestamp)
+        if monitor_macdbb.inline_compute_enabled():
+            cache_dir = getattr(config, "hl_cache_dir", None)
+            candle_source = getattr(config, "candle_source", "binance_perpetual")
+            computed = monitor_macdbb.compute_macdbb_at_tick(
+                pair,
+                meta.timestamp,
+                cache_dir=cache_dir,
+                candle_source=candle_source,
+            )
+            if computed is not None:
+                parsed_html = computed
+                monitor_computed = True
+                report_meta_1h = None
+                monitor_macdbb.buffer_monitor_macdbb_row(computed, meta.timestamp)
     journal_signal = meta.signals_1h.get(pair)
     carried_signal = False
     if journal_signal is None and monitor_pair and last_signal_by_pair:
@@ -187,6 +206,10 @@ def resolve_snapshot(
     parsed = None
     source = "none"
     report_id = report_meta_1h.report_id if report_meta_1h else ""
+    if monitor_computed:
+        from routines.macdbb_replay import monitor_macdbb
+
+        report_id = monitor_macdbb.monitor_report_id(pair, meta.timestamp)
     price, price_trusted, price_tag = _resolve_price(
         pair,
         meta,
@@ -287,7 +310,10 @@ def resolve_snapshot(
             price = last_price_by_pair.get(pair, _JOURNAL_PLACEHOLDER_PRICE)
             price_trusted = False
         metrics = compute_metrics(parsed, config)
-        source = "html+hl" if price_tag == "hl" else "html"
+        if monitor_computed:
+            source = "monitor+hl" if price_tag == "hl" else "monitor"
+        else:
+            source = "html+hl" if price_tag == "hl" else "html"
     else:
         return None
 

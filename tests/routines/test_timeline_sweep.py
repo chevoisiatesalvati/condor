@@ -1,17 +1,114 @@
 """Tests for timeline mega sweep helpers and replay presets."""
 
-from routines.macdbb_replay.config_sweep import _dynamic_sweep_base
+import csv
+
+import pytest
+
+from routines.macdbb_replay.config_sweep import SweepResult, _dynamic_sweep_base
 from routines.macdbb_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_replay.presets import (
     DYNAMIC_PRESET_OVERRIDES,
     resolve_config_with_preset,
 )
 from routines.macdbb_replay.timeline_sweep import (
+    _should_write_checkpoint,
     merge_timeline_config,
     replay_config_to_agent_strategy_params,
+    run_timeline_dynamic_sweep,
     timeline_sweep_overrides,
 )
 
+
+def test_should_write_checkpoint_intervals():
+    assert _should_write_checkpoint(1, 25, checkpoint_every=10) is True
+    assert _should_write_checkpoint(10, 25, checkpoint_every=10) is True
+    assert _should_write_checkpoint(11, 25, checkpoint_every=10) is False
+    assert _should_write_checkpoint(20, 25, checkpoint_every=10) is True
+    assert _should_write_checkpoint(25, 25, checkpoint_every=10) is True
+    assert _should_write_checkpoint(5, 25, checkpoint_every=0) is False
+
+
+@pytest.mark.asyncio
+async def test_run_timeline_dynamic_sweep_writes_periodic_checkpoint_csv(
+    tmp_path, monkeypatch
+):
+    configs = [
+        ("cfg_low", {}),
+        ("cfg_high", {}),
+        ("cfg_mid", {}),
+        ("cfg_baseline_winner", {}),
+    ]
+    pnls = [50.0, 300.0, 150.0, 10.0]
+
+    def fake_iter(mode, min_configs, seed, parent_overrides=None):
+        return configs
+
+    def fake_run(name, *args, **kwargs):
+        idx = [name for name, _ in configs].index(name)
+        return SweepResult(
+            name=name,
+            pnl=pnls[idx],
+            trades=10,
+            formal=1,
+            adaptive=0,
+            win_rate=0.5,
+            capital_normalized_pnl=pnls[idx],
+        )
+
+    async def fake_load_sessions(config):
+        return ({1: {}}, {}, {}, {}, {}, [])
+
+    monkeypatch.setattr(
+        "routines.macdbb_replay.timeline_sweep.iter_mega_dynamic_sweep_configs",
+        fake_iter,
+    )
+    monkeypatch.setattr(
+        "routines.macdbb_replay.timeline_sweep._run_dynamic_config",
+        fake_run,
+    )
+    monkeypatch.setattr(
+        "routines.macdbb_replay.timeline_sweep._load_sessions",
+        fake_load_sessions,
+    )
+    monkeypatch.setattr(
+        "routines.macdbb_replay.timeline_sweep._apply_capital_metrics",
+        lambda result, benchmark: result,
+    )
+    monkeypatch.setattr(
+        "routines.macdbb_replay.timeline_sweep.build_reports_by_pair",
+        lambda index: {},
+    )
+    monkeypatch.setattr(
+        "routines.macdbb_replay.timeline_sweep.load_reports_index",
+        lambda: {},
+    )
+
+    stem = "test_timeline_checkpoint"
+    progress_path = tmp_path / f"{stem}.progress.json"
+    await run_timeline_dynamic_sweep(
+        dynamic_mode="sizing_only",
+        output_dir=tmp_path,
+        min_configs=4,
+        output_stem=stem,
+        top_n=3,
+        progress_path=progress_path,
+        checkpoint_every=2,
+    )
+
+    checkpoint_path = tmp_path / f"{stem}.checkpoint.csv"
+    final_path = tmp_path / f"{stem}.csv"
+    assert checkpoint_path.is_file()
+    assert final_path.is_file()
+
+    with checkpoint_path.open(encoding="utf-8") as handle:
+        checkpoint_rows = list(csv.DictReader(handle))
+    assert len(checkpoint_rows) == 4
+    assert checkpoint_rows[0]["name"] == "cfg_high"
+    assert checkpoint_rows[0]["rank"] == "1"
+
+    progress = progress_path.read_text(encoding="utf-8")
+    assert '"status": "completed"' in progress
+    assert f"{stem}.checkpoint.csv" in progress
 
 def test_timeline_sweep_overrides_sets_backtest_mode():
     overrides = timeline_sweep_overrides()

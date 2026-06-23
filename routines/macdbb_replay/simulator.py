@@ -27,7 +27,10 @@ from routines.macdbb_replay.session_builder import (
     refresh_tick_meta_from_reports,
 )
 from routines.macdbb_replay.session_config import replay_config_from_session
+import logging
 from routines.macdbb_replay.hl_prices import HlCandleCache, scan_barriers_between
+
+logger = logging.getLogger(__name__)
 from routines.macdbb_replay.signals import (
     build_tick_snapshots,
     filter_4h_allows,
@@ -95,6 +98,28 @@ def _position_barriers(position: OpenPosition, config: StrategyReplayConfig) -> 
     sl_pct = position.sl_pct if position.sl_pct > 0 else config.sl_pct
     tp_pct = position.tp_pct if position.tp_pct > 0 else config.tp_pct
     return sl_pct, tp_pct
+
+
+def barrier_exit_price(
+    position: OpenPosition,
+    exit_reason: str,
+    mark_price: float,
+    *,
+    sl_pct: float,
+    tp_pct: float,
+) -> float:
+    """Return exit price for sim closes; SL/TP proxy exits use configured barrier levels."""
+    if exit_reason == "stop_loss_close_proxy":
+        threshold = sl_pct / 100.0
+        if position.side == "long":
+            return position.entry_price * (1.0 - threshold)
+        return position.entry_price * (1.0 + threshold)
+    if exit_reason == "take_profit_close_proxy":
+        threshold = tp_pct / 100.0
+        if position.side == "long":
+            return position.entry_price * (1.0 + threshold)
+        return position.entry_price * (1.0 - threshold)
+    return mark_price
 
 
 def _resolve_entry_policy(
@@ -664,8 +689,30 @@ def simulate_strategy_session(
 
     sorted_ticks = sorted(tick_meta_map)
     session_first_tick = sorted_ticks[0] if sorted_ticks else 0
+    total_ticks = len(sorted_ticks)
+    progress_step = max(1, total_ticks // 25) if total_ticks >= 100 else 0
+    if progress_step:
+        logger.info(
+            "Sim session %s: starting %d ticks (progress every ~%d ticks)",
+            session_num,
+            total_ticks,
+            progress_step,
+        )
 
     for tick_index, tick in enumerate(sorted_ticks):
+        if progress_step and (
+            tick_index == 0
+            or (tick_index + 1) % progress_step == 0
+            or tick_index + 1 == total_ticks
+        ):
+            logger.info(
+                "Sim session %s: tick %d/%d (%.0f%%), open_positions=%d",
+                session_num,
+                tick_index + 1,
+                total_ticks,
+                100.0 * (tick_index + 1) / total_ticks,
+                len(open_positions),
+            )
         meta = tick_meta_map[tick]
         if is_report_driven_data_source(config.data_source) and report_driven_params and scanner_reports:
             journal_meta = meta
@@ -839,12 +886,19 @@ def simulate_strategy_session(
                         exit_reason = "thesis_decay_exit"
 
             if exit_reason:
+                exit_price = barrier_exit_price(
+                    position,
+                    exit_reason,
+                    mark_price,
+                    sl_pct=sl_pct,
+                    tp_pct=tp_pct,
+                )
                 simulated_trades.append(
                     _close_trade(
                         session_num,
                         position,
                         tick,
-                        mark_price,
+                        exit_price,
                         exit_reason,
                     )
                 )
@@ -1203,6 +1257,27 @@ def simulate_strategy_session(
 
     summary = _build_summary(simulated_trades)
     summary["status"] = "ok"
+
+    from routines.macdbb_replay import monitor_macdbb
+
+    flushed = monitor_macdbb.flush_monitor_macdbb_buffer(
+        snapshot_dir=getattr(config, "snapshot_dir", None),
+    )
+    if flushed:
+        monitor_macdbb.update_monitor_manifest(
+            snapshot_dir=getattr(config, "snapshot_dir", None),
+            rows_added=flushed,
+        )
+        logger.info("Flushed %d monitor MACD rows to supplement parquet", flushed)
+
+    if progress_step:
+        logger.info(
+            "Sim session %s: done — %d trades, net_pnl=$%.2f",
+            session_num,
+            len(simulated_trades),
+            summary.get("net_pnl_quote", 0.0),
+        )
+
     return per_pair_rows, per_tick_rows, simulated_trades, summary
 
 

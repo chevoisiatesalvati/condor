@@ -418,7 +418,7 @@ export interface AgentDetail {
   agent_md: string;
   config: Record<string, unknown>;
   defaults: Record<string, unknown>;
-  default_trading_context: string;
+  trading_context: string;
   learnings: string;
   status: string;
   agent_id: string;
@@ -429,7 +429,7 @@ export interface AgentDetail {
 
 export interface AgentDefaults {
   default_config: Record<string, unknown>;
-  default_trading_context: string;
+  trading_context: string;
   agent_key: string;
   model_base_url: string;
 }
@@ -946,7 +946,7 @@ export const api = {
     name: string;
     description?: string;
     instructions?: string;
-    default_trading_context?: string;
+    trading_context?: string;
     config?: Record<string, unknown>;
   }) =>
     apiFetch<AgentSummary>("/api/v1/agents", {
@@ -973,7 +973,7 @@ export const api = {
     slug: string,
     data: {
       default_config?: Record<string, unknown>;
-      default_trading_context?: string;
+      trading_context?: string;
       agent_key?: string;
       model_base_url?: string;
     },
@@ -994,10 +994,15 @@ export const api = {
       method: "DELETE",
     }),
 
-  startAgent: (slug: string, config: Record<string, unknown> = {}, trading_context = "") =>
+  startAgent: (
+    slug: string,
+    config: Record<string, unknown> = {},
+    trading_context = "",
+    agent_key = "",
+  ) =>
     apiFetch<{ started: boolean; agent_id: string }>(
       `/api/v1/agents/${slug}/start`,
-      { method: "POST", body: JSON.stringify({ config, trading_context }) },
+      { method: "POST", body: JSON.stringify({ config, trading_context, agent_key }) },
     ),
 
   stopAgent: (slug: string) =>

@@ -26,7 +26,9 @@ DEFAULT_SNAPSHOT_DIR = ROOT_DIR / "data" / "replay_snapshots"
 
 SCANNER_FILENAME = "scanner.parquet"
 MACDBB_FILENAME = "macdbb.parquet"
+MONITOR_MACDBB_FILENAME = "macdbb_monitor.parquet"
 MANIFEST_FILENAME = "manifest.json"
+MONITOR_BACKFILL_VERSION = 1
 
 _active_snapshot_dir: Path | None = None
 _scanner_index: list[ScannerReportMeta] | None = None
@@ -67,9 +69,12 @@ def get_snapshot_dir() -> Path | None:
 def is_snapshot_store_active() -> bool:
     if _active_snapshot_dir is None:
         return False
-    return (_active_snapshot_dir / SCANNER_FILENAME).is_file() or (
-        _active_snapshot_dir / MACDBB_FILENAME
-    ).is_file()
+    root = _active_snapshot_dir
+    return (
+        (root / SCANNER_FILENAME).is_file()
+        or (root / MACDBB_FILENAME).is_file()
+        or (root / MONITOR_MACDBB_FILENAME).is_file()
+    )
 
 
 def snapshot_dir_or_default(snapshot_dir: Path | str | None = None) -> Path:
@@ -162,15 +167,35 @@ def _load_scanner_frame(snapshot_dir: Path) -> pd.DataFrame:
     return _scanner_frame
 
 
+def _load_monitor_macdbb_frame(snapshot_dir: Path) -> pd.DataFrame:
+    path = snapshot_dir / MONITOR_MACDBB_FILENAME
+    if not path.is_file():
+        return pd.DataFrame()
+    return pd.read_parquet(path)
+
+
 def _load_macdbb_frame(snapshot_dir: Path) -> pd.DataFrame:
     global _macdbb_frame
     if _macdbb_frame is not None and get_snapshot_dir() == snapshot_dir:
         return _macdbb_frame
-    path = snapshot_dir / MACDBB_FILENAME
-    if not path.is_file():
-        _macdbb_frame = pd.DataFrame()
-        return _macdbb_frame
-    _macdbb_frame = pd.read_parquet(path)
+    base_path = snapshot_dir / MACDBB_FILENAME
+    if base_path.is_file():
+        base = pd.read_parquet(base_path)
+    else:
+        base = pd.DataFrame()
+    monitor = _load_monitor_macdbb_frame(snapshot_dir)
+    if base.empty:
+        merged = monitor
+    elif monitor.empty:
+        merged = base
+    else:
+        merged = pd.concat([base, monitor], ignore_index=True)
+        subset = [
+            col for col in ("tick_id", "pair", "interval") if col in merged.columns
+        ]
+        if subset:
+            merged = merged.drop_duplicates(subset=subset, keep="last")
+    _macdbb_frame = merged
     return _macdbb_frame
 
 
@@ -234,6 +259,43 @@ def _invalidate_indexes() -> None:
     _macdbb_frame = None
     _parsed_scanner_by_tick = None
     _parsed_macdbb_by_id = None
+
+
+def invalidate_macdbb_indexes() -> None:
+    """Clear merged macdbb index caches after monitor supplement writes."""
+    global _macdbb_index, _macdbb_frame, _parsed_macdbb_by_id
+    _macdbb_index = None
+    _macdbb_frame = None
+    _parsed_macdbb_by_id = None
+
+
+def append_monitor_macdbb_rows(
+    rows: list[dict[str, Any]],
+    *,
+    snapshot_dir: Path | None = None,
+) -> int:
+    """Append deduped rows to macdbb_monitor.parquet supplement file."""
+    if not rows:
+        return 0
+    root = snapshot_dir_or_default(snapshot_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / MONITOR_MACDBB_FILENAME
+    new_frame = pd.DataFrame(rows)
+    if path.is_file():
+        existing = pd.read_parquet(path)
+        merged = pd.concat([existing, new_frame], ignore_index=True)
+        subset = [
+            col for col in ("tick_id", "pair", "interval") if col in merged.columns
+        ]
+        if subset:
+            merged = merged.drop_duplicates(subset=subset, keep="last")
+        frame = merged
+    else:
+        frame = new_frame
+    _write_parquet_atomic(path, frame)
+    configure_snapshot_dir(root)
+    invalidate_macdbb_indexes()
+    return len(rows)
 
 
 def _ensure_parsed_scanner_cache(root: Path) -> dict[str, ParsedScannerReport]:

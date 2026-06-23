@@ -3,12 +3,22 @@
 from routines.macdbb_replay.config_sweep import (
     CURRENT_WINNER_OVERRIDES,
     DYNAMIC_MODE_PRESETS,
+    LIVE_AGENT_DEFAULT_OVERRIDES,
     MEGA_GRID_FIXED_OVERRIDES,
+    MEGA_GRID_VERSION,
     MEGA_SWEEP_GRID,
+    MEGA_SWEEP_MIN_CONFIGS_BY_MODE,
+    REFINE_MIN_CONFIGS_BY_PHASE,
+    REFINE_PHASE_A_GRID,
+    REFINE_SWEEP_VERSION,
+    _barriers_saturated_at_median_vol,
     _dynamic_grid_for_mode,
     _dynamic_sweep_base,
+    default_min_configs_for_mode,
+    default_min_configs_for_refine_phase,
     is_sensible_replay_config,
     iter_mega_dynamic_sweep_configs,
+    iter_refine_sweep_configs,
 )
 from routines.macdbb_replay.presets import (
     DYNAMIC_PRESET_OVERRIDES,
@@ -81,8 +91,72 @@ def test_is_sensible_replay_config_rejects_inverted_bounds():
     assert not is_sensible_replay_config({"sl_min_pct": 5.0, "sl_max_pct": 3.0})
 
 
+def test_is_sensible_replay_config_rejects_adaptive_ordering_inversions():
+    assert not is_sensible_replay_config(
+        {
+            "adaptive_strong_long_bb_pos_max": 82.0,
+            "adaptive_long_bb_pos_max": 68.0,
+            "enable_dynamic_barriers": False,
+        }
+    )
+
+
+def test_is_sensible_replay_config_rejects_saturated_barriers():
+    saturated = {
+        "enable_dynamic_barriers": True,
+        "sl_pct": 4.5,
+        "tp_pct": 6.2,
+        "ref_volatility_pct": 0.68,
+        "sl_vol_exponent": 1.05,
+        "tp_vol_exponent": 0.75,
+        "sl_min_pct": 2.2,
+        "sl_max_pct": 7.5,
+        "tp_min_pct": 5.5,
+        "tp_max_pct": 11.0,
+    }
+    assert _barriers_saturated_at_median_vol(saturated)
+    assert not is_sensible_replay_config(saturated)
+    assert is_sensible_replay_config(saturated, reject_saturated_barriers=False)
+
+
+def test_live_agent_anchor_is_included():
+    configs = list(iter_mega_dynamic_sweep_configs("both_on", min_configs=5, seed=1))
+    assert any("anchor_live_agent_default" in name for name, _ in configs)
+    live = next(overrides for name, overrides in configs if "anchor_live_agent_default" in name)
+    assert live["ref_volatility_pct"] == LIVE_AGENT_DEFAULT_OVERRIDES["ref_volatility_pct"]
+
+
+def test_mega_grid_version_and_mode_defaults():
+    assert MEGA_GRID_VERSION == "v5"
+    assert default_min_configs_for_mode("sizing_only") == 500
+    assert default_min_configs_for_mode("barriers_only") == 350
+    assert default_min_configs_for_mode("both_on") == 250
+    assert "ignore_journal_barriers_when_dynamic" not in _dynamic_grid_for_mode("both_on")
+
+
+def test_staged_parent_overrides_replace_winner_base():
+    parent = dict(LIVE_AGENT_DEFAULT_OVERRIDES)
+    parent["adaptive_long_bb_pos_max"] = 72.0
+    configs = list(
+        iter_mega_dynamic_sweep_configs(
+            "barriers_only",
+            min_configs=5,
+            seed=11,
+            parent_overrides=parent,
+        )
+    )
+    assert len(configs) >= 6
+    assert not any("anchor_hl_dynamic_session_parity" in name for name, _ in configs)
+    baseline = next(overrides for name, overrides in configs if name.endswith("baseline_winner"))
+    assert baseline["adaptive_long_bb_pos_max"] == 72.0
+    assert baseline["enable_dynamic_sizing"] is False
+    assert baseline["enable_dynamic_barriers"] is True
+
+
 def test_current_winner_anchor_has_sensible_barrier_bounds():
-    assert is_sensible_replay_config(CURRENT_WINNER_OVERRIDES)
+    assert is_sensible_replay_config(
+        CURRENT_WINNER_OVERRIDES, reject_saturated_barriers=False
+    )
     assert CURRENT_WINNER_OVERRIDES["tp_min_pct"] < CURRENT_WINNER_OVERRIDES["tp_max_pct"]
 
 
@@ -105,19 +179,23 @@ def test_mega_dynamic_both_on_samples():
     configs = list(
         iter_mega_dynamic_sweep_configs("both_on", min_configs=30, seed=19)
     )
-    assert len(configs) >= 32
+    assert len(configs) >= 33
     assert any("anchor_hl_dynamic_session_parity" in name for name, _ in configs)
+    assert any("anchor_live_agent_default" in name for name, _ in configs)
     executor_values = {
         overrides["max_open_executors"]
         for _name, overrides in configs
         if _name.startswith("dyn_both_on_mega_")
     }
     assert len(executor_values) > 1
-    for _name, overrides in configs:
+    for name, overrides in configs:
         assert overrides["activation_ticks"] == 0
         assert overrides["enable_dynamic_sizing"] is True
         assert overrides["enable_dynamic_barriers"] is True
-        assert is_sensible_replay_config(overrides)
+        is_anchor = "anchor" in name or name.endswith("baseline_winner")
+        assert is_sensible_replay_config(
+            overrides, reject_saturated_barriers=not is_anchor
+        )
 
 
 def test_hl_dynamic_session_parity_preset_matches_winner_base():
@@ -135,3 +213,39 @@ def test_hl_dynamic_session_parity_preset_matches_winner_base():
     assert (
         DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"]["max_open_executors"] == 10
     )
+
+
+def test_refine_sweep_defaults_and_grids():
+    assert REFINE_SWEEP_VERSION == "v5_winner"
+    assert default_min_configs_for_refine_phase("A") == REFINE_MIN_CONFIGS_BY_PHASE["A"]
+    assert sum(REFINE_MIN_CONFIGS_BY_PHASE[p] for p in "ABCD") == 500
+    assert "sl_min_pct" in REFINE_PHASE_A_GRID
+    assert "max_conviction_mult" not in REFINE_PHASE_A_GRID
+
+
+def test_iter_refine_sweep_configs_yields_anchor_and_samples():
+    parent = dict(LIVE_AGENT_DEFAULT_OVERRIDES)
+    parent["sl_min_pct"] = 1.4
+    parent["tp_min_pct"] = 7.5
+    configs = list(
+        iter_refine_sweep_configs(
+            "A",
+            min_configs=15,
+            seed=3,
+            parent_overrides=parent,
+        )
+    )
+    assert len(configs) >= 16
+    names = {name for name, _ in configs}
+    assert len(names) == len(configs)
+    assert any(name == "refine_A_baseline_winner" for name in names)
+    baseline = next(cfg for name, cfg in configs if name == "refine_A_baseline_winner")
+    assert baseline["enable_dynamic_sizing"] is True
+    assert baseline["enable_dynamic_barriers"] is True
+    assert baseline["sl_min_pct"] == 1.4
+    sampled = [cfg for name, cfg in configs if name != "refine_A_baseline_winner"]
+    assert any(cfg["sl_min_pct"] != parent["sl_min_pct"] for cfg in sampled)
+    for _name, overrides in configs:
+        assert is_sensible_replay_config(
+            overrides, reject_saturated_barriers=False
+        )

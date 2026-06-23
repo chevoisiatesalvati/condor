@@ -25,6 +25,7 @@ from routines.macdbb_replay.simulator import (
     _adaptive_entry_allowed,
     _thesis_decay_reasons,
     _update_thesis_decay_streak,
+    barrier_exit_price,
 )
 
 
@@ -424,4 +425,45 @@ def test_reports_only_resolve_snapshot_ignores_journal_signals():
         {},
     )
     assert snapshot is None or snapshot.source != "journal"
+
+
+def test_barrier_exit_price_caps_sl_tp_at_configured_levels():
+    position = _position(entry_price=100.0, side="long", sl_pct=1.4, tp_pct=7.5)
+    assert barrier_exit_price(
+        position,
+        "take_profit_close_proxy",
+        mark_price=135.0,
+        sl_pct=1.4,
+        tp_pct=7.5,
+    ) == 107.5
+    assert barrier_exit_price(
+        position,
+        "stop_loss_close_proxy",
+        mark_price=95.0,
+        sl_pct=1.4,
+        tp_pct=7.5,
+    ) == 98.6
+    assert barrier_exit_price(
+        position,
+        "thesis_decay_exit",
+        mark_price=102.0,
+        sl_pct=1.4,
+        tp_pct=7.5,
+    ) == 102.0
+
+    short = _position(entry_price=200.0, side="short", sl_pct=2.0, tp_pct=5.0)
+    assert barrier_exit_price(
+        short,
+        "take_profit_close_proxy",
+        mark_price=180.0,
+        sl_pct=2.0,
+        tp_pct=5.0,
+    ) == 190.0
+    assert barrier_exit_price(
+        short,
+        "stop_loss_close_proxy",
+        mark_price=210.0,
+        sl_pct=2.0,
+        tp_pct=5.0,
+    ) == 204.0
 

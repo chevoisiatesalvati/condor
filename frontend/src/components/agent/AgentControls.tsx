@@ -6,6 +6,7 @@ import {
   BudgetFrequencyFields,
   DigestIntervalField,
   ExecutionModePicker,
+  ModelFields,
   RiskLimitsFields,
   ServerSelect,
   TradingContextField,
@@ -29,12 +30,14 @@ export function StartSessionDialog({
   slug,
   agentConfig,
   defaultContext,
+  defaultAgentKey,
 }: {
   open: boolean;
   onClose: () => void;
   slug: string;
   agentConfig: Record<string, unknown>;
   defaultContext: string;
+  defaultAgentKey: string;
 }) {
   const queryClient = useQueryClient();
 
@@ -42,6 +45,7 @@ export function StartSessionDialog({
     (agentConfig.execution_mode as ExecutionMode) || "loop",
   );
   const [context, setContext] = useState(defaultContext);
+  const [agentKey, setAgentKey] = useState(defaultAgentKey);
   const [serverName, setServerName] = useState((agentConfig.server_name as string) || "");
   const [totalAmountQuote, setTotalAmountQuote] = useState(String(agentConfig.total_amount_quote ?? 100));
   const [frequencySec, setFrequencySec] = useState(String(agentConfig.frequency_sec ?? 60));
@@ -64,6 +68,7 @@ export function StartSessionDialog({
     if (!open) return;
     setExecutionMode((agentConfig.execution_mode as ExecutionMode) || "loop");
     setContext(defaultContext);
+    setAgentKey(defaultAgentKey);
     setServerName((agentConfig.server_name as string) || "");
     setTotalAmountQuote(String(agentConfig.total_amount_quote ?? 100));
     setFrequencySec(String(agentConfig.frequency_sec ?? 60));
@@ -74,7 +79,7 @@ export function StartSessionDialog({
     setStrategyParams(
       typeof saved === "object" && saved !== null ? { ...(saved as Record<string, unknown>) } : {},
     );
-  }, [open, agentConfig, defaultContext]);
+  }, [open, agentConfig, defaultContext, defaultAgentKey]);
 
   const handleStrategyParamChange = (key: string, value: unknown) => {
     setStrategyParams((prev) => ({ ...prev, [key]: value }));
@@ -93,7 +98,7 @@ export function StartSessionDialog({
           ? { strategy_params: strategyParams }
           : {}),
       };
-      return api.startAgent(slug, config, context);
+      return api.startAgent(slug, config, context, agentKey);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agent", slug] });
@@ -118,6 +123,14 @@ export function StartSessionDialog({
 
         <div className="space-y-5">
           <ExecutionModePicker value={executionMode} onChange={setExecutionMode} />
+
+          <ModelFields
+            agentKey={agentKey}
+            modelBaseUrl=""
+            onAgentKeyChange={setAgentKey}
+            onModelBaseUrlChange={() => {}}
+            showModelBaseUrl={false}
+          />
 
           <TradingContextField
             value={context}
@@ -200,11 +213,13 @@ export function AgentControls({
   slug,
   status,
   defaultContext,
+  defaultAgentKey,
   agentConfig,
 }: {
   slug: string;
   status: string;
   defaultContext: string;
+  defaultAgentKey: string;
   agentConfig: Record<string, unknown>;
 }) {
   const queryClient = useQueryClient();
@@ -278,6 +293,7 @@ export function AgentControls({
         slug={slug}
         agentConfig={agentConfig}
         defaultContext={defaultContext}
+        defaultAgentKey={defaultAgentKey}
       />
     </>
   );
