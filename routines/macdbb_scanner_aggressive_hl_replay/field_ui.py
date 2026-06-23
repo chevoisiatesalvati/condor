@@ -160,6 +160,25 @@ def build_dynamic_replay_field_metadata(config_class: type) -> dict[str, dict[st
         if literal_options:
             entry["widget"] = "select"
             entry["options"] = literal_options
+            if name == "preset":
+                from trading_agents.macdbb_scanner_aggressive_hl.presets import PRESET_LABELS
+
+                entry["option_labels"] = {
+                    opt: PRESET_LABELS.get(opt, opt) for opt in literal_options
+                }
+            elif name == "data_source":
+                entry["option_labels"] = {
+                    "journal_first": "Journal flags first",
+                    "journal_recompute": "Recompute from journal",
+                    "html_only": "HTML reports only",
+                    "reports_only": "Scanner + MACD reports",
+                    "snapshots": "Parquet snapshots",
+                }
+            elif name == "replay_mode":
+                entry["option_labels"] = {
+                    "session_parity": "Session parity",
+                    "timeline_backtest": "Timeline backtest",
+                }
 
         from typing import get_args, get_origin
 

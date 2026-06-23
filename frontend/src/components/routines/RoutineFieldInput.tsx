@@ -73,7 +73,7 @@ function SelectField({
             disabled={disabledOptions.has(opt)}
             className={disabledOptions.has(opt) ? "text-[var(--color-text-muted)]" : undefined}
           >
-            {opt}
+            {field.option_labels?.[opt] ?? opt}
           </option>
         ))}
       </select>

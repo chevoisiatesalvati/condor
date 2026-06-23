@@ -8,8 +8,8 @@ alwaysApply: true
 This repo keeps top-level packages at the project root (`condor/`, `routines/`). They are **not** installed as site-packages unless you do an editable install. Tests and scripts import them directly:
 
 ```python
+from trading_agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import ...
-from condor.trading_agent.policies.macdbb_dynamic import ...
 ```
 
 ## Running pytest

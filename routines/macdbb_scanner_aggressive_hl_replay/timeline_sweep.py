@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from routines.macdbb_scanner_aggressive_hl_backtest import run as run_dynamic_replay
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     SweepResult,
     _apply_capital_metrics,
@@ -23,30 +24,31 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     _run_dynamic_config,
     _write_sweep_csv,
     iter_mega_dynamic_sweep_configs,
-    iter_refine_sweep_configs,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+from routines.macdbb_scanner_aggressive_hl_replay.models import (
+    DynamicStrategyReplayConfig,
+)
 from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
 from routines.macdbb_scanner_aggressive_hl_replay.presets import (
-    DYNAMIC_PRESET_OVERRIDES,
-    FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
     _DRIVER_TIMELINE,
     _DYNAMIC_PRESET_INFRA,
     _STRATEGY_TIMELINE_MEGA_BEST,
+    DYNAMIC_PRESET_OVERRIDES,
+    FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
     _merge_preset_layers,
-    resolve_config_with_preset,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.replay_range import timeline_range_from_reports
-from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest, snapshot_dir_or_default
+from routines.macdbb_scanner_aggressive_hl_replay.replay_range import (
+    timeline_range_from_reports,
+)
 from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     build_reports_by_pair,
     load_reports_index,
 )
-from routines.macdbb_scanner_aggressive_hl_backtest import run as run_dynamic_replay
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import load_manifest
 
 DEFAULT_FREQUENCY_SEC = 1800
 DEFAULT_TIME_WINDOW_MIN = 15
-TIMELINE_PRESET_NAME = "hl_dynamic_timeline_mega_best"
+TIMELINE_PRESET_NAME = "hl_dynamic_timeline_refine_v5_winner_binance_1y"
 AGENT_SLUG = "macdbb_scanner_aggressive_hl"
 PRESET_STRIP_KEYS = frozenset(
     {"preset", "session_nums", "range_start_utc", "range_end_utc"}
@@ -92,7 +94,9 @@ def _checkpoint_csv_path(output_dir: Path, stem: str) -> Path:
     return output_dir / f"{stem}.checkpoint.csv"
 
 
-def _should_write_checkpoint(done: int, config_total: int, *, checkpoint_every: int) -> bool:
+def _should_write_checkpoint(
+    done: int, config_total: int, *, checkpoint_every: int
+) -> bool:
     if checkpoint_every <= 0:
         return False
     return done == 1 or done % checkpoint_every == 0 or done == config_total
@@ -193,7 +197,9 @@ async def run_timeline_dynamic_sweep(
             )
         )
     )
-    from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
+    from routines.macdbb_scanner_aggressive_hl_replay.replay_data import (
+        configure_replay_data_sources,
+    )
 
     configure_replay_data_sources(load_config)
     if snapshot_dir:
@@ -217,7 +223,10 @@ async def run_timeline_dynamic_sweep(
     tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
     reports_by_pair = build_reports_by_pair(load_reports_index())
 
-    stem = output_stem or f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline"
+    stem = (
+        output_stem
+        or f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline"
+    )
     baseline = f"dyn_{dynamic_mode}_timeline_baseline_winner"
     benchmark_avg_notional = FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
 
@@ -281,7 +290,9 @@ async def run_timeline_dynamic_sweep(
         eta_local = remaining_local / rate if rate > 0 else None
         global_done = global_index_offset + done
         global_rem = (global_total - global_done) if global_total else None
-        eta_global = global_rem / rate if rate > 0 and global_rem is not None else eta_local
+        eta_global = (
+            global_rem / rate if rate > 0 and global_rem is not None else eta_local
+        )
 
         if checkpoint_path is not None and _should_write_checkpoint(
             done, config_total, checkpoint_every=checkpoint_every
@@ -305,7 +316,9 @@ async def run_timeline_dynamic_sweep(
                 "top_capital_normalized_pnl": round(top_row.capital_normalized_pnl, 2),
                 "elapsed_sec": round(elapsed, 1),
                 "eta_local_sec": round(eta_local, 1) if eta_local is not None else None,
-                "eta_global_sec": round(eta_global, 1) if eta_global is not None else None,
+                "eta_global_sec": (
+                    round(eta_global, 1) if eta_global is not None else None
+                ),
                 "configs_per_hour": round(rate * 3600, 2),
             }
             if checkpoint_path is not None:
@@ -346,7 +359,9 @@ async def run_timeline_dynamic_sweep(
             completed_payload["checkpoint_csv"] = checkpoint_path.as_posix()
         _write_sweep_progress(progress_path, completed_payload)
 
-    baseline_row = next((row for row in results if row.name.endswith("baseline_winner")), results[-1])
+    baseline_row = next(
+        (row for row in results if row.name.endswith("baseline_winner")), results[-1]
+    )
     _print_table(
         results,
         baseline_row.pnl,
@@ -385,11 +400,16 @@ async def run_multi_snapshot_timeline_sweep(
         raise ValueError("No replay snapshot directories with manifest.json found")
 
     config_items = list(
-        iter_mega_dynamic_sweep_configs(dynamic_mode, min_configs=min_configs, seed=seed)
+        iter_mega_dynamic_sweep_configs(
+            dynamic_mode, min_configs=min_configs, seed=seed
+        )
     )
     config_count = len(config_items)
     global_total = config_count * len(dirs)
-    stem = output_stem or f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline_all_snapshots"
+    stem = (
+        output_stem
+        or f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline_all_snapshots"
+    )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
     progress_file = progress_path or (
@@ -403,7 +423,11 @@ async def run_multi_snapshot_timeline_sweep(
     for snap_index, snap_path in enumerate(dirs, start=1):
         snap = snap_path.as_posix()
         manifest = load_manifest(snapshot_dir=snap_path)
-        if not manifest or not manifest.get("range_start_utc") or not manifest.get("range_end_utc"):
+        if (
+            not manifest
+            or not manifest.get("range_start_utc")
+            or not manifest.get("range_end_utc")
+        ):
             print(f"Skipping {snap}: manifest missing range", flush=True)
             global_offset += config_count
             continue
@@ -413,22 +437,24 @@ async def run_multi_snapshot_timeline_sweep(
             f"({manifest.get('tick_count', '?')} ticks) ===",
             flush=True,
         )
-        results, _baseline, _benchmark, range_start, range_end = await run_timeline_dynamic_sweep(
-            dynamic_mode=dynamic_mode,
-            output_dir=output_dir,
-            min_configs=min_configs,
-            seed=seed,
-            output_stem=f"{stem}__{snap_path.name}",
-            frequency_sec=frequency_sec,
-            time_window_min=time_window_min,
-            range_start_utc=str(manifest["range_start_utc"]),
-            range_end_utc=str(manifest["range_end_utc"]),
-            snapshot_dir=snap,
-            top_n=min(top_n, 10),
-            progress_path=progress_file,
-            global_index_offset=global_offset,
-            global_total=global_total,
-            write_output=False,
+        results, _baseline, _benchmark, range_start, range_end = (
+            await run_timeline_dynamic_sweep(
+                dynamic_mode=dynamic_mode,
+                output_dir=output_dir,
+                min_configs=min_configs,
+                seed=seed,
+                output_stem=f"{stem}__{snap_path.name}",
+                frequency_sec=frequency_sec,
+                time_window_min=time_window_min,
+                range_start_utc=str(manifest["range_start_utc"]),
+                range_end_utc=str(manifest["range_end_utc"]),
+                snapshot_dir=snap,
+                top_n=min(top_n, 10),
+                progress_path=progress_file,
+                global_index_offset=global_offset,
+                global_total=global_total,
+                write_output=False,
+            )
         )
         combined.extend(results)
         global_offset += config_count
@@ -451,9 +477,9 @@ async def run_multi_snapshot_timeline_sweep(
             "elapsed_sec": round(elapsed, 1),
             "snapshot_dirs": [path.as_posix() for path in dirs],
             "result_count": len(combined),
-            "top_capital_normalized_pnl": round(combined[0].capital_normalized_pnl, 2)
-            if combined
-            else None,
+            "top_capital_normalized_pnl": (
+                round(combined[0].capital_normalized_pnl, 2) if combined else None
+            ),
             "top_snapshot_dir": combined[0].snapshot_dir if combined else None,
             "top_config": combined[0].name if combined else None,
         },
@@ -595,7 +621,9 @@ async def validate_top_configs_via_routine(
         )
         config = DynamicStrategyReplayConfig(**overrides)
         result = await run_dynamic_replay(config, None)
-        text = result if isinstance(result, str) else getattr(result, "text", str(result))
+        text = (
+            result if isinstance(result, str) else getattr(result, "text", str(result))
+        )
         rows.append(
             {
                 "rank": rank,
@@ -610,7 +638,9 @@ async def validate_top_configs_via_routine(
 
 
 def format_validation_log(rows: list[dict[str, Any]]) -> str:
-    lines = ["Timeline top-N routine validation (macdbb_scanner_aggressive_hl_backtest)"]
+    lines = [
+        "Timeline top-N routine validation (macdbb_scanner_aggressive_hl_backtest)"
+    ]
     for row in rows:
         lines.append("")
         lines.append(f"=== Rank {row['rank']}: {row['name']} ===")
@@ -644,13 +674,18 @@ def apply_winner_to_agent(
     default_config.setdefault("frequency_sec", frequency_sec)
     default_config.setdefault("risk_limits", {})
     default_config["risk_limits"]["max_open_executors"] = config.max_open_executors
-    strategy_params = replay_config_to_agent_strategy_params(config, frequency_sec=frequency_sec)
+    strategy_params = replay_config_to_agent_strategy_params(
+        config, frequency_sec=frequency_sec
+    )
     existing = default_config.get("strategy_params", {})
     existing.update(strategy_params)
     default_config["strategy_params"] = existing
     front["default_config"] = default_config
     agent_path.write_text(
-        "---\n" + yaml.safe_dump(front, sort_keys=False, default_flow_style=False) + "---\n" + body,
+        "---\n"
+        + yaml.safe_dump(front, sort_keys=False, default_flow_style=False)
+        + "---\n"
+        + body,
         encoding="utf-8",
     )
     return strategy_params
@@ -674,8 +709,12 @@ def apply_winner_to_presets(
     models_path: Path | None = None,
 ) -> None:
     preset_name = preset_name or TIMELINE_PRESET_NAME
-    presets_path = presets_path or Path("routines/macdbb_scanner_aggressive_hl_replay/presets.py")
-    models_path = models_path or Path("routines/macdbb_scanner_aggressive_hl_replay/models.py")
+    presets_path = presets_path or Path(
+        "trading_agents/macdbb_scanner_aggressive_hl/presets.py"
+    )
+    models_path = models_path or Path(
+        "routines/macdbb_scanner_aggressive_hl_replay/models.py"
+    )
     preset_text = presets_path.read_text(encoding="utf-8")
     if preset_name in preset_text:
         raise ValueError(f"Preset {preset_name!r} already exists in {presets_path}")

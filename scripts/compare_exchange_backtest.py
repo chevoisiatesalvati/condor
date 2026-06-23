@@ -57,7 +57,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--preset",
-        default="hl_dynamic_timeline_mega_best",
+        default="hl_dynamic_timeline_refine_v5_winner_binance_1y",
         help="Strategy preset name",
     )
     parser.add_argument(

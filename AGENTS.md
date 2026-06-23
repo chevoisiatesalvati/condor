@@ -70,8 +70,9 @@ When an agent has a replay/backtest stack, name by **agent slug**:
 
 | Role | Pattern | Example |
 |------|---------|---------|
-| Backtest routine (UI / MCP) | `{slug}_backtest.py` | `macdbb_scanner_aggressive_hl_backtest` |
+| Backtest routine | `{slug}_backtest.py` | `macdbb_scanner_aggressive_hl_backtest` |
 | Replay library (internal) | `{slug}_replay/` | `macdbb_scanner_aggressive_hl_replay/` |
+| Shared presets (agent-owned) | `trading_agents/{slug}/presets.py` | live + backtest |
 
 Invoke backtests:
 

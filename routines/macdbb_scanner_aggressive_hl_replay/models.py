@@ -199,45 +199,24 @@ class ReplayConfigBase(BaseModel):
 
     preset: Literal[
         "custom",
-        "safe",
-        "balanced",
-        "opportunistic",
-        "replay_probe",
-        "hl_sweep_best",
-        "hl_bb_loose_best",
-        "hl_mega_sweep_best",
-        "hl_dynamic_mega_sweep_best",
         "hl_dynamic_session_parity",
         "hl_dynamic_timeline_refine_v5_winner_binance_1y",
         "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
-        "hl_dynamic_timeline_mega_best",
-    ] = (
-        Field(
-            default="hl_mega_sweep_best",
-            description=(
-                "Adaptive threshold profile. Preset applies its adaptive_* values "
-                "at run time (overrides those form fields). Use custom to tune manually. "
-                "hl_sweep_best = sessions 36-48 sweep winner (sl2.4/tp10/ne32). "
-                "hl_bb_loose_best = sessions 36-50 refine winner (loose BB gates). "
-                "hl_mega_sweep_best = sessions 36-50 mega sweep winner (+$199). "
-                "hl_dynamic_mega_sweep_best = dynamic sizing_only rank #1 (37-58 sweep)."
-            ),
-        )
+    ] = Field(
+        default="custom",
+        description="Named parameter profile",
     )
     strategy_slug: str = Field(
         default="macdbb_scanner_aggressive_hl",
-        description="Strategy folder under trading_agents/",
+        description="Agent folder under trading_agents",
     )
     session_nums: str = Field(
         default="all",
-        description="Session selector: 'all' or comma-separated values like '35,36'",
+        description="Sessions to replay (all or list)",
     )
     time_window_min: int = Field(
         default=5,
-        description=(
-            "Max minutes for matching report file to tick/pair. "
-            "MACD/scanner routines run within a few minutes of each agent tick."
-        ),
+        description="Report-to-tick match window (minutes)",
     )
     data_source: Literal[
         "journal_first",
@@ -247,56 +226,43 @@ class ReplayConfigBase(BaseModel):
         "snapshots",
     ] = Field(
         default="journal_first",
-        description=(
-            "journal_first: replay journal entry flags (fL/fS/aL/aS) as logged. "
-            "journal_recompute: recompute entries from journal numerics + config "
-            "(full formal when mid/up logged; else fL/fS fallback). "
-            "html_only: HTML report payloads only. "
-            "reports_only: scanner + MACD reports + replay config (no journal signals). "
-            "snapshots: parquet market snapshots + replay config (no HTML)."
-        ),
+        description="Signal and market data source",
     )
     replay_mode: Literal["session_parity", "timeline_backtest"] = Field(
         default="session_parity",
-        description=(
-            "session_parity: journal tick timestamps + optional session config.yml. "
-            "timeline_backtest: synthetic UTC range, no sessions/journal."
-        ),
+        description="Session journal or timeline range",
     )
     tick_schedule: Literal["journal_ticks", "date_range"] | None = Field(
         default=None,
-        description="Explicit tick schedule; inferred from replay_mode when unset.",
+        description="Tick schedule (auto if unset)",
     )
     config_source: Literal["session", "preset", "override"] = Field(
         default="preset",
-        description="session loads sessions/session_N/config.yml per session.",
+        description="Where replay thresholds come from",
     )
     range_start_utc: str | None = Field(
         default=None,
-        description="ISO UTC start for timeline_backtest (inclusive).",
+        description="Timeline start (UTC, inclusive)",
     )
     range_end_utc: str | None = Field(
         default=None,
-        description="ISO UTC end for timeline_backtest (inclusive).",
+        description="Timeline end (UTC, inclusive)",
     )
     frequency_sec: int = Field(
         default=1800,
-        description="Agent tick interval for timeline_backtest synthetic ticks.",
+        description="Synthetic tick interval (seconds)",
     )
     use_journal_barriers: bool = Field(
         default=True,
-        description="Apply journal barrier closes during replay (off for reports_only).",
+        description="Apply journal SL/TP closes",
     )
     activation_ticks: int = Field(
         default=6,
-        description="adaptive_activation_streak threshold for adaptive mode",
+        description="Adaptive activation streak threshold",
     )
     thesis_bb_drift_pts: float = Field(
         default=25.0,
-        description=(
-            "Formal-entry BB drift (percentage points from entry_bb_pos_pct) "
-            "that triggers thesis decay counting"
-        ),
+        description="Formal entry BB drift for decay",
     )
     adaptive_long_bb_pos_max: float = Field(default=48.0)
     adaptive_short_bb_pos_min: float = Field(default=72.0)
@@ -312,88 +278,66 @@ class ReplayConfigBase(BaseModel):
     adaptive_momentum_penalty: float = Field(default=0.10)
     bb_proximity_epsilon_pct: float = Field(
         default=0.10,
-        description="BB proximity epsilon for formal price gates",
+        description="BB proximity epsilon for formal gates",
     )
     sl_pct: float = Field(default=1.5)
     tp_pct: float = Field(default=3.0)
     write_csv: bool = Field(default=True)
     compare_journal_flags: bool = Field(
         default=False,
-        description="Emit journal fL/fS/aL/aS mismatch columns in per-pair CSV",
+        description="Include journal flag mismatch columns",
     )
     price_source: Literal["auto", "reports", "hl_candles", "binance_candles"] = Field(
         default="auto",
-        description=(
-            "Price resolution: auto (HTML reports then candle cache), "
-            "reports (HTML only), hl_candles (Hyperliquid), or "
-            "binance_candles (Binance USDT-M perpetual)."
-        ),
+        description="Historical price resolution mode",
     )
     candle_source: Literal["hyperliquid", "binance_perpetual"] = Field(
         default="hyperliquid",
-        description=(
-            "Exchange for historical OHLCV prefetch/cache during replay and "
-            "snapshot builds (binance_perpetual recommended for timeline backtests)."
-        ),
+        description="Exchange for OHLCV prefetch/cache",
     )
     hl_price_interval: str = Field(
         default="5m",
-        description=(
-            "HL candle interval for historical tick prices "
-            "(5m recommended; 1m retention is short on HL)"
-        ),
+        description="HL candle interval for tick prices",
     )
     hl_barrier_interval: str = Field(
         default="1m",
-        description=(
-            "HL candle interval for intrabar SL/TP scans between journal ticks "
-            "(1m catches wicks missed by coarser tick prices)"
-        ),
+        description="HL candle interval for intrabar SL/TP",
     )
     hl_max_concurrent: int = Field(
         default=1,
-        description="Max parallel HL candleSnapshot pair requests during replay",
+        description="Max parallel HL candle requests",
     )
     hl_request_interval_ms: int = Field(
         default=400,
-        description="Minimum milliseconds between HL REST candle requests",
+        description="Min ms between HL REST requests",
     )
     hl_max_retries: int = Field(
         default=6,
-        description="Retries for HL candleSnapshot on HTTP 429/5xx",
+        description="HL candle fetch retry count",
     )
     hl_use_cache: bool = Field(
         default=True,
-        description="Read/write local HL candle cache during replay price prefetch",
+        description="Use local HL candle cache",
     )
     hl_refresh_cache: bool = Field(
         default=False,
-        description="Ignore cached HL candles and refetch the requested range",
+        description="Ignore cache and refetch candles",
     )
     hl_cache_dir: str | None = Field(
         default=None,
-        description=(
-            "Override default candle cache directory "
-            "(data/hl_candles or data/binance_candles depending on candle_source)"
-        ),
+        description="Override default candle cache directory",
     )
     snapshot_dir: str | None = Field(
         default=None,
-        description="Parquet snapshot directory for data_source=snapshots",
+        description="Parquet snapshot directory",
     )
     require_price_data: bool = Field(
         default=True,
-        description=(
-            "Skip sessions (and entries) without trusted prices from price_source. "
-            "Journal-only replay cannot compute PnL."
-        ),
+        description="Skip entries without trusted prices",
     )
     scanner_lookback_hours: int = Field(
         default=6,
-        description=(
-            "1m candle lookback hours for scanner-compatible NATR in dynamic replay "
-            "(matches hyperliquid_market_scanner default)."
-        ),
+        description="Scanner NATR lookback (hours)",
     )
 
 
@@ -402,7 +346,7 @@ class StrategyReplayConfig(ReplayConfigBase):
 
     entry_modes: Literal["all", "formal", "adaptive"] = Field(
         default="all",
-        description="Which entry paths to simulate",
+        description="Simulated entry paths",
     )
     max_open_executors: int = Field(default=3)
     formal_notional_quote: float = Field(default=200.0)
@@ -411,20 +355,20 @@ class StrategyReplayConfig(ReplayConfigBase):
     flip_cooldown_ticks: int = Field(default=2)
     min_tradeable_count: int = Field(
         default=3,
-        description="Skip tick entries when journal tradeable_count is below this",
+        description="Minimum tradeable pairs per tick",
     )
     ignore_risk_blocks: bool = Field(default=True)
     ignore_adaptive_4h_filter: bool = Field(
         default=False,
-        description="Skip 4h regime filter for adaptive entries (backtest / strategy tuning)",
+        description="Skip 4h filter for adaptive entries",
     )
     adaptive_requires_flat: bool = Field(
         default=True,
-        description="Require 0 open positions before adaptive entries (matches live agent)",
+        description="Require flat book for adaptive entries",
     )
     report_label: str = Field(
         default="",
-        description="Optional label shown in saved report title",
+        description="Optional saved report title label",
     )
 
 
@@ -436,24 +380,18 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
         "hl_dynamic_session_parity",
         "hl_dynamic_timeline_refine_v5_winner_binance_1y",
         "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
-        "hl_dynamic_timeline_mega_best",
     ] = Field(
-        default="hl_dynamic_timeline_mega_best",
-        description=(
-            "hl_dynamic_timeline_mega_best = prior timeline mega sweep winner. "
-            "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y = v5 staged A→B→C "
-            "winner on binance_1y (~+$3066 cap-norm). "
-            "hl_dynamic_session_parity = session journal validation."
-        ),
+        default="hl_dynamic_timeline_refine_v5_winner_binance_1y",
+        description="Named parameter profile",
     )
 
     enable_dynamic_sizing: bool = Field(
         default=True,
-        description="Scale notional by conviction and volatility factors",
+        description="Scale notional by conviction/volatility",
     )
     enable_dynamic_barriers: bool = Field(
         default=True,
-        description="Scale SL/TP by pair volatility proxy",
+        description="Scale SL/TP by volatility proxy",
     )
     min_notional_quote: float = Field(default=75.0)
     max_notional_quote: float = Field(default=750.0)
@@ -461,30 +399,30 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
     max_conviction_mult: float = Field(default=1.35)
     strength_mult_per_unit: float = Field(
         default=0.08,
-        description="Notional bump per 1.0 adaptive strength above open threshold",
+        description="Notional bump per strength unit",
     )
     extreme_displacement_mult: float = Field(default=1.10)
     activation_streak_mult_per_tick: float = Field(
         default=0.0,
-        description="Extra size per agent tick above activation_ticks (adaptive only)",
+        description="Extra size per activation tick",
     )
     thin_universe_mult: float = Field(
         default=0.85,
-        description="Multiplier when tradeable_count <= 2",
+        description="Multiplier when tradeables ≤ 2",
     )
     mature_tape_low_vol_mult: float = Field(
         default=0.95,
-        description="Size reduction on mature tape when pair vol is below ref",
+        description="Size cut on low-vol mature tape",
     )
     vol_inverse_sizing: bool = Field(
         default=True,
-        description="High volatility pairs receive smaller notional",
+        description="Shrink size on high volatility",
     )
     min_vol_mult: float = Field(default=0.60)
     max_vol_mult: float = Field(default=1.25)
     ref_volatility_pct: float = Field(
         default=0.50,
-        description="Anchor volatility %% (BTC-like) for sizing and barriers",
+        description="Anchor volatility for sizing/barriers",
     )
     sl_vol_exponent: float = Field(default=0.70)
     tp_vol_exponent: float = Field(default=1.00)
@@ -494,11 +432,11 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
     tp_max_pct: float = Field(default=15.0)
     volatility_source: Literal["auto", "bb_width", "natr", "static_tier"] = Field(
         default="auto",
-        description="How to estimate pair volatility for sizing and barriers",
+        description="Volatility estimate source",
     )
     ignore_journal_barriers_when_dynamic: bool = Field(
         default=True,
-        description="Skip journal barrier closes when dynamic barriers are enabled",
+        description="Skip journal barriers when dynamic",
     )
 
     @classmethod

@@ -14,6 +14,7 @@ import {
   buildRiskLimitsPayload,
   type ExecutionMode,
 } from "@/components/agent/AgentSessionConfigFields";
+import { StrategyPresetSelect } from "@/components/agent/StrategyPresetSelect";
 import { StrategyParamsForm } from "@/components/agent/StrategyParamsForm";
 import { api } from "@/lib/api";
 
@@ -51,6 +52,8 @@ export function AgentDefaultsDialog({
   const [maxTicks, setMaxTicks] = useState("0");
   const [maxOpenExecutors, setMaxOpenExecutors] = useState("5");
   const [maxDrawdown, setMaxDrawdown] = useState("-1");
+  const [strategyPreset, setStrategyPreset] = useState("custom");
+  const [strategyPresets, setStrategyPresets] = useState<Array<{ id: string; label: string }>>([]);
   const [strategyParams, setStrategyParams] = useState<Record<string, unknown>>({});
 
   const { data: strategySchema } = useQuery({
@@ -62,6 +65,7 @@ export function AgentDefaultsDialog({
   useEffect(() => {
     if (!defaults) return;
     const cfg = defaults.default_config;
+    setStrategyPresets(defaults.strategy_presets ?? []);
     setExecutionMode((cfg.execution_mode as ExecutionMode) || "loop");
     setDefaultTradingContext(defaults.trading_context || "");
     setServerName((cfg.server_name as string) || "");
@@ -73,6 +77,7 @@ export function AgentDefaultsDialog({
     setMaxTicks(String(cfg.max_ticks ?? 0));
     setMaxOpenExecutors(readRiskLimit(cfg, "max_open_executors", 5));
     setMaxDrawdown(readRiskLimit(cfg, "max_drawdown_pct", -1));
+    setStrategyPreset(String(cfg.strategy_preset ?? "custom"));
     const saved = cfg.strategy_params;
     setStrategyParams(
       typeof saved === "object" && saved !== null ? { ...(saved as Record<string, unknown>) } : {},
@@ -80,6 +85,7 @@ export function AgentDefaultsDialog({
   }, [defaults]);
 
   const handleStrategyParamChange = (key: string, value: unknown) => {
+    setStrategyPreset("custom");
     setStrategyParams((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -93,6 +99,7 @@ export function AgentDefaultsDialog({
           digest_interval_ticks: Math.max(0, Number(digestIntervalTicks) || 0),
           execution_mode: executionMode,
           max_ticks: Math.max(0, Number(maxTicks) || 0),
+          strategy_preset: strategyPreset,
           risk_limits: buildRiskLimitsPayload(maxOpenExecutors, maxDrawdown),
           ...(strategySchema && Object.keys(strategySchema.fields).length > 0
             ? { strategy_params: strategyParams }
@@ -178,6 +185,27 @@ export function AgentDefaultsDialog({
               onMaxOpenExecutorsChange={setMaxOpenExecutors}
               onMaxDrawdownChange={setMaxDrawdown}
             />
+
+            {strategyPresets.length > 0 && (
+              <StrategyPresetSelect
+                slug={slug}
+                value={strategyPreset}
+                presets={strategyPresets}
+                frequencySec={Number(frequencySec) || 60}
+                onChange={(preset, params, riskLimits) => {
+                  setStrategyPreset(preset);
+                  if (Object.keys(params).length > 0) {
+                    setStrategyParams(params);
+                  }
+                  const maxOpen = riskLimits?.max_open_executors;
+                  if (maxOpen !== undefined && maxOpen !== null) {
+                    setMaxOpenExecutors(String(maxOpen));
+                  }
+                }}
+                label="Default strategy preset"
+                description="Pre-filled when starting a new session"
+              />
+            )}
 
             {strategySchema && Object.keys(strategySchema.fields).length > 0 && (
               <StrategyParamsForm

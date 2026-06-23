@@ -13,6 +13,7 @@ import {
   buildRiskLimitsPayload,
   type ExecutionMode,
 } from "@/components/agent/AgentSessionConfigFields";
+import { StrategyPresetSelect } from "@/components/agent/StrategyPresetSelect";
 import { StrategyParamsForm } from "@/components/agent/StrategyParamsForm";
 import { api } from "@/lib/api";
 
@@ -31,6 +32,7 @@ export function StartSessionDialog({
   agentConfig,
   defaultContext,
   defaultAgentKey,
+  strategyPresets = [],
 }: {
   open: boolean;
   onClose: () => void;
@@ -38,6 +40,7 @@ export function StartSessionDialog({
   agentConfig: Record<string, unknown>;
   defaultContext: string;
   defaultAgentKey: string;
+  strategyPresets?: Array<{ id: string; label: string }>;
 }) {
   const queryClient = useQueryClient();
 
@@ -56,6 +59,9 @@ export function StartSessionDialog({
     readRiskLimit(agentConfig, "max_open_executors", 5),
   );
   const [maxDrawdown, setMaxDrawdown] = useState(readRiskLimit(agentConfig, "max_drawdown_pct", -1));
+  const [strategyPreset, setStrategyPreset] = useState(
+    String(agentConfig.strategy_preset ?? "custom"),
+  );
   const [strategyParams, setStrategyParams] = useState<Record<string, unknown>>({});
 
   const { data: strategySchema } = useQuery({
@@ -75,6 +81,7 @@ export function StartSessionDialog({
     setDigestIntervalTicks(String(agentConfig.digest_interval_ticks ?? 0));
     setMaxOpenExecutors(readRiskLimit(agentConfig, "max_open_executors", 5));
     setMaxDrawdown(readRiskLimit(agentConfig, "max_drawdown_pct", -1));
+    setStrategyPreset(String(agentConfig.strategy_preset ?? "custom"));
     const saved = agentConfig.strategy_params;
     setStrategyParams(
       typeof saved === "object" && saved !== null ? { ...(saved as Record<string, unknown>) } : {},
@@ -82,6 +89,7 @@ export function StartSessionDialog({
   }, [open, agentConfig, defaultContext, defaultAgentKey]);
 
   const handleStrategyParamChange = (key: string, value: unknown) => {
+    setStrategyPreset("custom");
     setStrategyParams((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -93,6 +101,7 @@ export function StartSessionDialog({
         frequency_sec: Number(frequencySec) || 60,
         digest_interval_ticks: Math.max(0, Number(digestIntervalTicks) || 0),
         execution_mode: executionMode,
+        strategy_preset: strategyPreset,
         risk_limits: buildRiskLimitsPayload(maxOpenExecutors, maxDrawdown),
         ...(strategySchema && Object.keys(strategySchema.fields).length > 0
           ? { strategy_params: strategyParams }
@@ -163,6 +172,25 @@ export function StartSessionDialog({
             onMaxDrawdownChange={setMaxDrawdown}
           />
 
+          {strategyPresets.length > 0 && (
+            <StrategyPresetSelect
+              slug={slug}
+              value={strategyPreset}
+              presets={strategyPresets}
+              frequencySec={Number(frequencySec) || 60}
+              onChange={(preset, params, riskLimits) => {
+                setStrategyPreset(preset);
+                if (Object.keys(params).length > 0) {
+                  setStrategyParams(params);
+                }
+                const maxOpen = riskLimits?.max_open_executors;
+                if (maxOpen !== undefined && maxOpen !== null) {
+                  setMaxOpenExecutors(String(maxOpen));
+                }
+              }}
+            />
+          )}
+
           {strategySchema && Object.keys(strategySchema.fields).length > 0 && (
             <StrategyParamsForm
               fields={strategySchema.fields}
@@ -215,12 +243,14 @@ export function AgentControls({
   defaultContext,
   defaultAgentKey,
   agentConfig,
+  strategyPresets = [],
 }: {
   slug: string;
   status: string;
   defaultContext: string;
   defaultAgentKey: string;
   agentConfig: Record<string, unknown>;
+  strategyPresets?: Array<{ id: string; label: string }>;
 }) {
   const queryClient = useQueryClient();
   const [showStartDialog, setShowStartDialog] = useState(false);
@@ -294,6 +324,7 @@ export function AgentControls({
         agentConfig={agentConfig}
         defaultContext={defaultContext}
         defaultAgentKey={defaultAgentKey}
+        strategyPresets={strategyPresets}
       />
     </>
   );

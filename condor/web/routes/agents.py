@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from condor.web.auth import get_current_user
@@ -127,6 +127,7 @@ class AgentDetail(BaseModel):
     agent_md: str
     config: dict[str, Any] = {}
     defaults: dict[str, Any] = {}
+    strategy_presets: list[dict[str, str]] = []
     trading_context: str = ""
     learnings: str = ""
     status: str = "idle"
@@ -176,6 +177,7 @@ class AgentDefaultsResponse(BaseModel):
     trading_context: str = ""
     agent_key: str = ""
     model_base_url: str = ""
+    strategy_presets: list[dict[str, str]] = []
 
 
 class UpdateAgentDefaultsRequest(BaseModel):
@@ -238,18 +240,29 @@ def _deep_merge_strategy_params(
 
 def _build_agent_defaults(strategy) -> dict[str, Any]:
     """Return editable defaults from strategy frontmatter."""
+    from condor.trading_agent.agent_presets import (
+        apply_agent_strategy_preset,
+        get_agent_strategy_preset_catalog,
+    )
     from condor.trading_agent.config import AgentConfig, sanitize_config_dict, strip_session_overrides
 
     default_config = sanitize_config_dict(strip_session_overrides(dict(strategy.default_config or {})))
     core = AgentConfig.from_dict(default_config)
     merged = core.model_dump()
     merged.update({k: v for k, v in default_config.items() if k not in merged})
+    merged.setdefault("strategy_preset", "custom")
     merged = strip_session_overrides(_merge_config_strategy_params(strategy.slug, merged))
+    preset = str(merged.get("strategy_preset") or "custom")
+    if preset != "custom":
+        merged = apply_agent_strategy_preset(strategy.slug, merged, preset=preset)
+        merged = _merge_config_strategy_params(strategy.slug, merged)
+    catalog = get_agent_strategy_preset_catalog(strategy.slug) or []
     return {
         "default_config": merged,
         "trading_context": strategy.trading_context or "",
         "agent_key": strategy.agent_key or "",
         "model_base_url": merged.get("model_base_url") or "",
+        "strategy_presets": catalog,
     }
 
 
@@ -735,11 +748,8 @@ async def get_agent(slug: str, user: WebUser = Depends(get_current_user)):
     agent_md_path = agent_dir / "agent.md"
     agent_md = agent_md_path.read_text() if agent_md_path.exists() else ""
 
-    # Read config
-    from condor.trading_agent.config import load_full_config
-
-    config_dict = load_full_config(agent_dir, strategy.default_config)
-    config_dict = _merge_config_strategy_params(strategy.slug, config_dict)
+    defaults_payload = _build_agent_defaults(strategy)
+    config_dict = defaults_payload["default_config"]
 
     # Read learnings
     learnings_path = agent_dir / "learnings.md"
@@ -810,7 +820,8 @@ async def get_agent(slug: str, user: WebUser = Depends(get_current_user)):
         description=strategy.description,
         agent_md=agent_md,
         config=config_dict,
-        defaults=_build_agent_defaults(strategy),
+        defaults=defaults_payload,
+        strategy_presets=defaults_payload.get("strategy_presets", []),
         trading_context=strategy.trading_context,
         learnings=learnings,
         status=status,
@@ -891,6 +902,41 @@ async def update_agent_config(
     return {"updated": True, "config": config_dict}
 
 
+@router.get("/{slug}/strategy-preset-params")
+async def get_strategy_preset_params(
+    slug: str,
+    preset: str = Query(...),
+    frequency_sec: int = Query(1800),
+    user: WebUser = Depends(get_current_user),
+):
+    """Return strategy_params (+ risk hint) for a named agent preset."""
+    _get_strategy_by_slug(slug)
+    from condor.trading_agent.agent_presets import (
+        get_agent_strategy_preset_catalog,
+        strategy_params_for_preset,
+    )
+
+    catalog = get_agent_strategy_preset_catalog(slug) or []
+    allowed = {row["id"] for row in catalog}
+    if preset not in allowed:
+        raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'")
+
+    if preset == "custom":
+        return {"strategy_params": {}, "risk_limits": {}}
+
+    params = strategy_params_for_preset(slug, preset, frequency_sec=frequency_sec) or {}
+    from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
+    from trading_agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
+
+    replay_cfg = resolve_config_with_preset(
+        DynamicStrategyReplayConfig(preset=preset, frequency_sec=frequency_sec)
+    )
+    return {
+        "strategy_params": params,
+        "risk_limits": {"max_open_executors": replay_cfg.max_open_executors},
+    }
+
+
 @router.get("/{slug}/defaults", response_model=AgentDefaultsResponse)
 async def get_agent_defaults(slug: str, user: WebUser = Depends(get_current_user)):
     """Get editable session defaults from agent.md frontmatter."""
@@ -910,9 +956,16 @@ async def update_agent_defaults(
         from condor.trading_agent.config import strip_session_overrides
 
         existing = _build_agent_defaults(strategy)["default_config"]
-        patch["default_config"] = strip_session_overrides(
+        merged_defaults = strip_session_overrides(
             _deep_merge_strategy_params(existing, req.default_config)
         )
+        from condor.trading_agent.agent_presets import apply_agent_strategy_preset
+
+        preset = str(merged_defaults.get("strategy_preset") or "custom")
+        merged_defaults = apply_agent_strategy_preset(
+            slug, merged_defaults, preset=preset
+        )
+        patch["default_config"] = _merge_config_strategy_params(slug, merged_defaults)
     if req.model_base_url is not None:
         patch.setdefault("default_config", {})
         patch["default_config"]["model_base_url"] = req.model_base_url
@@ -1018,8 +1071,17 @@ async def start_agent(
     # Load config (merge request overrides)
     config_dict = load_full_config(strategy.agent_dir, strategy.default_config)
     config_dict = _merge_config_strategy_params(strategy.slug, config_dict)
+
+    from condor.trading_agent.agent_presets import apply_agent_strategy_preset
+
+    preset = "custom"
+    if req.config:
+        preset = str(req.config.get("strategy_preset") or preset)
+    config_dict["strategy_preset"] = preset
+    config_dict = apply_agent_strategy_preset(strategy.slug, config_dict, preset=preset)
     if req.config:
         config_dict = _deep_merge_strategy_params(config_dict, req.config)
+    config_dict = _merge_config_strategy_params(strategy.slug, config_dict)
 
     config_dict = resolve_session_overrides(
         config_dict,

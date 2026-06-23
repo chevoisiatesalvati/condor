@@ -39,7 +39,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Diff trades between exchange candle runs.")
     parser.add_argument("--range-start", default="2026-06-17T21:00:00Z")
     parser.add_argument("--range-end", default="2026-06-19T21:00:00Z")
-    parser.add_argument("--preset", default="hl_dynamic_timeline_mega_best")
+    parser.add_argument("--preset", default="hl_dynamic_timeline_refine_v5_winner_binance_1y")
     parser.add_argument(
         "--output-dir",
         type=Path,

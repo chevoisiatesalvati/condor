@@ -418,6 +418,7 @@ export interface AgentDetail {
   agent_md: string;
   config: Record<string, unknown>;
   defaults: Record<string, unknown>;
+  strategy_presets: Array<{ id: string; label: string }>;
   trading_context: string;
   learnings: string;
   status: string;
@@ -432,6 +433,7 @@ export interface AgentDefaults {
   trading_context: string;
   agent_key: string;
   model_base_url: string;
+  strategy_presets: Array<{ id: string; label: string }>;
 }
 
 export interface SnapshotSummary {
@@ -448,6 +450,7 @@ export interface RoutineFieldInfo {
   description: string;
   widget?: "select" | "date";
   options?: string[];
+  option_labels?: Record<string, string>;
   options_from?: string;
   group?: string;
   visible_when?: Record<string, string>;
@@ -988,6 +991,14 @@ export const api = {
 
   getStrategyConfigSchema: (slug: string) =>
     apiFetch<StrategyConfigSchema>(`/api/v1/agents/${slug}/strategy-config-schema`),
+
+  getStrategyPresetParams: (slug: string, preset: string, frequencySec: number) =>
+    apiFetch<{
+      strategy_params: Record<string, unknown>;
+      risk_limits: Record<string, unknown>;
+    }>(
+      `/api/v1/agents/${slug}/strategy-preset-params?preset=${encodeURIComponent(preset)}&frequency_sec=${frequencySec}`,
+    ),
 
   deleteAgent: (slug: string) =>
     apiFetch<{ deleted: boolean }>(`/api/v1/agents/${slug}`, {

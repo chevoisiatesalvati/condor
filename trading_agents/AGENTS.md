@@ -79,13 +79,13 @@ The LLM must use routine output **verbatim** for formal/adaptive flags, notional
 
 Backtest routine: `manage_routines(name="macdbb_scanner_aggressive_hl_backtest", ...)`
 
-Library: `routines/macdbb_scanner_aggressive_hl_replay/`
+Library: `routines/macdbb_scanner_aggressive_hl_replay/` (re-exports presets from the agent)
 
 | Module | Role |
 |--------|------|
 | `simulator.py` | Session/timeline simulation engine |
 | `models.py` | `DynamicStrategyReplayConfig`, tick/trade models |
-| `presets.py` | Named parameter profiles (`hl_mega_sweep_best`, timeline presets, …) |
+| `trading_agents/.../presets.py` | Shared preset catalog (backtest + live agent start) |
 | `config_sweep.py` | Grid/random sweeps over sessions |
 | `timeline_sweep.py` | Timeline mega-sweeps on snapshot data |
 

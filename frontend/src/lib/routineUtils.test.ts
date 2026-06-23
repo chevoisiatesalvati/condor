@@ -15,13 +15,12 @@ const PRESET_OVERRIDES = {
     replay_mode: "session_parity",
     data_source: "reports_only",
   },
-  hl_dynamic_timeline_mega_best: {
+  hl_dynamic_timeline_refine_v5_winner_binance_1y: {
     replay_mode: "timeline_backtest",
     data_source: "snapshots",
     snapshot_dir: "data/replay_snapshots_binance_1y",
-    range_start_utc: "2025-07-07T00:00:00Z",
-    range_end_utc: "2026-06-19T21:00:00Z",
-    tick_schedule: "date_range",
+    sl_pct: 3.8,
+    tp_pct: 5.0,
   },
 };
 
@@ -52,15 +51,15 @@ describe("applyPresetOverrides", () => {
   it("applies timeline preset defaults on preset change", () => {
     const next = applyPresetOverrides(
       {
-        preset: "hl_dynamic_timeline_mega_best",
+        preset: "hl_dynamic_timeline_refine_v5_winner_binance_1y",
         snapshot_dir: "data/replay_snapshots_hl_2d",
-        range_start_utc: "2026-01-01T00:00:00Z",
+        sl_pct: 4.5,
       },
       PRESET_OVERRIDES,
       { fromPresetChange: true },
     );
     expect(next.snapshot_dir).toBe("data/replay_snapshots_binance_1y");
-    expect(next.range_start_utc).toBe("2025-07-07T00:00:00Z");
+    expect(next.sl_pct).toBe(3.8);
     expect(next.replay_mode).toBe("timeline_backtest");
   });
 
@@ -190,7 +189,7 @@ describe("reconcileReplayConfigValues", () => {
   it("preserves user snapshot_dir when applying timeline preset overrides", () => {
     const next = applyPresetOverrides(
       {
-        preset: "hl_dynamic_timeline_mega_best",
+        preset: "hl_dynamic_timeline_refine_v5_winner_binance_1y",
         snapshot_dir: "data/replay_snapshots_binance_1y",
         session_nums: "58",
       },
