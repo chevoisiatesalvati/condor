@@ -25,6 +25,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DI
 from routines.macdbb_scanner_aggressive_hl_replay import presets
 from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
+    PRESET_LABELS,
     capital_normalized_pnl,
     resolve_config_with_preset,
 )
@@ -188,6 +189,21 @@ def _dynamic_summary_stats(trades: list[Any]) -> dict[str, float]:
             2,
         ),
     }
+
+
+_REPLAY_MODE_LABELS = {
+    "session_parity": "Session parity",
+    "timeline_backtest": "Timeline backtest",
+}
+
+
+def _backtest_report_title(config: Config) -> str:
+    if config.report_label:
+        return config.report_label
+    preset_label = PRESET_LABELS.get(config.preset, config.preset)
+    if config.preset != "custom":
+        return f"MACDBB Backtest — {preset_label}"
+    return "MACDBB Backtest"
 
 
 async def run(
@@ -497,15 +513,13 @@ async def run(
     try:
         from condor.reports import ReportBuilder
 
-        builder = ReportBuilder(
-            (
-                f"{config.report_label} — dynamic replay"
-                if config.report_label
-                else f"macdbb_scanner_aggressive_hl backtest: {config.strategy_slug}"
-            )
-        )
-        builder.source("routine", "macdbb_scanner_aggressive_hl_backtest").tags(
-            ["trading-agent", "backtest", "strategy", "dynamic-sizing"]
+        builder = ReportBuilder(_backtest_report_title(config))
+        builder.source("routine", "macdbb_scanner_aggressive_hl_backtest")
+        preset_label = PRESET_LABELS.get(config.preset, config.preset)
+        builder.meta("Preset", preset_label)
+        builder.meta(
+            "Mode",
+            _REPLAY_MODE_LABELS.get(config.replay_mode, config.replay_mode),
         )
         builder.manual_order()
         builder.kpi("Sim Trades", str(total_trades))

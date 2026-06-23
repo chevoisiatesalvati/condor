@@ -410,11 +410,29 @@ def _sentiment_class(value: Any, trend: str | None = None) -> str:
     return ""
 
 
+def _render_meta_badges(builder: ReportBuilder) -> str:
+    """Build header meta spans: labeled fields, optional source, then hash-tags."""
+    meta_badges = ""
+    for label, value in builder._meta:
+        meta_badges += (
+            f"<span>{html.escape(label)}: {html.escape(value)}</span>"
+        )
+    if builder._source_type and not builder._meta:
+        meta_badges += (
+            f"<span>{html.escape(builder._source_type)}: "
+            f"{html.escape(builder._source_name)}</span>"
+        )
+    for tag in builder._tags:
+        meta_badges += f"<span>#{html.escape(tag)}</span>"
+    return meta_badges
+
+
 class ReportBuilder:
     def __init__(self, title: str = "Report"):
         self._title = title
         self._source_type: str = ""
         self._source_name: str = ""
+        self._meta: list[tuple[str, str]] = []
         self._tags: list[str] = []
         self._sections: list[dict] = []
         self._manual_order = False
@@ -422,6 +440,12 @@ class ReportBuilder:
     def source(self, source_type: str, source_name: str) -> ReportBuilder:
         self._source_type = source_type
         self._source_name = source_name
+        return self
+
+    def meta(self, label: str, value: str) -> ReportBuilder:
+        """Add a labeled key-value badge to the report header."""
+        if value:
+            self._meta.append((label, value))
         return self
 
     def tags(self, tags: list[str]) -> ReportBuilder:
@@ -487,11 +511,7 @@ class ReportBuilder:
         now = datetime.now(timezone.utc)
 
         sections_html = self._render_sections()
-        meta_badges = ""
-        if self._source_type:
-            meta_badges += f"<span>{self._source_type}: {self._source_name}</span>"
-        for tag in self._tags:
-            meta_badges += f"<span>#{tag}</span>"
+        meta_badges = _render_meta_badges(self)
 
         html_content = _HTML_TEMPLATE.format(
             title=self._title,

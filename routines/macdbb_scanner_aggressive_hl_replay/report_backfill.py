@@ -114,12 +114,10 @@ def save_report_at(
     created_at = created_at.astimezone(dt.timezone.utc)
     REPORTS_DIR.mkdir(exist_ok=True)
 
+    from condor.reports import _render_meta_badges
+
     sections_html = builder._render_sections()
-    meta_badges = ""
-    if builder._source_type:
-        meta_badges += f"<span>{builder._source_type}: {builder._source_name}</span>"
-    for tag in builder._tags:
-        meta_badges += f"<span>#{tag}</span>"
+    meta_badges = _render_meta_badges(builder)
 
     html_content = _html_template().format(
         title=builder._title,
