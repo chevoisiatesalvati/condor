@@ -5,11 +5,7 @@ import type { RoutineInfo } from "@/lib/api";
 
 export const ROUTINE_CONFIG_KEY_PREFIX = "routine_config:";
 
-const JOURNAL_DATA_SOURCES = new Set([
-  "journal_first",
-  "journal_recompute",
-  "html_only",
-]);
+const JOURNAL_DATA_SOURCES = new Set(["journal_first", "journal_recompute", "html_only"]);
 
 const USER_WINS_AFTER_PRESET_KEYS = [
   "snapshot_dir",
@@ -25,7 +21,6 @@ export function getDisabledSelectOptions(
 ): Set<string> {
   const disabled = new Set<string>();
   const replayMode = String(values.replay_mode ?? "session_parity");
-  const dataSource = String(values.data_source ?? "");
 
   if (fieldKey === "data_source") {
     if (replayMode === "timeline_backtest") {
@@ -41,9 +36,7 @@ export function getDisabledSelectOptions(
   return disabled;
 }
 
-export function loadSavedConfig(
-  routineName: string,
-): Record<string, unknown> | null {
+export function loadSavedConfig(routineName: string): Record<string, unknown> | null {
   try {
     const raw = localStorage.getItem(ROUTINE_CONFIG_KEY_PREFIX + routineName);
     return raw ? JSON.parse(raw) : null;
@@ -52,15 +45,9 @@ export function loadSavedConfig(
   }
 }
 
-export function saveConfig(
-  routineName: string,
-  values: Record<string, unknown>,
-): void {
+export function saveConfig(routineName: string, values: Record<string, unknown>): void {
   try {
-    localStorage.setItem(
-      ROUTINE_CONFIG_KEY_PREFIX + routineName,
-      JSON.stringify(values),
-    );
+    localStorage.setItem(ROUTINE_CONFIG_KEY_PREFIX + routineName, JSON.stringify(values));
   } catch {
     // storage full or unavailable
   }
@@ -126,9 +113,7 @@ export function reconcileReplayConfigValues(
   return next;
 }
 
-export function buildConfigValues(
-  routine: RoutineInfo,
-): Record<string, unknown> {
+export function buildConfigValues(routine: RoutineInfo): Record<string, unknown> {
   const saved = loadSavedConfig(routine.name);
   const values: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(routine.fields)) {
@@ -138,9 +123,7 @@ export function buildConfigValues(
       values[key] = field.default;
     }
   }
-  return reconcileReplayConfigValues(
-    applyPresetOverrides(values, routine.preset_overrides),
-  );
+  return reconcileReplayConfigValues(applyPresetOverrides(values, routine.preset_overrides));
 }
 
 /** Merge preset override values when a named preset is active (not custom). */
@@ -186,12 +169,7 @@ function configValuesEqual(a: unknown, b: unknown): boolean {
   }
   const numberA = Number(a);
   const numberB = Number(b);
-  if (
-    stringA !== "" &&
-    stringB !== "" &&
-    !Number.isNaN(numberA) &&
-    !Number.isNaN(numberB)
-  ) {
+  if (stringA !== "" && stringB !== "" && !Number.isNaN(numberA) && !Number.isNaN(numberB)) {
     return numberA === numberB;
   }
   return false;
@@ -214,11 +192,7 @@ export function updateConfigValues(
 
   const next = reconcileReplayConfigValues({ ...prev, [key]: value }, key);
   const activePreset = prev.preset;
-  if (
-    activePreset &&
-    activePreset !== "custom" &&
-    !configValuesEqual(value, prev[key])
-  ) {
+  if (activePreset && activePreset !== "custom" && !configValuesEqual(value, prev[key])) {
     next.preset = "custom";
   }
   return next;
@@ -250,10 +224,7 @@ export function formatInterval(sec: number): string {
 
 // ── Query invalidation ──
 
-export function invalidateRoutineQueries(
-  qc: QueryClient,
-  routineName?: string,
-): void {
+export function invalidateRoutineQueries(qc: QueryClient, routineName?: string): void {
   qc.invalidateQueries({ queryKey: ["routine-instances"] });
   qc.invalidateQueries({ queryKey: ["reports-grouped"] });
   qc.invalidateQueries({ queryKey: ["routines"] });

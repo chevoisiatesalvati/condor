@@ -2,6 +2,7 @@
 
 from routines.macdbb_replay.config_sweep import (
     CURRENT_WINNER_OVERRIDES,
+    CURRENT_WINNER_PRESET,
     DYNAMIC_MODE_PRESETS,
     LIVE_AGENT_DEFAULT_OVERRIDES,
     MEGA_GRID_FIXED_OVERRIDES,
@@ -146,7 +147,7 @@ def test_staged_parent_overrides_replace_winner_base():
         )
     )
     assert len(configs) >= 6
-    assert not any("anchor_hl_dynamic_session_parity" in name for name, _ in configs)
+    assert not any(f"anchor_{CURRENT_WINNER_PRESET}" in name for name, _ in configs)
     baseline = next(overrides for name, overrides in configs if name.endswith("baseline_winner"))
     assert baseline["adaptive_long_bb_pos_max"] == 72.0
     assert baseline["enable_dynamic_sizing"] is False
@@ -180,7 +181,7 @@ def test_mega_dynamic_both_on_samples():
         iter_mega_dynamic_sweep_configs("both_on", min_configs=30, seed=19)
     )
     assert len(configs) >= 33
-    assert any("anchor_hl_dynamic_session_parity" in name for name, _ in configs)
+    assert any(f"anchor_{CURRENT_WINNER_PRESET}" in name for name, _ in configs)
     assert any("anchor_live_agent_default" in name for name, _ in configs)
     executor_values = {
         overrides["max_open_executors"]
@@ -198,12 +199,12 @@ def test_mega_dynamic_both_on_samples():
         )
 
 
-def test_hl_dynamic_session_parity_preset_matches_winner_base():
+def test_refine_v5_winner_preset_matches_current_winner_base():
     from routines.macdbb_replay.models import DynamicStrategyReplayConfig
 
     expected = {**CURRENT_WINNER_OVERRIDES, **DYNAMIC_MODE_PRESETS["both_on"]}
     resolved = resolve_config_with_preset(
-        DynamicStrategyReplayConfig(preset="hl_dynamic_session_parity")
+        DynamicStrategyReplayConfig(preset=CURRENT_WINNER_PRESET)
     ).model_dump()
     skip = {"write_csv", "report_label", "compare_journal_flags", "preset"}
     for key, value in expected.items():
@@ -211,8 +212,9 @@ def test_hl_dynamic_session_parity_preset_matches_winner_base():
             assert resolved[key] == value, f"mismatch on {key}: {resolved[key]!r} != {value!r}"
 
     assert (
-        DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"]["max_open_executors"] == 10
+        DYNAMIC_PRESET_OVERRIDES[CURRENT_WINNER_PRESET]["max_open_executors"] == 10
     )
+    assert CURRENT_WINNER_PRESET == "hl_dynamic_timeline_refine_v5_winner_binance_1y"
 
 
 def test_refine_sweep_defaults_and_grids():

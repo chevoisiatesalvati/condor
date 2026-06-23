@@ -46,9 +46,11 @@ from routines.macdbb_replay.reports import (
 from routines.macdbb_replay.replay_loader import load_replay_sessions
 from routines.macdbb_replay.simulator import simulate_strategy_session
 
-# Session mega sweep anchor for dynamic config sweeps.
+# Timeline mega sweep anchor — refine v5 winner (``presets.py``).
+CURRENT_WINNER_PRESET = "hl_dynamic_timeline_refine_v5_winner_binance_1y"
+
 CURRENT_WINNER_OVERRIDES: dict[str, Any] = {
-    **DYNAMIC_PRESET_OVERRIDES["hl_dynamic_session_parity"],
+    **DYNAMIC_PRESET_OVERRIDES[CURRENT_WINNER_PRESET],
     "preset": "custom",
 }
 
@@ -611,7 +613,7 @@ def iter_mega_dynamic_sweep_configs(
         anchors.extend(
             [
                 (
-                    f"dyn_{mode}_anchor_hl_dynamic_session_parity",
+                    f"dyn_{mode}_anchor_{CURRENT_WINNER_PRESET}",
                     _finalize_mega_dynamic_config(
                         _merge(_dynamic_sweep_base(mode), **CURRENT_WINNER_OVERRIDES)
                     ),
