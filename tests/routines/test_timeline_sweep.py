@@ -40,7 +40,7 @@ async def test_run_timeline_dynamic_sweep_writes_periodic_checkpoint_csv(
     ]
     pnls = [50.0, 300.0, 150.0, 10.0]
 
-    def fake_iter(mode, min_configs, seed, parent_overrides=None):
+    def fake_iter(sweep_grid, mode, *, min_configs=None, seed=42, parent_overrides=None):
         return configs
 
     def fake_run(name, *args, **kwargs):
@@ -59,7 +59,7 @@ async def test_run_timeline_dynamic_sweep_writes_periodic_checkpoint_csv(
         return ({1: {}}, {}, {}, {}, {}, [])
 
     monkeypatch.setattr(
-        "routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep.iter_mega_dynamic_sweep_configs",
+        "routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep.resolve_sweep_config_iterator",
         fake_iter,
     )
     monkeypatch.setattr(

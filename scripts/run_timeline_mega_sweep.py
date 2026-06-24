@@ -9,7 +9,12 @@ import json
 import sys
 from pathlib import Path
 
-from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import _mega_dynamic_space_size
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+    ENTRY_SLTP_SWEEP_VERSION,
+    SWEEP_GRID_CHOICES,
+    default_min_configs_for_sweep_grid,
+    sweep_space_size,
+)
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_scanner_aggressive_hl_replay.presets import resolve_config_with_preset
 from routines.macdbb_scanner_aggressive_hl_replay.replay_data import configure_replay_data_sources
@@ -39,7 +44,18 @@ def _parse_args() -> argparse.Namespace:
 
     sweep = sub.add_parser("sweep", help="Run timeline mega sweep")
     sweep.add_argument("--dynamic-mode", default="both_on")
-    sweep.add_argument("--min-configs", type=int, default=560)
+    sweep.add_argument(
+        "--sweep-grid",
+        choices=SWEEP_GRID_CHOICES,
+        default="entry_sltp_v6",
+        help="Config grid: entry_sltp_v6 (adaptive+SL floors) or mega_v5 (full mega)",
+    )
+    sweep.add_argument(
+        "--min-configs",
+        type=int,
+        default=0,
+        help="Random sample count (0 = grid default)",
+    )
     sweep.add_argument("--seed", type=int, default=42)
     sweep.add_argument("--top", type=int, default=40)
     sweep.add_argument(
@@ -90,7 +106,12 @@ def _parse_args() -> argparse.Namespace:
         help="Run mega sweep across every replay_snapshots* directory",
     )
     sweep_all.add_argument("--dynamic-mode", default="both_on")
-    sweep_all.add_argument("--min-configs", type=int, default=560)
+    sweep_all.add_argument(
+        "--sweep-grid",
+        choices=SWEEP_GRID_CHOICES,
+        default="entry_sltp_v6",
+    )
+    sweep_all.add_argument("--min-configs", type=int, default=0)
     sweep_all.add_argument("--seed", type=int, default=42)
     sweep_all.add_argument("--top", type=int, default=40)
     sweep_all.add_argument(
@@ -168,6 +189,11 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         _name, _diff, parent_overrides = load_sweep_winner_from_csv(args.parent_csv)
         print(f"Staged parent from {args.parent_csv}: {_name}")
 
+    min_configs = args.min_configs or default_min_configs_for_sweep_grid(
+        args.sweep_grid,
+        args.dynamic_mode,
+    )
+
     configure_replay_data_sources(
         DynamicStrategyReplayConfig(
             data_source="snapshots",
@@ -181,19 +207,27 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         end = manifest["range_end_utc"]
     else:
         start, end = timeline_range_from_reports()
-    output_stem = args.output_stem or f"macdbb_scanner_aggressive_hl_backtest_{args.dynamic_mode}_mega_timeline"
+    grid_tag = (
+        ENTRY_SLTP_SWEEP_VERSION
+        if args.sweep_grid == "entry_sltp_v6"
+        else args.sweep_grid
+    )
+    output_stem = (
+        args.output_stem
+        or f"macdbb_scanner_aggressive_hl_backtest_{args.dynamic_mode}_{grid_tag}_timeline"
+    )
     progress_path = args.output_dir / f"{output_stem}.progress.json"
     checkpoint_path = args.output_dir / f"{output_stem}.checkpoint.csv"
     print(
-        f"Dynamic mega timeline sweep mode={args.dynamic_mode} | "
-        f"space~{_mega_dynamic_space_size(args.dynamic_mode):,} | "
-        f"min_configs={args.min_configs} | range {start} -> {end} | snapshots={args.snapshot_dir}"
+        f"Timeline sweep grid={args.sweep_grid} mode={args.dynamic_mode} | "
+        f"space~{sweep_space_size(args.sweep_grid, args.dynamic_mode):,} | "
+        f"min_configs={min_configs} | range {start} -> {end} | snapshots={args.snapshot_dir}"
     )
     print(f"Checkpoint CSV (every {args.checkpoint_every} configs): {checkpoint_path}")
     results, _baseline, _benchmark, range_start, range_end = await run_timeline_dynamic_sweep(
         dynamic_mode=args.dynamic_mode,
         output_dir=args.output_dir,
-        min_configs=args.min_configs,
+        min_configs=min_configs,
         seed=args.seed,
         output_stem=output_stem,
         frequency_sec=args.frequency_sec,
@@ -207,6 +241,7 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         checkpoint_every=args.checkpoint_every,
         workers=args.workers,
         worker_ram_gb=args.worker_ram_gb,
+        sweep_grid=args.sweep_grid,
     )
     csv_path = args.output_dir / f"{output_stem}.csv"
     if results:
@@ -224,11 +259,24 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
 
 
 async def _run_sweep_all(args: argparse.Namespace) -> Path:
-    from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import iter_mega_dynamic_sweep_configs
+    from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+        resolve_sweep_config_iterator,
+    )
 
+    min_configs = args.min_configs or default_min_configs_for_sweep_grid(
+        args.sweep_grid,
+        args.dynamic_mode,
+    )
     snapshot_dirs = discover_replay_snapshot_dirs()
     config_count = len(
-        list(iter_mega_dynamic_sweep_configs(args.dynamic_mode, min_configs=args.min_configs, seed=args.seed))
+        list(
+            resolve_sweep_config_iterator(
+                args.sweep_grid,
+                args.dynamic_mode,
+                min_configs=min_configs,
+                seed=args.seed,
+            )
+        )
     )
     est_sec = estimate_timeline_sweep_seconds(snapshot_dirs, config_count=config_count)
     est_hours = est_sec / 3600
@@ -241,7 +289,7 @@ async def _run_sweep_all(args: argparse.Namespace) -> Path:
         manifest = load_manifest(snapshot_dir=path)
         ticks = (manifest or {}).get("tick_count", "?")
         print(f"    - {path.as_posix()} ({ticks} ticks)")
-    print(f"  Configs/dir   : {config_count} (min_configs={args.min_configs})")
+    print(f"  Configs/dir   : {config_count} (min_configs={min_configs})")
     print(f"  Total runs    : {config_count * len(snapshot_dirs):,}")
     print(f"  Est. runtime  : ~{est_hours:.1f} hours ({est_sec / 60:.0f} min)")
     print(f"  Output CSV    : {csv_path}")
@@ -252,7 +300,7 @@ async def _run_sweep_all(args: argparse.Namespace) -> Path:
     results, range_start, range_end = await run_multi_snapshot_timeline_sweep(
         dynamic_mode=args.dynamic_mode,
         output_dir=args.output_dir,
-        min_configs=args.min_configs,
+        min_configs=min_configs,
         seed=args.seed,
         output_stem=args.output_stem,
         frequency_sec=args.frequency_sec,
@@ -260,6 +308,7 @@ async def _run_sweep_all(args: argparse.Namespace) -> Path:
         snapshot_dirs=snapshot_dirs,
         top_n=args.top,
         progress_path=progress_path,
+        sweep_grid=args.sweep_grid,
     )
     if results:
         winner = results[0]

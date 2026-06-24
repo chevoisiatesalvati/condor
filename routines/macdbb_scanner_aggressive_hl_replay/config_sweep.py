@@ -182,6 +182,35 @@ MEGA_BARRIER_GRID: dict[str, tuple[Any, ...]] = {
     "ref_volatility_pct": BB_REF_VOLATILITY_PCT,
 }
 
+# Entry + SL/TP floor sweep (v6): adaptive entry gates + barrier bases/floors only.
+# Sizing, barrier globals, tp_pct, and max_open_executors stay at v5 refine winner.
+ENTRY_SLTP_SWEEP_VERSION = "v6_entry_sltp"
+
+ENTRY_SLTP_SWEEP_GRID: dict[str, tuple[Any, ...]] = {
+    # 3 values each: low / mid / high (mid ≈ winner where noted in v5 preset).
+    "sl_pct": (2.0, 3.8, 5.0),
+    "sl_min_pct": (1.0, 1.4, 2.6),
+    "tp_min_pct": (5.5, 7.5, 10.0),
+    "adaptive_long_bb_pos_max": (58.0, 76.0, 86.0),
+    "adaptive_short_bb_pos_min": (78.0, 85.0, 92.0),
+    "adaptive_strong_long_bb_pos_max": (20.0, 30.0, 40.0),
+    "adaptive_strong_short_bb_pos_min": (78.0, 86.0, 95.0),
+    "adaptive_min_macd_gap_ratio": (0.02, 0.08, 0.14),
+    "adaptive_min_hist_ratio": (0.07, 0.17, 0.30),
+    "adaptive_score_open_min": (1.0, 1.8, 3.5),
+    "adaptive_score_open_min_extreme": (0.4, 0.6, 1.5),
+    "adaptive_hist_sign_bonus": (0.25, 0.38, 0.50),
+    "adaptive_hist_sign_penalty": (0.15, 0.28, 0.50),
+    "adaptive_momentum_bonus": (0.15, 0.38, 0.45),
+    "adaptive_momentum_penalty": (0.04, 0.06, 0.22),
+    "bb_proximity_epsilon_pct": (0.04, 0.06, 0.22),
+    "thesis_decay_exit_ticks": (16, 44, 72),
+}
+
+ENTRY_SLTP_SWEEP_MIN_CONFIGS = 600
+
+SWEEP_GRID_CHOICES: tuple[str, ...] = ("mega_v5", "entry_sltp_v6")
+
 # Per-mode default sample counts for phased sequential sweeps (A → B → C).
 MEGA_SWEEP_MIN_CONFIGS_BY_MODE: dict[str, int] = {
     "sizing_only": 500,
@@ -272,6 +301,12 @@ _BARRIER_PARAM_KEYS: frozenset[str] = frozenset(
 MEGA_GRID_FIXED_OVERRIDES: dict[str, Any] = {
     "activation_ticks": 0,
     "ignore_adaptive_4h_filter": True,
+}
+
+ENTRY_SLTP_SWEEP_FIXED_OVERRIDES: dict[str, Any] = {
+    **MEGA_GRID_FIXED_OVERRIDES,
+    "max_open_executors": 10,
+    "tp_pct": 5.0,
 }
 
 
@@ -731,6 +766,146 @@ def iter_refine_sweep_configs(
         seen_names.add(name)
         yield name, merged
         emitted += 1
+
+
+def _finalize_entry_sltp_config(overrides: dict[str, Any]) -> dict[str, Any]:
+    """Re-apply entry/SLTP fixed keys last so random samples cannot override them."""
+    return _merge(overrides, **ENTRY_SLTP_SWEEP_FIXED_OVERRIDES)
+
+
+def _entry_sltp_space_size() -> int:
+    return math.prod(len(values) for values in ENTRY_SLTP_SWEEP_GRID.values())
+
+
+def _random_entry_sltp_combo(rng: random.Random) -> dict[str, Any]:
+    return {key: rng.choice(values) for key, values in ENTRY_SLTP_SWEEP_GRID.items()}
+
+
+def _entry_sltp_config_name(overrides: dict[str, Any], mode: str) -> str:
+    parts = [
+        f"sl{overrides['sl_pct']}",
+        f"slmin{overrides['sl_min_pct']}",
+        f"tpmin{overrides['tp_min_pct']}",
+        f"L{int(overrides['adaptive_long_bb_pos_max'])}",
+        f"S{int(overrides['adaptive_short_bb_pos_min'])}",
+        f"sc{overrides['adaptive_score_open_min']}",
+        f"td{overrides['thesis_decay_exit_ticks']}",
+        f"eps{overrides['bb_proximity_epsilon_pct']}",
+    ]
+    return f"dyn_{mode}_entry_sltp_" + "_".join(parts)
+
+
+def iter_entry_sltp_sweep_configs(
+    mode: str = "both_on",
+    *,
+    min_configs: int | None = None,
+    seed: int = 42,
+    parent_overrides: dict[str, Any] | None = None,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield entry/SLTP sweep configs (v6 grid) merged onto the v5 refine winner."""
+    if mode != "both_on":
+        raise ValueError(
+            f"entry_sltp sweep requires mode 'both_on'; got {mode!r}"
+        )
+    if parent_overrides is not None:
+        raise ValueError("entry_sltp sweep does not support parent_overrides")
+
+    if min_configs is None:
+        min_configs = ENTRY_SLTP_SWEEP_MIN_CONFIGS
+
+    base = _finalize_entry_sltp_config(_dynamic_sweep_base(mode))
+    anchors: list[tuple[str, dict[str, Any]]] = [
+        (f"dyn_{mode}_entry_sltp_baseline_winner", dict(base)),
+        (
+            f"dyn_{mode}_entry_sltp_anchor_{CURRENT_WINNER_PRESET}",
+            _finalize_entry_sltp_config(
+                _merge(_dynamic_sweep_base(mode), **CURRENT_WINNER_OVERRIDES)
+            ),
+        ),
+    ]
+    for name, overrides in anchors:
+        if not is_sensible_replay_config(overrides, reject_saturated_barriers=False):
+            raise ValueError(f"entry_sltp sweep anchor failed sanity check: {name}")
+        yield name, overrides
+
+    rng = random.Random(seed)
+    seen_names: set[str] = {name for name, _ in anchors}
+    target = max(min_configs, 1)
+    emitted = 0
+    attempts = 0
+    max_attempts = target * 50
+
+    while emitted < target and attempts < max_attempts:
+        attempts += 1
+        combo = _random_entry_sltp_combo(rng)
+        merged = _finalize_entry_sltp_config(_merge(base, **combo))
+        if not is_sensible_replay_config(merged):
+            continue
+        name = _entry_sltp_config_name(merged, mode)
+        if name in seen_names:
+            name = f"{name}_n{emitted}"
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        yield name, merged
+        emitted += 1
+
+
+def resolve_sweep_config_iterator(
+    sweep_grid: str,
+    mode: str,
+    *,
+    min_configs: int | None = None,
+    seed: int = 42,
+    parent_overrides: dict[str, Any] | None = None,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    if sweep_grid == "entry_sltp_v6":
+        return iter_entry_sltp_sweep_configs(
+            mode,
+            min_configs=min_configs,
+            seed=seed,
+            parent_overrides=parent_overrides,
+        )
+    if sweep_grid == "mega_v5":
+        return iter_mega_dynamic_sweep_configs(
+            mode,
+            min_configs=min_configs,
+            seed=seed,
+            parent_overrides=parent_overrides,
+        )
+    valid = ", ".join(SWEEP_GRID_CHOICES)
+    raise ValueError(f"Unknown sweep_grid {sweep_grid!r}; choose one of: {valid}")
+
+
+def sweep_space_size(sweep_grid: str, mode: str) -> int:
+    if sweep_grid == "entry_sltp_v6":
+        return _entry_sltp_space_size()
+    if sweep_grid == "mega_v5":
+        return _mega_dynamic_space_size(mode)
+    valid = ", ".join(SWEEP_GRID_CHOICES)
+    raise ValueError(f"Unknown sweep_grid {sweep_grid!r}; choose one of: {valid}")
+
+
+def default_min_configs_for_sweep_grid(sweep_grid: str, mode: str) -> int:
+    if sweep_grid == "entry_sltp_v6":
+        return ENTRY_SLTP_SWEEP_MIN_CONFIGS
+    if sweep_grid == "mega_v5":
+        return default_min_configs_for_mode(mode)
+    valid = ", ".join(SWEEP_GRID_CHOICES)
+    raise ValueError(f"Unknown sweep_grid {sweep_grid!r}; choose one of: {valid}")
+
+
+def finalize_sweep_config(
+    overrides: dict[str, Any],
+    *,
+    sweep_grid: str = "mega_v5",
+) -> dict[str, Any]:
+    if sweep_grid == "entry_sltp_v6":
+        return _finalize_entry_sltp_config(overrides)
+    if sweep_grid == "mega_v5":
+        return _finalize_mega_dynamic_config(overrides)
+    valid = ", ".join(SWEEP_GRID_CHOICES)
+    raise ValueError(f"Unknown sweep_grid {sweep_grid!r}; choose one of: {valid}")
 
 
 def iter_mega_dynamic_sweep_configs(

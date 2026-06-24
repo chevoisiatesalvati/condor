@@ -18,12 +18,12 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     SweepRunContext,
     _apply_capital_metrics,
     _dynamic_sweep_base,
-    _finalize_mega_dynamic_config,
     _load_sessions,
     _merge,
     _print_table,
     _write_sweep_csv,
-    iter_mega_dynamic_sweep_configs,
+    finalize_sweep_config,
+    resolve_sweep_config_iterator,
     resolve_sweep_workers,
     run_sweep_config_batch,
 )
@@ -149,8 +149,9 @@ def merge_timeline_config(
     time_window_min: int = DEFAULT_TIME_WINDOW_MIN,
     range_start_utc: str | None = None,
     range_end_utc: str | None = None,
+    sweep_grid: str = "mega_v5",
 ) -> dict[str, Any]:
-    return _finalize_mega_dynamic_config(
+    return finalize_sweep_config(
         _merge(
             overrides,
             **timeline_sweep_overrides(
@@ -159,7 +160,8 @@ def merge_timeline_config(
                 frequency_sec=frequency_sec,
                 time_window_min=time_window_min,
             ),
-        )
+        ),
+        sweep_grid=sweep_grid,
     )
 
 
@@ -183,6 +185,7 @@ async def run_timeline_dynamic_sweep(
     checkpoint_every: int = DEFAULT_CHECKPOINT_EVERY,
     parent_overrides: dict[str, Any] | None = None,
     config_items: list[tuple[str, dict[str, Any]]] | None = None,
+    sweep_grid: str = "mega_v5",
     workers: int = 1,
     worker_ram_gb: float = 2.0,
     allow_non_fork: bool = False,
@@ -196,11 +199,12 @@ async def run_timeline_dynamic_sweep(
     if snapshot_dir:
         timeline_fields = {**timeline_fields, "snapshot_dir": snapshot_dir}
     load_config = DynamicStrategyReplayConfig(
-        **_finalize_mega_dynamic_config(
+        **finalize_sweep_config(
             _merge(
                 _dynamic_sweep_base(dynamic_mode, parent_overrides=parent_overrides),
                 **timeline_fields,
-            )
+            ),
+            sweep_grid=sweep_grid,
         )
     )
     from routines.macdbb_scanner_aggressive_hl_replay.replay_data import (
@@ -238,7 +242,8 @@ async def run_timeline_dynamic_sweep(
 
     if config_items is None:
         config_items = list(
-            iter_mega_dynamic_sweep_configs(
+            resolve_sweep_config_iterator(
+                sweep_grid,
                 dynamic_mode,
                 min_configs=min_configs,
                 seed=seed,
@@ -262,6 +267,7 @@ async def run_timeline_dynamic_sweep(
             time_window_min=time_window_min,
             range_start_utc=timeline_fields["range_start_utc"],
             range_end_utc=timeline_fields["range_end_utc"],
+            sweep_grid=sweep_grid,
         )
         if snapshot_dir:
             merged["snapshot_dir"] = snapshot_dir
@@ -414,6 +420,7 @@ async def run_multi_snapshot_timeline_sweep(
     snapshot_dirs: list[Path] | None = None,
     top_n: int = 40,
     progress_path: Path | None = None,
+    sweep_grid: str = "mega_v5",
 ) -> tuple[list[SweepResult], str, str]:
     """Run mega sweep for each snapshot dir; rank combined results by cap-norm PnL."""
     dirs = snapshot_dirs or discover_replay_snapshot_dirs()
@@ -421,8 +428,11 @@ async def run_multi_snapshot_timeline_sweep(
         raise ValueError("No replay snapshot directories with manifest.json found")
 
     config_items = list(
-        iter_mega_dynamic_sweep_configs(
-            dynamic_mode, min_configs=min_configs, seed=seed
+        resolve_sweep_config_iterator(
+            sweep_grid,
+            dynamic_mode,
+            min_configs=min_configs,
+            seed=seed,
         )
     )
     config_count = len(config_items)
@@ -475,6 +485,7 @@ async def run_multi_snapshot_timeline_sweep(
                 global_index_offset=global_offset,
                 global_total=global_total,
                 write_output=False,
+                sweep_grid=sweep_grid,
             )
         )
         combined.extend(results)
@@ -532,7 +543,7 @@ def full_replay_overrides(
     range_start_utc: str | None = None,
     range_end_utc: str | None = None,
 ) -> dict[str, Any]:
-    base = _finalize_mega_dynamic_config(_dynamic_sweep_base(dynamic_mode))
+    base = finalize_sweep_config(_dynamic_sweep_base(dynamic_mode), sweep_grid="mega_v5")
     return merge_timeline_config(
         _merge(base, **sweep_delta),
         frequency_sec=frequency_sec,
