@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import configure_snapshot_dir
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
+    configure_snapshot_dir,
+    warm_snapshot_caches,
+)
 
 if TYPE_CHECKING:
     from routines.macdbb_scanner_aggressive_hl_replay.models import ReplayConfigBase
@@ -37,5 +40,7 @@ def configure_replay_data_sources(config: ReplayConfigBase) -> None:
             from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import DEFAULT_SNAPSHOT_DIR
 
             configure_snapshot_dir(DEFAULT_SNAPSHOT_DIR)
+        if config.data_source == "snapshots":
+            warm_snapshot_caches(snapshot_dir)
     else:
         configure_snapshot_dir(None)

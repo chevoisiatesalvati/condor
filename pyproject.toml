@@ -36,4 +36,5 @@ profile = "black"
 pythonpath = ["."]
 markers = [
     "integration: live Telegram API tests (set RUN_TELEGRAM_INTEGRATION=1)",
+    "slow: long-running replay/backtest parity checks",
 ]

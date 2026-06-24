@@ -15,16 +15,19 @@ import yaml
 from routines.macdbb_scanner_aggressive_hl_backtest import run as run_dynamic_replay
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     SweepResult,
+    SweepRunContext,
     _apply_capital_metrics,
     _dynamic_sweep_base,
     _finalize_mega_dynamic_config,
     _load_sessions,
     _merge,
     _print_table,
-    _run_dynamic_config,
     _write_sweep_csv,
     iter_mega_dynamic_sweep_configs,
+    resolve_sweep_workers,
+    run_sweep_config_batch,
 )
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import warm_snapshot_caches
 from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
 )
@@ -180,6 +183,9 @@ async def run_timeline_dynamic_sweep(
     checkpoint_every: int = DEFAULT_CHECKPOINT_EVERY,
     parent_overrides: dict[str, Any] | None = None,
     config_items: list[tuple[str, dict[str, Any]]] | None = None,
+    workers: int = 1,
+    worker_ram_gb: float = 2.0,
+    allow_non_fork: bool = False,
 ) -> tuple[list[SweepResult], str, float, str, str]:
     timeline_fields = timeline_sweep_overrides(
         range_start_utc=range_start_utc,
@@ -202,16 +208,7 @@ async def run_timeline_dynamic_sweep(
     )
 
     configure_replay_data_sources(load_config)
-    if snapshot_dir:
-        from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
-            _ensure_parsed_macdbb_cache,
-            _ensure_parsed_scanner_cache,
-            snapshot_dir_or_default,
-        )
-
-        root = snapshot_dir_or_default(snapshot_dir)
-        _ensure_parsed_scanner_cache(root)
-        _ensure_parsed_macdbb_cache(root)
+    warm_snapshot_caches(snapshot_dir)
     (
         parsed_sessions,
         hl_caches,
@@ -239,7 +236,6 @@ async def run_timeline_dynamic_sweep(
     if parent_overrides is not None:
         print(f"Staged sweep parent: derived from prior phase winner")
 
-    results: list[SweepResult] = []
     if config_items is None:
         config_items = list(
             iter_mega_dynamic_sweep_configs(
@@ -249,15 +245,17 @@ async def run_timeline_dynamic_sweep(
                 parent_overrides=parent_overrides,
             )
         )
-    config_total = len(config_items)
-    sweep_started = time.monotonic()
-    snap_label = snapshot_dir or "default"
-    checkpoint_path: Path | None = None
-    if output_dir is not None and write_output:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_path = _checkpoint_csv_path(output_dir, stem)
 
-    for index, (name, overrides) in enumerate(config_items):
+    resolved_workers = resolve_sweep_workers(
+        workers,
+        worker_ram_gb=worker_ram_gb,
+        allow_non_fork=allow_non_fork,
+    )
+    if resolved_workers > 1:
+        print(f"Parallel sweep workers: {resolved_workers}")
+
+    merged_items: list[tuple[str, dict[str, Any]]] = []
+    for name, overrides in config_items:
         merged = merge_timeline_config(
             overrides,
             frequency_sec=frequency_sec,
@@ -267,23 +265,20 @@ async def run_timeline_dynamic_sweep(
         )
         if snapshot_dir:
             merged["snapshot_dir"] = snapshot_dir
-        result = _run_dynamic_config(
-            name,
-            merged,
-            dynamic_mode,
-            parsed_sessions,
-            hl_caches,
-            hl_candle_cache,
-            hl_barrier_candle_cache,
-            hl_vol_candle_cache,
-            reports_by_pair,
-            parent_overrides=parent_overrides,
-        )
-        result.snapshot_dir = snap_label
-        result = _apply_capital_metrics(result, benchmark_avg_notional)
-        results.append(result)
+        merged_items.append((name, merged))
 
-        done = index + 1
+    config_total = len(merged_items)
+    sweep_started = time.monotonic()
+    snap_label = snapshot_dir or "default"
+    checkpoint_path: Path | None = None
+    if output_dir is not None and write_output:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = _checkpoint_csv_path(output_dir, stem)
+
+    results: list[SweepResult] = []
+
+    def _record_progress(done: int, result: SweepResult) -> None:
+        result.snapshot_dir = snap_label
         elapsed = time.monotonic() - sweep_started
         rate = done / elapsed if elapsed > 0 else 0.0
         remaining_local = config_total - done
@@ -309,7 +304,7 @@ async def run_timeline_dynamic_sweep(
                 "config_total": config_total,
                 "global_index": global_done,
                 "global_total": global_total,
-                "last_config": name,
+                "last_config": result.name,
                 "last_capital_normalized_pnl": round(result.capital_normalized_pnl, 2),
                 "last_trades": result.trades,
                 "top_config": top_row.name,
@@ -320,6 +315,7 @@ async def run_timeline_dynamic_sweep(
                     round(eta_global, 1) if eta_global is not None else None
                 ),
                 "configs_per_hour": round(rate * 3600, 2),
+                "workers": resolved_workers,
             }
             if checkpoint_path is not None:
                 progress_payload["checkpoint_csv"] = checkpoint_path.as_posix()
@@ -329,11 +325,36 @@ async def run_timeline_dynamic_sweep(
         if done == 1 or done % 5 == 0 or done == config_total:
             print(
                 f"[{global_done}/{global_total or config_total}] "
-                f"{snap_label} {done}/{config_total} {name} "
+                f"{snap_label} {done}/{config_total} {result.name} "
                 f"cap_norm=${result.capital_normalized_pnl:+.2f} "
                 f"elapsed={_format_eta(elapsed)} eta={_format_eta(eta_global)}",
                 flush=True,
             )
+
+    sweep_ctx = SweepRunContext(
+        dynamic_mode=dynamic_mode,
+        parsed_sessions=parsed_sessions,
+        hl_caches_by_session=hl_caches,
+        hl_candle_cache=hl_candle_cache,
+        hl_barrier_candle_cache=hl_barrier_candle_cache,
+        hl_vol_candle_cache=hl_vol_candle_cache,
+        reports_by_pair=reports_by_pair,
+        parent_overrides=parent_overrides,
+        benchmark_avg_notional=benchmark_avg_notional,
+    )
+
+    def _on_batch_result(done: int, result: SweepResult) -> None:
+        results.append(result)
+        _record_progress(done, result)
+
+    run_sweep_config_batch(
+        merged_items,
+        sweep_ctx,
+        workers=workers,
+        worker_ram_gb=worker_ram_gb,
+        allow_non_fork=allow_non_fork,
+        on_result=_on_batch_result,
+    )
 
     results.sort(key=lambda row: row.capital_normalized_pnl, reverse=True)
 

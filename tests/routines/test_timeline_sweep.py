@@ -63,7 +63,7 @@ async def test_run_timeline_dynamic_sweep_writes_periodic_checkpoint_csv(
         fake_iter,
     )
     monkeypatch.setattr(
-        "routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep._run_dynamic_config",
+        "routines.macdbb_scanner_aggressive_hl_replay.config_sweep._run_dynamic_config",
         fake_run,
     )
     monkeypatch.setattr(

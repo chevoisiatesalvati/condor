@@ -668,6 +668,7 @@ def simulate_strategy_session(
     last_seen_by_pair: dict[str, tuple[int, float]] = {}
     simulated_streak = 0
     adaptive_slot_fill_budget = 0
+    filter_4h_cache: dict[tuple[str, int], tuple[bool | None, str | None]] = {}
 
     report_driven_params: dict[str, Any] | None = None
     scanner_reports: list[ScannerReportMeta] | None = None
@@ -717,21 +718,25 @@ def simulate_strategy_session(
         if is_report_driven_data_source(config.data_source) and report_driven_params and scanner_reports:
             journal_meta = meta
             open_pair_list = list(open_positions.keys())
-            refreshed = refresh_tick_meta_from_reports(
-                journal_meta,
-                config,
-                report_driven_params,
-                reports_by_pair,
-                scanner_reports,
-                open_pairs=open_pair_list,
-            )
-            if (
+            timeline_mode = (
                 isinstance(config, DynamicStrategyReplayConfig)
-                and config.replay_mode == "session_parity"
-            ):
-                meta = preserve_journal_queue_fields(journal_meta, refreshed)
-            else:
-                meta = refreshed
+                and config.replay_mode == "timeline_backtest"
+            )
+            if open_pair_list or not timeline_mode:
+                refreshed = refresh_tick_meta_from_reports(
+                    journal_meta,
+                    config,
+                    report_driven_params,
+                    reports_by_pair,
+                    scanner_reports,
+                    open_pairs=open_pair_list,
+                )
+                if timeline_mode:
+                    meta = refreshed
+                elif config.replay_mode == "session_parity":
+                    meta = preserve_journal_queue_fields(journal_meta, refreshed)
+                else:
+                    meta = refreshed
         entry_streak = simulated_streak
         extra_pairs = list(open_positions.keys())
         snapshots = build_tick_snapshots(
@@ -742,6 +747,7 @@ def simulate_strategy_session(
             extra_pairs=extra_pairs,
             hl_price_cache=hl_price_cache,
             last_signal_by_pair=last_signal_by_pair,
+            filter_4h_cache=filter_4h_cache,
         )
         for pair, signal in meta.signals_1h.items():
             last_signal_by_pair[pair] = signal

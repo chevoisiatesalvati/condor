@@ -6,7 +6,10 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
-from routines.macdbb_scanner_aggressive_hl_replay.journal import parse_journal_ticks
+from routines.macdbb_scanner_aggressive_hl_replay.hydrated_ticks_cache import (
+    load_hydrated_timeline_ticks,
+    save_hydrated_timeline_ticks,
+)
 from routines.macdbb_scanner_aggressive_hl_replay.metrics import compute_metrics
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig, TickMeta
 from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
@@ -80,11 +83,17 @@ def hydrate_timeline_ticks(
         return {}
     if not is_report_driven_data_source(config.data_source):
         return tick_map
-    return build_report_driven_ticks(
+    params = load_timeline_strategy_params(config)
+    cached = load_hydrated_timeline_ticks(config, params)
+    if cached is not None:
+        return cached
+    built = build_report_driven_ticks(
         tick_map,
         config,
-        load_timeline_strategy_params(config),
+        params,
     )
+    save_hydrated_timeline_ticks(config, params, built)
+    return built
 
 
 def _populate_tick_from_reports(

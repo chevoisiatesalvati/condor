@@ -79,10 +79,17 @@ def is_snapshot_store_active() -> bool:
 
 def snapshot_dir_or_default(snapshot_dir: Path | str | None = None) -> Path:
     if snapshot_dir is not None:
-        return Path(snapshot_dir)
+        return Path(snapshot_dir).resolve()
     if _active_snapshot_dir is not None:
         return _active_snapshot_dir
-    return DEFAULT_SNAPSHOT_DIR
+    return DEFAULT_SNAPSHOT_DIR.resolve()
+
+
+def warm_snapshot_caches(snapshot_dir: Path | str | None = None) -> None:
+    """Eagerly load scanner + macdbb parsed caches and indexes (single pass each)."""
+    root = snapshot_dir_or_default(snapshot_dir)
+    _ensure_parsed_scanner_cache(root)
+    _ensure_parsed_macdbb_cache(root)
 
 
 def _tick_id(tick_time: dt.datetime) -> str:
@@ -157,9 +164,10 @@ def _macdbb_rows_from_state(state: TickMarketState) -> list[dict[str, Any]]:
 
 def _load_scanner_frame(snapshot_dir: Path) -> pd.DataFrame:
     global _scanner_frame
-    if _scanner_frame is not None and get_snapshot_dir() == snapshot_dir:
+    resolved = snapshot_dir.resolve()
+    if _scanner_frame is not None and get_snapshot_dir() == resolved:
         return _scanner_frame
-    path = snapshot_dir / SCANNER_FILENAME
+    path = resolved / SCANNER_FILENAME
     if not path.is_file():
         _scanner_frame = pd.DataFrame()
         return _scanner_frame
@@ -176,14 +184,15 @@ def _load_monitor_macdbb_frame(snapshot_dir: Path) -> pd.DataFrame:
 
 def _load_macdbb_frame(snapshot_dir: Path) -> pd.DataFrame:
     global _macdbb_frame
-    if _macdbb_frame is not None and get_snapshot_dir() == snapshot_dir:
+    resolved = snapshot_dir.resolve()
+    if _macdbb_frame is not None and get_snapshot_dir() == resolved:
         return _macdbb_frame
-    base_path = snapshot_dir / MACDBB_FILENAME
+    base_path = resolved / MACDBB_FILENAME
     if base_path.is_file():
         base = pd.read_parquet(base_path)
     else:
         base = pd.DataFrame()
-    monitor = _load_monitor_macdbb_frame(snapshot_dir)
+    monitor = _load_monitor_macdbb_frame(resolved)
     if base.empty:
         merged = monitor
     elif monitor.empty:
@@ -299,84 +308,116 @@ def append_monitor_macdbb_rows(
 
 
 def _ensure_parsed_scanner_cache(root: Path) -> dict[str, ParsedScannerReport]:
-    global _parsed_scanner_by_tick
-    if _parsed_scanner_by_tick is not None and get_snapshot_dir() == root:
+    global _parsed_scanner_by_tick, _scanner_index
+    resolved = root.resolve()
+    if _parsed_scanner_by_tick is not None and get_snapshot_dir() == resolved:
         return _parsed_scanner_by_tick
 
-    frame = _load_scanner_frame(root)
+    frame = _load_scanner_frame(resolved)
     cache: dict[str, ParsedScannerReport] = {}
+    metas: list[ScannerReportMeta] = []
     if frame.empty:
         _parsed_scanner_by_tick = cache
+        _scanner_index = []
+        _activate_snapshot_dir(resolved)
         return cache
 
-    for tick_id, group in frame.groupby("tick_id"):
+    for tick_id, group in frame.groupby("tick_id", sort=False):
         first = group.iloc[0]
         mature: list[ScannerPairRow] = []
         degen: list[ScannerPairRow] = []
-        for _, row in group.iterrows():
+        for row in group.itertuples(index=False):
             pair_row = ScannerPairRow(
-                pair=str(row["pair"]),
-                volume_24h_usd=float(row["volume_24h_usd"]),
-                price_change_24h=float(row["price_change_24h"]),
-                natr_mean=float(row["natr_mean"]),
-                natr_cv=float(row["natr_cv"]),
-                bucket_cv=float(row["bucket_cv"]),
-                price_range_pct=float(row["price_range_pct"]),
+                pair=str(row.pair),
+                volume_24h_usd=float(row.volume_24h_usd),
+                price_change_24h=float(row.price_change_24h),
+                natr_mean=float(row.natr_mean),
+                natr_cv=float(row.natr_cv),
+                bucket_cv=float(row.bucket_cv),
+                price_range_pct=float(row.price_range_pct),
             )
-            if str(row["bucket"]) == "degen":
+            if str(row.bucket) == "degen":
                 degen.append(pair_row)
             else:
                 mature.append(pair_row)
-        cache[str(tick_id)] = ParsedScannerReport(
+        tick_key = str(tick_id)
+        cache[tick_key] = ParsedScannerReport(
             total_analyzed=int(first["total_analyzed"]),
             mature=mature,
             degen=degen,
             lookback_hours=int(first["lookback_hours"]),
         )
+        metas.append(
+            ScannerReportMeta(
+                report_id=tick_key,
+                filename=f"snapshot://scanner/{tick_key}",
+                created_at=parse_dt(str(first["tick_ts_iso"])),
+                lookback_hours=int(first.get("lookback_hours", 6)),
+                total_analyzed=int(first.get("total_analyzed", len(group))),
+            )
+        )
 
+    metas.sort(key=lambda item: item.created_at)
     _parsed_scanner_by_tick = cache
-    _activate_snapshot_dir(root)
+    _scanner_index = metas
+    _activate_snapshot_dir(resolved)
     return cache
 
 
 def _ensure_parsed_macdbb_cache(root: Path) -> dict[str, ParsedReport]:
-    global _parsed_macdbb_by_id
-    if _parsed_macdbb_by_id is not None and get_snapshot_dir() == root:
+    global _parsed_macdbb_by_id, _macdbb_index
+    resolved = root.resolve()
+    if _parsed_macdbb_by_id is not None and get_snapshot_dir() == resolved:
         return _parsed_macdbb_by_id
 
-    frame = _load_macdbb_frame(root)
+    frame = _load_macdbb_frame(resolved)
     cache: dict[str, ParsedReport] = {}
+    metas: list[ReportMeta] = []
     if frame.empty:
         _parsed_macdbb_by_id = cache
+        _macdbb_index = []
+        _activate_snapshot_dir(resolved)
         return cache
 
-    for _, row in frame.iterrows():
-        tick_id = str(row["tick_id"])
-        pair = str(row["pair"])
-        interval = str(row["interval"])
+    for row in frame.itertuples(index=False):
+        tick_id = str(row.tick_id)
+        pair = str(row.pair)
+        interval = str(row.interval)
         report_id = f"{tick_id}:{pair}:{interval}"
+        tick_time = parse_dt(str(row.tick_ts_iso))
         cache[report_id] = ParsedReport(
             pair=pair,
             interval=interval,
-            signal=str(row["signal"]),
-            price=float(row["price"]),
-            bb_pos_pct=float(row["bb_pos_pct"]),
-            bb_mid=float(row["bb_mid"]),
-            bb_upper=float(row["bb_upper"]),
-            macd=float(row["macd"]),
-            signal_line=float(row["signal_line"]),
-            histogram=float(row["histogram"]),
-            trend=str(row["trend"]),
-            momentum=str(row["momentum"]),
-            bullish_cross=bool(row["bullish_cross"]),
-            price_le_mid=bool(row["price_le_mid"]),
-            bearish_cross=bool(row["bearish_cross"]),
-            price_ge_upper=bool(row["price_ge_upper"]),
-            macd_lt_zero=bool(row["macd_lt_zero"]),
+            signal=str(row.signal),
+            price=float(row.price),
+            bb_pos_pct=float(row.bb_pos_pct),
+            bb_mid=float(row.bb_mid),
+            bb_upper=float(row.bb_upper),
+            macd=float(row.macd),
+            signal_line=float(row.signal_line),
+            histogram=float(row.histogram),
+            trend=str(row.trend),
+            momentum=str(row.momentum),
+            bullish_cross=bool(row.bullish_cross),
+            price_le_mid=bool(row.price_le_mid),
+            bearish_cross=bool(row.bearish_cross),
+            price_ge_upper=bool(row.price_ge_upper),
+            macd_lt_zero=bool(row.macd_lt_zero),
+        )
+        metas.append(
+            ReportMeta(
+                report_id=report_id,
+                filename=f"snapshot://macdbb/{tick_id}/{pair}/{interval}",
+                created_at=tick_time,
+                pair=pair,
+                interval=interval,
+            )
         )
 
+    metas.sort(key=lambda item: item.created_at)
     _parsed_macdbb_by_id = cache
-    _activate_snapshot_dir(root)
+    _macdbb_index = metas
+    _activate_snapshot_dir(resolved)
     return cache
 
 
@@ -403,67 +444,19 @@ def load_manifest(*, snapshot_dir: Path | None = None) -> dict[str, Any] | None:
 
 
 def load_scanner_index(*, snapshot_dir: Path | None = None) -> list[ScannerReportMeta]:
-    global _scanner_index
     root = snapshot_dir_or_default(snapshot_dir)
     if _scanner_index is not None and get_snapshot_dir() == root:
         return _scanner_index
-
-    frame = _load_scanner_frame(root)
-    if frame.empty:
-        _scanner_index = []
-        return _scanner_index
-
-    metas: list[ScannerReportMeta] = []
-    for tick_id, group in frame.groupby("tick_id"):
-        first = group.iloc[0]
-        tick_time = parse_dt(str(first["tick_ts_iso"]))
-        lookback = int(first.get("lookback_hours", 6))
-        total = int(first.get("total_analyzed", len(group)))
-        metas.append(
-            ScannerReportMeta(
-                report_id=str(tick_id),
-                filename=f"snapshot://scanner/{tick_id}",
-                created_at=tick_time,
-                lookback_hours=lookback,
-                total_analyzed=total,
-            )
-        )
-    metas.sort(key=lambda item: item.created_at)
-    _scanner_index = metas
-    _activate_snapshot_dir(root)
-    return metas
+    _ensure_parsed_scanner_cache(root)
+    return _scanner_index or []
 
 
 def load_macdbb_index(*, snapshot_dir: Path | None = None) -> list[ReportMeta]:
-    global _macdbb_index
     root = snapshot_dir_or_default(snapshot_dir)
     if _macdbb_index is not None and get_snapshot_dir() == root:
         return _macdbb_index
-
-    frame = _load_macdbb_frame(root)
-    if frame.empty:
-        _macdbb_index = []
-        return _macdbb_index
-
-    metas: list[ReportMeta] = []
-    for _, row in frame.iterrows():
-        tick_time = parse_dt(str(row["tick_ts_iso"]))
-        tick_key = str(row["tick_id"])
-        pair = str(row["pair"])
-        interval = str(row["interval"])
-        metas.append(
-            ReportMeta(
-                report_id=f"{tick_key}:{pair}:{interval}",
-                filename=f"snapshot://macdbb/{tick_key}/{pair}/{interval}",
-                created_at=tick_time,
-                pair=pair,
-                interval=interval,
-            )
-        )
-    metas.sort(key=lambda item: item.created_at)
-    _macdbb_index = metas
-    _activate_snapshot_dir(root)
-    return metas
+    _ensure_parsed_macdbb_cache(root)
+    return _macdbb_index or []
 
 
 def nearest_scanner_snapshot(

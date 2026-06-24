@@ -72,6 +72,18 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_CHECKPOINT_EVERY,
         help="Write checkpoint CSV every N configs (0 disables)",
     )
+    sweep.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel config workers (Linux fork; default 1)",
+    )
+    sweep.add_argument(
+        "--worker-ram-gb",
+        type=float,
+        default=2.0,
+        help="Estimated RAM per worker for worker cap (default 2.0)",
+    )
 
     sweep_all = sub.add_parser(
         "sweep-all",
@@ -193,6 +205,8 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         progress_path=progress_path,
         parent_overrides=parent_overrides,
         checkpoint_every=args.checkpoint_every,
+        workers=args.workers,
+        worker_ram_gb=args.worker_ram_gb,
     )
     csv_path = args.output_dir / f"{output_stem}.csv"
     if results:

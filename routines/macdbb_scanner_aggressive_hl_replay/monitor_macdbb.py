@@ -39,6 +39,7 @@ MonitorGap = tuple[str, str, dt.datetime]
 
 _gap_recorder: list[MonitorGap] | None = None
 _inline_compute: bool = True
+_persist_supplement: bool = True
 _write_buffer: list[dict[str, Any]] = []
 
 
@@ -52,6 +53,16 @@ def monitor_report_id(pair: str, tick_time: dt.datetime, interval: str = "1h") -
 
 def inline_compute_enabled() -> bool:
     return _inline_compute
+
+
+def persist_supplement_enabled() -> bool:
+    return _persist_supplement
+
+
+def set_persist_supplement(enabled: bool) -> None:
+    """When False, discard buffered monitor rows instead of writing parquet."""
+    global _persist_supplement
+    _persist_supplement = enabled
 
 
 def set_monitor_gap_recorder(
@@ -201,6 +212,8 @@ def flush_monitor_macdbb_buffer(*, snapshot_dir: Path | str | None = None) -> in
         return 0
     rows = list(_write_buffer)
     _write_buffer = []
+    if not persist_supplement_enabled():
+        return 0
     append_monitor_macdbb_rows(rows, snapshot_dir=snapshot_dir)
     return len(rows)
 

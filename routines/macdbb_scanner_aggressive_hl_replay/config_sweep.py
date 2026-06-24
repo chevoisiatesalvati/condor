@@ -7,7 +7,10 @@ import asyncio
 import csv
 import gc
 import json
+import logging
 import math
+import multiprocessing as mp
+import os
 import random
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -45,6 +48,8 @@ from routines.macdbb_scanner_aggressive_hl_replay.reports import (
 )
 from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
 from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
+
+logger = logging.getLogger(__name__)
 
 # Timeline mega sweep anchor — refine v5 winner (``presets.py``).
 CURRENT_WINNER_PRESET = "hl_dynamic_timeline_refine_v5_winner_binance_1y"
@@ -291,6 +296,149 @@ class SweepResult:
     tp_saturation_pct: float = 0.0
     dynamic_mode: str = ""
     snapshot_dir: str = ""
+
+
+@dataclass
+class SweepRunContext:
+    dynamic_mode: str
+    parsed_sessions: dict[int, dict[int, Any]]
+    hl_caches_by_session: dict[int, dict[tuple[str, int], float]]
+    hl_candle_cache: dict[str, list[dict[str, float]]]
+    hl_barrier_candle_cache: dict[str, list[dict[str, float]]]
+    hl_vol_candle_cache: dict[str, list[dict[str, float]]]
+    reports_by_pair: dict[str, list[ReportMeta]]
+    parent_overrides: dict[str, Any] | None
+    benchmark_avg_notional: float
+
+
+_SWEEP_CTX: SweepRunContext | None = None
+
+
+def _available_ram_gb() -> float:
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    kb = int(line.split()[1])
+                    return kb / (1024 * 1024)
+    except OSError:
+        pass
+    return float(os.cpu_count() or 1) * 2.0
+
+
+def resolve_sweep_workers(
+    requested: int,
+    *,
+    worker_ram_gb: float = 2.0,
+    allow_non_fork: bool = False,
+) -> int:
+    """Resolve worker count capped by CPU and available RAM."""
+    if requested <= 1:
+        return 1
+    start_method = mp.get_start_method(allow_none=True)
+    if start_method not in (None, "fork") and not allow_non_fork:
+        logger.warning(
+            "Parallel sweep requires fork start method (got %s); using workers=1",
+            start_method,
+        )
+        return 1
+    cpu = os.cpu_count() or 1
+    ram_cap = max(1, int(_available_ram_gb() // max(worker_ram_gb, 0.5)))
+    resolved = max(1, min(requested, cpu, ram_cap))
+    if resolved < requested:
+        logger.info(
+            "Capped sweep workers from %d to %d (cpu=%d ram_cap=%d)",
+            requested,
+            resolved,
+            cpu,
+            ram_cap,
+        )
+    return resolved
+
+
+def _parallel_sweep_worker(item: tuple[str, dict[str, Any]]) -> SweepResult:
+    ctx = _SWEEP_CTX
+    if ctx is None:
+        raise RuntimeError("Sweep worker context not initialized")
+    name, overrides = item
+    result = _run_dynamic_config(
+        name,
+        overrides,
+        ctx.dynamic_mode,
+        ctx.parsed_sessions,
+        ctx.hl_caches_by_session,
+        ctx.hl_candle_cache,
+        ctx.hl_barrier_candle_cache,
+        ctx.hl_vol_candle_cache,
+        ctx.reports_by_pair,
+        parent_overrides=ctx.parent_overrides,
+    )
+    return _apply_capital_metrics(result, ctx.benchmark_avg_notional)
+
+
+def run_sweep_config_batch(
+    config_items: list[tuple[str, dict[str, Any]]],
+    ctx: SweepRunContext,
+    *,
+    workers: int = 1,
+    worker_ram_gb: float = 2.0,
+    allow_non_fork: bool = False,
+    on_result: Callable[[int, SweepResult], None] | None = None,
+) -> list[SweepResult]:
+    """Run sweep configs sequentially or in a fork-based process pool."""
+    resolved_workers = resolve_sweep_workers(
+        workers,
+        worker_ram_gb=worker_ram_gb,
+        allow_non_fork=allow_non_fork,
+    )
+    if resolved_workers <= 1:
+        results: list[SweepResult] = []
+        for index, (name, overrides) in enumerate(config_items):
+            result = _run_dynamic_config(
+                name,
+                overrides,
+                ctx.dynamic_mode,
+                ctx.parsed_sessions,
+                ctx.hl_caches_by_session,
+                ctx.hl_candle_cache,
+                ctx.hl_barrier_candle_cache,
+                ctx.hl_vol_candle_cache,
+                ctx.reports_by_pair,
+                parent_overrides=ctx.parent_overrides,
+            )
+            result = _apply_capital_metrics(result, ctx.benchmark_avg_notional)
+            results.append(result)
+            if on_result is not None:
+                on_result(index + 1, result)
+        return results
+
+    global _SWEEP_CTX
+    _SWEEP_CTX = ctx
+    results = []
+    completed = 0
+    from routines.macdbb_scanner_aggressive_hl_replay import monitor_macdbb
+
+    prior_persist = monitor_macdbb.persist_supplement_enabled()
+    prior_inline = monitor_macdbb.inline_compute_enabled()
+    monitor_macdbb.set_persist_supplement(False)
+    monitor_macdbb.set_monitor_gap_recorder(None, inline_compute=False)
+    try:
+        pool_ctx = mp.get_context("fork")
+        with pool_ctx.Pool(processes=resolved_workers) as pool:
+            for result in pool.imap_unordered(
+                _parallel_sweep_worker,
+                config_items,
+                chunksize=1,
+            ):
+                completed += 1
+                results.append(result)
+                if on_result is not None:
+                    on_result(completed, result)
+    finally:
+        monitor_macdbb.set_persist_supplement(prior_persist)
+        monitor_macdbb.set_monitor_gap_recorder(None, inline_compute=prior_inline)
+        _SWEEP_CTX = None
+    return results
 
 
 def _merge(base: dict[str, Any], **overrides: Any) -> dict[str, Any]:
@@ -931,6 +1079,9 @@ async def run_dynamic_sweep(
     write_json: bool = False,
     rank_by_normalized: bool = True,
     config_builder: Callable[[], list[tuple[str, dict[str, Any]]]] | None = None,
+    workers: int = 1,
+    worker_ram_gb: float = 2.0,
+    allow_non_fork: bool = False,
 ) -> tuple[list[SweepResult], str, float]:
     load_config = DynamicStrategyReplayConfig(**_dynamic_sweep_base(dynamic_mode))
     configure_replay_data_sources(load_config)
@@ -960,22 +1111,31 @@ async def run_dynamic_sweep(
     else:
         config_iter = iter(config_builder())
 
-    results: list[SweepResult] = []
-    for index, (name, overrides) in enumerate(config_iter):
-        result = _run_dynamic_config(
-            name,
-            overrides,
-            dynamic_mode,
-            parsed_sessions,
-            hl_caches,
-            hl_candle_cache,
-            hl_barrier_candle_cache,
-            hl_vol_candle_cache,
-            reports_by_pair,
-        )
-        results.append(_apply_capital_metrics(result, benchmark_avg_notional))
-        if gc_every and (index + 1) % gc_every == 0:
+    config_items = list(config_iter)
+    sweep_ctx = SweepRunContext(
+        dynamic_mode=dynamic_mode,
+        parsed_sessions=parsed_sessions,
+        hl_caches_by_session=hl_caches,
+        hl_candle_cache=hl_candle_cache,
+        hl_barrier_candle_cache=hl_barrier_candle_cache,
+        hl_vol_candle_cache=hl_vol_candle_cache,
+        reports_by_pair=reports_by_pair,
+        parent_overrides=None,
+        benchmark_avg_notional=benchmark_avg_notional,
+    )
+
+    def _on_result(done: int, _result: SweepResult) -> None:
+        if gc_every and done % gc_every == 0:
             gc.collect()
+
+    results = run_sweep_config_batch(
+        config_items,
+        sweep_ctx,
+        workers=workers,
+        worker_ram_gb=worker_ram_gb,
+        allow_non_fork=allow_non_fork,
+        on_result=_on_result if gc_every else None,
+    )
 
     sort_key = (
         (lambda row: row.capital_normalized_pnl)
@@ -1089,6 +1249,18 @@ def main() -> None:
         default=Path("data/strategy_replay_sweeps"),
         help="Directory for CSV/JSON sweep output",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel config workers (Linux fork; default 1)",
+    )
+    parser.add_argument(
+        "--worker-ram-gb",
+        type=float,
+        default=2.0,
+        help="Estimated RAM per worker for worker cap (default 2.0)",
+    )
     args = parser.parse_args()
 
     if args.all_dynamic_modes:
@@ -1106,6 +1278,8 @@ def main() -> None:
                     gc_every=25,
                     write_json=False,
                     rank_by_normalized=True,
+                    workers=args.workers,
+                    worker_ram_gb=args.worker_ram_gb,
                 )
             )
             output_file = args.output_dir / f"{stem}.csv"
@@ -1158,6 +1332,8 @@ def main() -> None:
             gc_every=25,
             write_json=False,
             rank_by_normalized=True,
+            workers=args.workers,
+            worker_ram_gb=args.worker_ram_gb,
         )
     )
     output_file = args.output_dir / f"{stem}.csv"

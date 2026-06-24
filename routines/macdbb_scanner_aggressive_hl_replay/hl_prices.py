@@ -310,11 +310,16 @@ def scan_barriers_between(
         for candle in candles
         if "timestamp_ms" in candle and start_ms < int(candle["timestamp_ms"]) <= end_ms
     ]
+    if not window:
+        return None
     window.sort(key=lambda candle: int(candle["timestamp_ms"]))
 
-    for candle in window:
-        low = float(candle["low"])
-        high = float(candle["high"])
+    lows = np.array([float(candle["low"]) for candle in window], dtype=float)
+    highs = np.array([float(candle["high"]) for candle in window], dtype=float)
+
+    for index in range(len(window)):
+        low = lows[index]
+        high = highs[index]
         if side == "long":
             if low <= sl_price:
                 return ("stop_loss_close_proxy", sl_price)

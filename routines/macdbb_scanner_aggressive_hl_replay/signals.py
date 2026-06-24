@@ -120,11 +120,19 @@ def _resolve_4h_filter(
     tick_time: dt.datetime,
     time_window_min: int,
     config: ReplayConfigBase,
+    filter_cache: dict[tuple[str, int], tuple[bool | None, str | None]] | None = None,
 ) -> tuple[bool | None, str | None]:
+    cache_key = (pair, meta.tick)
+    if filter_cache is not None and cache_key in filter_cache:
+        return filter_cache[cache_key]
+
     if not is_report_driven_data_source(config.data_source):
         journal_filter = meta.filter_4h.get(pair)
         if journal_filter is not None:
-            return journal_filter.passed, journal_filter.trend
+            result = (journal_filter.passed, journal_filter.trend)
+            if filter_cache is not None:
+                filter_cache[cache_key] = result
+            return result
 
     report_meta = nearest_report(
         reports_by_pair,
@@ -134,11 +142,20 @@ def _resolve_4h_filter(
         interval="4h",
     )
     if report_meta is None:
-        return None, None
+        result = (None, None)
+        if filter_cache is not None:
+            filter_cache[cache_key] = result
+        return result
     parsed = load_parsed_report(report_meta)
     if parsed is None:
-        return None, None
-    return True, parsed.trend
+        result = (None, None)
+        if filter_cache is not None:
+            filter_cache[cache_key] = result
+        return result
+    result = (True, parsed.trend)
+    if filter_cache is not None:
+        filter_cache[cache_key] = result
+    return result
 
 
 def filter_4h_allows(side: str, trend: str | None, passed: bool | None) -> bool:
@@ -160,6 +177,7 @@ def resolve_snapshot(
     hl_price_cache: HlPriceCache | None = None,
     last_signal_by_pair: dict[str, JournalSignal1h] | None = None,
     monitor_pair: bool = False,
+    filter_4h_cache: dict[tuple[str, int], tuple[bool | None, str | None]] | None = None,
 ) -> SignalSnapshot | None:
     report_meta_1h = nearest_report(
         reports_by_pair,
@@ -324,6 +342,7 @@ def resolve_snapshot(
         meta.timestamp,
         config.time_window_min,
         config,
+        filter_cache=filter_4h_cache,
     )
 
     return SignalSnapshot(
@@ -360,6 +379,7 @@ def build_tick_snapshots(
     extra_pairs: list[str] | None = None,
     hl_price_cache: HlPriceCache | None = None,
     last_signal_by_pair: dict[str, JournalSignal1h] | None = None,
+    filter_4h_cache: dict[tuple[str, int], tuple[bool | None, str | None]] | None = None,
 ) -> dict[str, SignalSnapshot]:
     pairs = list(meta.macd_pairs)
     if meta.queue_total:
@@ -391,6 +411,7 @@ def build_tick_snapshots(
             hl_price_cache=hl_price_cache,
             last_signal_by_pair=last_signal_by_pair,
             monitor_pair=pair in monitor_pairs,
+            filter_4h_cache=filter_4h_cache,
         )
         if snapshot is not None:
             snapshots[pair] = snapshot
