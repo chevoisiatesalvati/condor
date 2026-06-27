@@ -225,7 +225,6 @@ STAGED_PHASE_MODES: dict[str, str] = {
     "C": "both_on",
 }
 
-REFINE_SWEEP_VERSION = "v5_winner"
 REFINE_DYNAMIC_MODE = "both_on"
 
 REFINE_STAGED_PHASES: tuple[str, ...] = ("A", "B", "C", "D")

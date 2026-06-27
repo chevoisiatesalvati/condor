@@ -15,7 +15,6 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     MEGA_SWEEP_MIN_CONFIGS_BY_MODE,
     REFINE_MIN_CONFIGS_BY_PHASE,
     REFINE_PHASE_A_GRID,
-    REFINE_SWEEP_VERSION,
     SWEEP_GRID_CHOICES,
     _barriers_saturated_at_median_vol,
     _dynamic_grid_for_mode,
@@ -227,11 +226,22 @@ def test_refine_v5_winner_preset_matches_current_winner_base():
 
 
 def test_refine_sweep_defaults_and_grids():
-    assert REFINE_SWEEP_VERSION == "v5_winner"
     assert default_min_configs_for_refine_phase("A") == REFINE_MIN_CONFIGS_BY_PHASE["A"]
     assert sum(REFINE_MIN_CONFIGS_BY_PHASE[p] for p in "ABCD") == 500
     assert "sl_min_pct" in REFINE_PHASE_A_GRID
     assert "max_conviction_mult" not in REFINE_PHASE_A_GRID
+
+
+def test_refine_output_slug_from_preset():
+    from scripts.run_refine_sweep import refine_output_slug
+
+    assert (
+        refine_output_slug(
+            "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_mid_thesis_binance_1y"
+        )
+        == "v6_entry_sltp_sl38_tpmin10_mid_thesis"
+    )
+    assert refine_output_slug("dyn_both_on_entry_sltp_sl3.8_td44") == "entry_sltp_sl3.8_td44"
 
 
 def test_iter_refine_sweep_configs_yields_anchor_and_samples():

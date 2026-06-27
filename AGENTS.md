@@ -131,7 +131,7 @@ Key files for this agent:
 - Live routines: `macdbb_signal_metrics`, `macdbb_entry_policy` (under agent `routines/`)
 - Global routines used at tick time: `hyperliquid_market_scanner`, `macd_bb_analysis`
 - Replay library: `routines/macdbb_scanner_aggressive_hl_replay/`
-- Sweep CLI: `scripts/run_timeline_mega_sweep.py`, `scripts/run_staged_mega_sweep_v5.py`
+- Sweep CLI: `scripts/run_timeline_mega_sweep.py`, `scripts/run_staged_mega_sweep_v5.py`, `scripts/run_refine_sweep.py`
 
 Replay modes (`DynamicStrategyReplayConfig.replay_mode`):
 
