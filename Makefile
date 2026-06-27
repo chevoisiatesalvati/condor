@@ -58,7 +58,9 @@ dev-frontend:
 	@bash -c ' \
 		export NVM_DIR="$$HOME/.nvm"; \
 		[ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh"; \
-		cd frontend && npm run dev \
+		cd frontend && \
+		if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm install; fi && \
+		npm run dev \
 	'
 
 dev:

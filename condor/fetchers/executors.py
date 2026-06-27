@@ -75,6 +75,43 @@ def get_executor_fees(executor: Dict[str, Any]) -> float:
     return 0.0
 
 
+def _positive_float(value: Any) -> float | None:
+    try:
+        price = float(value or 0)
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
+def get_executor_entry_price(executor: Dict[str, Any]) -> float:
+    """Resolve entry/average fill price from executor API shapes."""
+    config = executor.get("config", executor) if isinstance(executor.get("config"), dict) else executor
+    custom_info = executor.get("custom_info") or {}
+    if not isinstance(custom_info, dict):
+        custom_info = {}
+
+    candidates: list[Any] = [
+        config.get("entry_price"),
+        executor.get("entry_price"),
+        custom_info.get("current_position_average_price"),
+        custom_info.get("buy_breakeven_price"),
+        custom_info.get("breakeven_price"),
+        custom_info.get("break_even_price"),
+    ]
+
+    held_orders = custom_info.get("held_position_orders")
+    if isinstance(held_orders, list):
+        for order in held_orders:
+            if isinstance(order, dict):
+                candidates.append(order.get("price"))
+
+    for candidate in candidates:
+        price = _positive_float(candidate)
+        if price is not None:
+            return price
+    return 0.0
+
+
 # ============================================
 # API FETCHERS
 # ============================================

@@ -55,6 +55,7 @@ def _executor_notional_quote(cfg: dict, entry_price: float) -> float:
 
 def _executor_row(ex: dict) -> dict[str, Any]:
     from condor.fetchers.executors import (
+        get_executor_entry_price,
         get_executor_fees,
         get_executor_pnl,
         get_executor_volume,
@@ -65,14 +66,13 @@ def _executor_row(ex: dict) -> dict[str, Any]:
     if not isinstance(custom_info, dict):
         custom_info = {}
 
-    # entry_price: config > top-level > custom_info (position executors store it there)
-    _cfg_entry = float(cfg.get("entry_price") or 0)
-    _top_entry = float(ex.get("entry_price") or 0)
-    _ci_entry = float(custom_info.get("current_position_average_price") or 0)
-    entry_price = _cfg_entry if _cfg_entry > 0 else (_top_entry if _top_entry > 0 else (_ci_entry if _ci_entry > 0 else 0.0))
-    if entry_price == 0.0:
-        log.warning("entry_price fell back to 0.0 for executor %s — PnL may be wrong",
-                     ex.get("id") or ex.get("executor_id") or "?")
+    entry_price = get_executor_entry_price(ex)
+    status = str(ex.get("status") or "").upper()
+    if entry_price == 0.0 and status in {"RUNNING", "ACTIVE", "ACTIVE_POSITION", "CLOSED", "COMPLETED"}:
+        log.warning(
+            "entry_price fell back to 0.0 for executor %s — PnL may be wrong",
+            ex.get("id") or ex.get("executor_id") or "?",
+        )
 
     notional_quote = _executor_notional_quote(cfg, entry_price)
 

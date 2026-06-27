@@ -17,6 +17,7 @@ from condor.fetchers.executors import (
     get_executor_volume,
     get_executor_type,
     get_executor_fees,
+    get_executor_entry_price,
     MAX_EXECUTORS_FETCH,
 )
 
@@ -41,12 +42,7 @@ def _build_executor_info(ex: dict) -> ExecutorInfo | None:
     config = ex.get("config", ex)
     custom_info = ex.get("custom_info") or {}
 
-    # Entry price: top-level > config > custom_info (position executors store it there)
-    # Use explicit > 0 checks so that a valid 0.0 doesn't skip to the next fallback
-    _cfg_entry = float(config.get("entry_price") or 0)
-    _top_entry = float(ex.get("entry_price") or 0)
-    _ci_entry = float(custom_info.get("current_position_average_price") or 0)
-    entry_price = _cfg_entry if _cfg_entry > 0 else (_top_entry if _top_entry > 0 else (_ci_entry if _ci_entry > 0 else 0.0))
+    entry_price = get_executor_entry_price(ex)
 
     # Current/close price: top-level > custom_info.close_price > held_position_orders fill price
     _top_cur = float(ex.get("current_price") or 0)
