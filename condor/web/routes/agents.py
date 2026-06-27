@@ -170,6 +170,7 @@ class StartAgentRequest(BaseModel):
     agent_key: str = ""  # Optional session override; empty = use strategy default
     chat_id: int = 0  # Telegram chat for MCP send_notification / TickEngine alerts (0 = use user id below)
     user_id: int | None = None  # Override user_id (for internal/MCP calls)
+    session_num: int | None = None  # Resume an existing session instead of creating a new one
 
 
 class AgentDefaultsResponse(BaseModel):
@@ -1062,26 +1063,59 @@ async def get_session_executors(
 async def start_agent(
     slug: str, req: StartAgentRequest, user: WebUser = Depends(get_current_user)
 ):
-    """Start an agent (creates new session)."""
-    from condor.trading_agent.config import load_full_config, resolve_session_overrides
-    from condor.trading_agent.engine import TickEngine
+    """Start an agent (new session) or resume an existing session."""
+    from condor.trading_agent.config import (
+        load_full_config,
+        load_session_config,
+        resolve_session_overrides,
+    )
+    from condor.trading_agent.engine import (
+        EngineAlreadyRunningError,
+        TickEngine,
+        get_engine,
+        start_engine,
+        stop_engine_by_id,
+    )
 
     strategy = _get_strategy_by_slug(slug)
 
-    # Load config (merge request overrides)
-    config_dict = load_full_config(strategy.agent_dir, strategy.default_config)
-    config_dict = _merge_config_strategy_params(strategy.slug, config_dict)
+    resume_session_num: int | None = None
+    if req.session_num is not None:
+        session_dir = _get_session_dir(strategy.agent_dir, req.session_num)
+        if not session_dir:
+            raise HTTPException(
+                status_code=404, detail=f"Session {req.session_num} not found"
+            )
+        session_config = load_session_config(session_dir)
+        if not session_config:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Session {req.session_num} has no config.yml",
+            )
+        agent_id = f"{slug}_{req.session_num}"
+        existing = get_engine(agent_id)
+        if existing and (existing.is_running or existing.is_active):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session {req.session_num} is already running",
+            )
+        config_dict = session_config
+        resume_session_num = req.session_num
+    else:
+        # Load config (merge request overrides)
+        config_dict = load_full_config(strategy.agent_dir, strategy.default_config)
+        config_dict = _merge_config_strategy_params(strategy.slug, config_dict)
 
-    from condor.trading_agent.agent_presets import apply_agent_strategy_preset
+        from condor.trading_agent.agent_presets import apply_agent_strategy_preset
 
-    preset = "custom"
-    if req.config:
-        preset = str(req.config.get("strategy_preset") or preset)
-    config_dict["strategy_preset"] = preset
-    config_dict = apply_agent_strategy_preset(strategy.slug, config_dict, preset=preset)
-    if req.config:
-        config_dict = _deep_merge_strategy_params(config_dict, req.config)
-    config_dict = _merge_config_strategy_params(strategy.slug, config_dict)
+        preset = "custom"
+        if req.config:
+            preset = str(req.config.get("strategy_preset") or preset)
+        config_dict["strategy_preset"] = preset
+        config_dict = apply_agent_strategy_preset(strategy.slug, config_dict, preset=preset)
+        if req.config:
+            config_dict = _deep_merge_strategy_params(config_dict, req.config)
+        config_dict = _merge_config_strategy_params(strategy.slug, config_dict)
 
     config_dict = resolve_session_overrides(
         config_dict,
@@ -1098,8 +1132,12 @@ async def start_agent(
         config=config_dict,
         chat_id=notify_chat_id,
         user_id=req.user_id or user.id,
+        resume_session_num=resume_session_num,
     )
-    await new_engine.start()
+    try:
+        await start_engine(new_engine)
+    except EngineAlreadyRunningError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return {
         "started": True,
@@ -1114,18 +1152,19 @@ async def stop_agent(
 ):
     """Stop a running agent. If agent_id given, stop that specific instance; otherwise stop all."""
     if agent_id:
-        from condor.trading_agent.engine import get_engine
+        from condor.trading_agent.engine import stop_engine_by_id
 
-        engine = get_engine(agent_id)
-        if not engine:
+        stopped = await stop_engine_by_id(agent_id)
+        if not stopped:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
-        await engine.stop()
     else:
         engines = _get_engines_for_slug(slug)
         if not engines:
             raise HTTPException(status_code=404, detail="No running agent found")
-        for engine in engines:
-            await engine.stop()
+        from condor.trading_agent.engine import stop_engine_by_id
+
+        for engine in list(engines):
+            await stop_engine_by_id(engine.agent_id)
     return {"stopped": True}
 
 

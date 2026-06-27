@@ -114,6 +114,7 @@ export function SessionExecutors({
   controllerIds,
   onSnapshotClick,
   sessionSummary,
+  liveSessionStatus,
 }: {
   slug: string;
   sessionNum: number;
@@ -121,6 +122,7 @@ export function SessionExecutors({
   controllerIds?: string[];
   onSnapshotClick?: (tick: number) => void;
   sessionSummary?: { status: string; lastTick: number; lastAction: string };
+  liveSessionStatus?: string;
 }) {
   // REST data (fallback + historical executors)
   const { data: sessionDetail } = useQuery({
@@ -131,7 +133,7 @@ export function SessionExecutors({
 
   const restExecutors = sessionDetail?.executors ?? [];
 
-  // WS-backed live executors (if controller IDs provided)
+  // WS-backed live executors (only for the selected session when it is live)
   const { executors: wsExecutors } = useAgentExecutors(
     controllerIds?.length ? serverName : null,
     controllerIds || [],
@@ -150,6 +152,8 @@ export function SessionExecutors({
     }
     return merged;
   }, [restExecutors, wsExecutors]);
+
+  const displaySessionStatus = liveSessionStatus ?? sessionSummary?.status ?? "idle";
 
   // Currency conversion
   const quoteCurrencies = useMemo(
@@ -298,13 +302,13 @@ export function SessionExecutors({
           <div>
             <span className="block text-[9px] uppercase tracking-wider text-[var(--color-text-muted)]">Status</span>
             <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${
-              sessionSummary.status === "ACTIVE" || sessionSummary.status === "running"
+              displaySessionStatus === "ACTIVE" || displaySessionStatus === "running" || displaySessionStatus === "Running"
                 ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                : sessionSummary.status === "paused"
+                : displaySessionStatus === "paused"
                   ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
                   : "border-[var(--color-border)] bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]"
             }`}>
-              {sessionSummary.status || "idle"}
+              {displaySessionStatus}
             </span>
           </div>
         )}

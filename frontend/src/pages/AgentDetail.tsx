@@ -255,7 +255,7 @@ export function AgentDetail() {
           </h3>
           <div className="space-y-3">
             {instances.map((inst) => (
-              <InstanceCard key={inst.agent_id} instance={inst} />
+              <InstanceCard key={inst.agent_id} instance={inst} slug={slug!} />
             ))}
           </div>
         </div>
@@ -378,6 +378,7 @@ export function AgentDetail() {
           serverName={serverName}
           controllerIds={controllerIds}
           allAgents={allAgents}
+          runningInstances={instances}
           onClose={() => setReviewerSessionNum(null)}
           onSwitchAgent={handleSwitchAgent}
         />

@@ -734,6 +734,14 @@ class JournalManager:
         )
         self._replace_section("Summary", summary)
 
+    def mark_stopped(self) -> None:
+        """Mark the session summary as stopped without altering PnL/open counts."""
+        section = self._get_section("Summary")
+        if not section.strip():
+            return
+        updated = re.sub(r"Status:\s*\S+", "Status: Stopped", section)
+        self._replace_section("Summary", updated)
+
     def write_state(self, state_text: str) -> None:
         """Overwrite the Summary section (backwards compat for write via MCP)."""
         if self._get_section("State"):

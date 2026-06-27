@@ -16,7 +16,11 @@ import {
   SessionOverview,
   SessionSnapshots,
 } from "@/components/agent/AgentSessionContent";
-import { type AgentSummary, type ExperimentInfo, type SessionInfo, api } from "@/lib/api";
+import {
+  InstanceLifecycleButtons,
+  ResumeSessionButton,
+} from "@/components/agent/SessionLifecycleActions";
+import { type AgentSummary, type ExperimentInfo, type RunningInstance, type SessionInfo, api } from "@/lib/api";
 import { type ParsedJournal, type ParsedSnapshot, parseJournal, parseSnapshot } from "@/lib/parse-agent";
 
 const SUB_TABS = [
@@ -46,6 +50,7 @@ interface SessionReviewerProps {
   serverName: string;
   controllerIds?: string[];
   allAgents?: AgentSummary[];
+  runningInstances?: RunningInstance[];
   onClose: () => void;
   onSwitchAgent?: (slug: string, sessionNum?: number) => void;
 }
@@ -60,6 +65,7 @@ export function SessionReviewer({
   serverName,
   controllerIds,
   allAgents: _allAgents,
+  runningInstances = [],
   onClose,
   onSwitchAgent: _onSwitchAgent,
 }: SessionReviewerProps) {
@@ -128,6 +134,21 @@ export function SessionReviewer({
     refetchInterval: 10000,
   });
   const sessionPerf = sessionPerfData?.performance ?? null;
+
+  const activeInstance = useMemo(
+    () =>
+      !isExperiment
+        ? runningInstances.find((inst) => inst.session_num === selectedNum)
+        : undefined,
+    [runningInstances, selectedNum, isExperiment],
+  );
+
+  const sessionControllerIds = useMemo(
+    () => (activeInstance ? [activeInstance.agent_id] : []),
+    [activeInstance],
+  );
+
+  const liveSessionStatus = activeInstance?.status ?? "closed";
 
   const currentIdx = sidebarItems.findIndex(
     (s) => s.number === selectedNum && s.kind === selectedKind,
@@ -294,6 +315,12 @@ export function SessionReviewer({
                 ${pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}
               </span>
             )}
+            {!isExperiment && activeInstance && (
+              <InstanceLifecycleButtons slug={slug} instance={activeInstance} size="md" />
+            )}
+            {!isExperiment && !activeInstance && (
+              <ResumeSessionButton slug={slug} sessionNum={selectedNum} size="md" />
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -390,9 +417,10 @@ export function SessionReviewer({
                       slug={slug}
                       sessionNum={selectedNum}
                       serverName={serverName}
-                      controllerIds={controllerIds}
+                      controllerIds={sessionControllerIds}
                       onSnapshotClick={handleSnapshotClick}
                       sessionSummary={parsedJournal.summary}
+                      liveSessionStatus={liveSessionStatus}
                     />
                     <SessionOverview journal={parsedJournal} perf={sessionPerf} />
                   </div>

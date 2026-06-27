@@ -155,3 +155,15 @@ def save_full_config(agent_dir: Path, config: dict[str, Any]) -> None:
     config_path = agent_dir / "config.yml"
     agent_dir.mkdir(parents=True, exist_ok=True)
     config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+
+
+def load_session_config(session_dir: Path) -> dict[str, Any] | None:
+    """Load frozen config from an existing session directory."""
+    config_path = session_dir / "config.yml"
+    if not config_path.exists():
+        return None
+    try:
+        data = yaml.safe_load(config_path.read_text()) or {}
+        return dict(data) if isinstance(data, dict) else None
+    except Exception:
+        return None

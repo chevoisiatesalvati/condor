@@ -1011,26 +1011,38 @@ export const api = {
     config: Record<string, unknown> = {},
     trading_context = "",
     agent_key = "",
+    sessionNum?: number,
   ) =>
-    apiFetch<{ started: boolean; agent_id: string }>(
+    apiFetch<{ started: boolean; agent_id: string; session_num: number }>(
       `/api/v1/agents/${slug}/start`,
-      { method: "POST", body: JSON.stringify({ config, trading_context, agent_key }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          config,
+          trading_context,
+          agent_key,
+          session_num: sessionNum ?? undefined,
+        }),
+      },
     ),
 
-  stopAgent: (slug: string) =>
-    apiFetch<{ stopped: boolean }>(`/api/v1/agents/${slug}/stop`, {
-      method: "POST",
-    }),
+  stopAgent: (slug: string, agentId?: string) =>
+    apiFetch<{ stopped: boolean }>(
+      `/api/v1/agents/${slug}/stop${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ""}`,
+      { method: "POST" },
+    ),
 
-  pauseAgent: (slug: string) =>
-    apiFetch<{ paused: boolean }>(`/api/v1/agents/${slug}/pause`, {
-      method: "POST",
-    }),
+  pauseAgent: (slug: string, agentId?: string) =>
+    apiFetch<{ paused: boolean }>(
+      `/api/v1/agents/${slug}/pause${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ""}`,
+      { method: "POST" },
+    ),
 
-  resumeAgent: (slug: string) =>
-    apiFetch<{ resumed: boolean }>(`/api/v1/agents/${slug}/resume`, {
-      method: "POST",
-    }),
+  resumeAgent: (slug: string, agentId?: string) =>
+    apiFetch<{ resumed: boolean }>(
+      `/api/v1/agents/${slug}/resume${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ""}`,
+      { method: "POST" },
+    ),
 
   getAgentLearnings: (slug: string) =>
     apiFetch<{ content: string }>(`/api/v1/agents/${slug}/learnings`),

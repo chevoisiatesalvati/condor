@@ -197,6 +197,41 @@ async def _notify_via_telegram_bot_api(chat_id: int, text: str) -> None:
 
 # Module-level registry of running engines
 _engines: dict[str, "TickEngine"] = {}
+_lifecycle_locks: dict[str, asyncio.Lock] = {}
+
+def _lifecycle_lock(agent_id: str) -> asyncio.Lock:
+    lock = _lifecycle_locks.get(agent_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _lifecycle_locks[agent_id] = lock
+    return lock
+
+
+class EngineAlreadyRunningError(RuntimeError):
+    """Raised when a lifecycle start/resume races an active engine."""
+
+
+async def start_engine(engine: "TickEngine") -> None:
+    """Start an engine under per-agent lock; stop any stale registry entry first."""
+    async with _lifecycle_lock(engine.agent_id):
+        existing = get_engine(engine.agent_id)
+        if existing is not None and existing is not engine:
+            if existing.is_running or existing.is_active:
+                raise EngineAlreadyRunningError(
+                    f"Agent '{engine.agent_id}' is already running"
+                )
+            await existing.stop()
+        await engine.start()
+
+
+async def stop_engine_by_id(agent_id: str) -> bool:
+    """Stop a registered engine under per-agent lock."""
+    async with _lifecycle_lock(agent_id):
+        engine = get_engine(agent_id)
+        if not engine:
+            return False
+        await engine.stop()
+        return True
 
 
 class _NullTracker:
@@ -220,6 +255,7 @@ class TickEngine:
     config: dict[str, Any]
     chat_id: int
     user_id: int
+    resume_session_num: int | None = field(default=None)
 
     # Derived identity (set in __post_init__)
     agent_id: str = field(init=False)
@@ -258,14 +294,23 @@ class TickEngine:
             self.session_dir = None
             self.journal = None
         else:
-            self.session_num = next_session_number(agent_dir)
-            self.agent_id = f"{self.strategy.slug}_{self.session_num}"
-            self.session_dir = agent_dir / "sessions" / f"session_{self.session_num}"
-            self.session_dir.mkdir(parents=True, exist_ok=True)
+            if self.resume_session_num is not None:
+                self.session_num = self.resume_session_num
+                self.agent_id = f"{self.strategy.slug}_{self.session_num}"
+                self.session_dir = agent_dir / "sessions" / f"session_{self.session_num}"
+                if not self.session_dir.is_dir():
+                    raise FileNotFoundError(
+                        f"Session {self.session_num} not found for {self.strategy.slug}"
+                    )
+            else:
+                self.session_num = next_session_number(agent_dir)
+                self.agent_id = f"{self.strategy.slug}_{self.session_num}"
+                self.session_dir = agent_dir / "sessions" / f"session_{self.session_num}"
+                self.session_dir.mkdir(parents=True, exist_ok=True)
 
-            # Save config per session
-            from .config import save_full_config
-            save_full_config(self.session_dir, self.config)
+                from .config import save_full_config
+
+                save_full_config(self.session_dir, self.config)
 
             self.journal = JournalManager(
                 self.agent_id,
@@ -288,8 +333,8 @@ class TickEngine:
             return
         self._running = True
         self._bot = bot
-        self._task = asyncio.create_task(self._loop())
         _engines[self.agent_id] = self
+        self._task = asyncio.create_task(self._loop())
         log.info("TickEngine %s started (freq=%ss)", self.agent_id, self.config.get("frequency_sec", 60))
 
     async def stop(self) -> None:
@@ -302,6 +347,10 @@ class TickEngine:
             except asyncio.CancelledError:
                 pass
         if self.journal:
+            try:
+                self.journal.mark_stopped()
+            except Exception:
+                log.warning("TickEngine %s: failed to write stopped summary", self.agent_id)
             self.journal.close()
         _engines.pop(self.agent_id, None)
         log.info("TickEngine %s stopped", self.agent_id)
@@ -320,6 +369,10 @@ class TickEngine:
     @property
     def is_running(self) -> bool:
         return self._running and self._task is not None and not self._task.done()
+
+    @property
+    def is_active(self) -> bool:
+        return self._task is not None and not self._task.done()
 
     @property
     def is_paused(self) -> bool:
@@ -557,6 +610,12 @@ class TickEngine:
                 self.agent_id, self.session_num, len(tool_calls), len(response_text),
             )
         else:
+            if not self._running:
+                log.info(
+                    "TickEngine %s: skipping journal persist for tick (engine stopped)",
+                    self.agent_id,
+                )
+                return
             # Sessions: full journal tracking
             tick_num = self.journal.record_tick(
                 response_summary=response_text,
