@@ -63,11 +63,14 @@ def _coerce_trade_side_inplace(cfg: dict[str, Any], executor_type: str) -> bool:
 
 def _position_executor_positive_amount_issue(cfg: dict[str, Any]) -> str | None:
     """position_executor sizes in BASE units; zero/missing amount often yields exchange-side failures."""
+    if _extract_target_notional_usd(cfg) is not None:
+        return None
+
     raw = cfg.get("amount")
     if raw is None:
         return (
-            "position_executor requires positive `amount` in **base** units (e.g. BTC for BTC-USD), "
-            "not USD. Convert: amount ≈ usd_notional / spot_price. Fetch a price/mark first if needed."
+            "position_executor requires `notional_usd` (recommended — Condor converts to base `amount`) "
+            "or positive `amount` in **base** units (e.g. BTC for BTC-USD), not USD."
         )
     try:
         size = float(raw)
@@ -605,33 +608,7 @@ async def manage_executors(client: Any, request: ManageExecutorsRequest) -> dict
                     ),
                 }
 
-            sizing_issue = _position_executor_positive_amount_issue(merged_config)
-            if sizing_issue:
-                return {
-                    "action": "create",
-                    "error": sizing_issue,
-                    "formatted_output": f"Error: {sizing_issue}",
-                }
-
-        # Validate config fields against backend schema before sending
-        try:
-            schema = await client.executors.get_executor_config_schema(executor_type)
-            validation_errors = validate_executor_config(merged_config, schema)
-            if validation_errors:
-                error_list = "\n".join(f"  - {e}" for e in validation_errors)
-                return {
-                    "action": "create",
-                    "error": f"Invalid executor configuration:\n{error_list}",
-                    "formatted_output": (
-                        f"Error: Invalid configuration for {executor_type}:\n\n"
-                        f"{error_list}\n\n"
-                        f"Please fix the fields above and try again."
-                    ),
-                }
-        except Exception:
-            pass  # If schema fetch fails, skip validation
-
-        # Validate and normalize trading pair format before creating executor.
+        # Validate and normalize trading pair format before sizing / create.
         # This is especially important for Hyperliquid HIP3 symbols (issuer:symbol-QUOTE).
         pair_normalization_note = ""
         connector_name = merged_config.get("connector_name")
@@ -689,6 +666,31 @@ async def manage_executors(client: Any, request: ManageExecutorsRequest) -> dict
                     "error": amt_err,
                     "formatted_output": f"Error: {amt_err}",
                 }
+            sizing_issue = _position_executor_positive_amount_issue(merged_config)
+            if sizing_issue:
+                return {
+                    "action": "create",
+                    "error": sizing_issue,
+                    "formatted_output": f"Error: {sizing_issue}",
+                }
+
+        # Validate config fields against backend schema before sending
+        try:
+            schema = await client.executors.get_executor_config_schema(executor_type)
+            validation_errors = validate_executor_config(merged_config, schema)
+            if validation_errors:
+                error_list = "\n".join(f"  - {e}" for e in validation_errors)
+                return {
+                    "action": "create",
+                    "error": f"Invalid executor configuration:\n{error_list}",
+                    "formatted_output": (
+                        f"Error: Invalid configuration for {executor_type}:\n\n"
+                        f"{error_list}\n\n"
+                        f"Please fix the fields above and try again."
+                    ),
+                }
+        except Exception:
+            pass  # If schema fetch fails, skip validation
 
         account = request.account_name or "master_account"
         # Check both top-level param and executor_config (agents sometimes put it in the wrong place)

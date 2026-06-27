@@ -129,7 +129,7 @@ function CreateAgentDialog({
 
   const createMutation = useMutation({
     mutationFn: () =>
-      api.createAgent({ name, description, default_trading_context: defaultContext }),
+      api.createAgent({ name, description, trading_context: defaultContext }),
     onSuccess: (agent) => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
       onClose();

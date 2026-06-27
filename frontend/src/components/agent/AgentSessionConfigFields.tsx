@@ -209,14 +209,16 @@ export function ModelFields({
   modelBaseUrl,
   onAgentKeyChange,
   onModelBaseUrlChange,
+  showModelBaseUrl = true,
 }: {
   agentKey: string;
   modelBaseUrl: string;
   onAgentKeyChange: (value: string) => void;
   onModelBaseUrlChange: (value: string) => void;
+  showModelBaseUrl?: boolean;
 }) {
   return (
-    <div className="grid gap-4 sm:grid-cols-2">
+    <div className={`grid gap-4 ${showModelBaseUrl ? "sm:grid-cols-2" : ""}`}>
       <div>
         <label className={labelClass}>Model</label>
         <input
@@ -227,16 +229,18 @@ export function ModelFields({
           className={inputClass}
         />
       </div>
-      <div>
-        <label className={labelClass}>Model base URL</label>
-        <input
-          type="text"
-          value={modelBaseUrl}
-          onChange={(e) => onModelBaseUrlChange(e.target.value)}
-          placeholder="Optional OpenAI-compatible endpoint"
-          className={inputClass}
-        />
-      </div>
+      {showModelBaseUrl && (
+        <div>
+          <label className={labelClass}>Model base URL</label>
+          <input
+            type="text"
+            value={modelBaseUrl}
+            onChange={(e) => onModelBaseUrlChange(e.target.value)}
+            placeholder="Optional OpenAI-compatible endpoint"
+            className={inputClass}
+          />
+        </div>
+      )}
     </div>
   );
 }

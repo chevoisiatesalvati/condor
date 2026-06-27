@@ -57,7 +57,9 @@ class ExecutorsProvider(BaseProvider):
             f"Volume: ${perf.volume:,.0f}"
         )
 
-        total_exposure = sum(r.get("amount", 0) for r in running)
+        total_exposure = sum(
+            r.get("notional_quote", r.get("amount", 0)) for r in running
+        )
 
         return ProviderResult(
             name=self.name,

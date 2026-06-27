@@ -27,12 +27,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "black", "isort", "pre-commit"]
+dev = ["pytest", "pytest-asyncio", "black==23.12.0", "isort==5.13.2", "pre-commit"]
 
 [tool.isort]
 profile = "black"
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 markers = [
     "integration: live Telegram API tests (set RUN_TELEGRAM_INTEGRATION=1)",
+    "slow: long-running replay/backtest parity checks",
 ]

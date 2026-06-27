@@ -73,17 +73,32 @@ def _render_frontmatter(meta: dict, body: str) -> str:
 def _load_strategy_from_file(path: Path, fallback_id: str = "") -> Strategy | None:
     """Load a Strategy from an agent.md file."""
     try:
+        from condor.trading_agent.config import strip_session_overrides
+
         text = path.read_text()
         meta, body = _parse_frontmatter(text)
+        raw_default_config = meta.get("default_config", {}) or {}
+        # Legacy: nested default_config keys before single-source frontmatter cleanup.
+        agent_key = (
+            meta.get("agent_key")
+            or raw_default_config.get("agent_key")
+            or "claude-code"
+        )
+        trading_context = (
+            meta.get("trading_context")
+            or meta.get("default_trading_context")
+            or raw_default_config.get("trading_context")
+            or ""
+        )
         return Strategy(
             id=meta.get("id", fallback_id),
             name=meta.get("name", ""),
             description=meta.get("description", ""),
-            agent_key=meta.get("agent_key", "claude-code"),
+            agent_key=agent_key,
             instructions=body,
             skills=meta.get("skills", []),
-            default_config=meta.get("default_config", {}),
-            default_trading_context=meta.get("default_trading_context", ""),
+            default_config=strip_session_overrides(raw_default_config),
+            trading_context=trading_context,
             created_by=meta.get("created_by", 0),
             created_at=meta.get("created_at", ""),
         )
@@ -101,7 +116,7 @@ class Strategy:
     instructions: str  # The strategy logic text for the LLM
     skills: list[str] = field(default_factory=list)  # Optional skill names
     default_config: dict[str, Any] = field(default_factory=dict)
-    default_trading_context: str = ""  # Default natural language trading context for new sessions
+    trading_context: str = ""  # Natural language trading context default for new sessions
     created_by: int = 0  # user_id
     created_at: str = ""  # ISO timestamp
 
@@ -181,7 +196,7 @@ class StrategyStore:
         instructions: str,
         skills: list[str] | None = None,
         default_config: dict | None = None,
-        default_trading_context: str = "",
+        trading_context: str = "",
         created_by: int = 0,
     ) -> Strategy:
         strategy = Strategy(
@@ -192,7 +207,7 @@ class StrategyStore:
             instructions=instructions,
             skills=skills or [],
             default_config=default_config or {},
-            default_trading_context=default_trading_context,
+            trading_context=trading_context,
             created_by=created_by,
         )
         self._save(strategy)
@@ -239,7 +254,7 @@ class StrategyStore:
         slug: str,
         *,
         default_config: dict[str, Any] | None = None,
-        default_trading_context: str | None = None,
+        trading_context: str | None = None,
         agent_key: str | None = None,
     ) -> Strategy | None:
         """Merge and persist session defaults in agent.md frontmatter."""
@@ -250,6 +265,8 @@ class StrategyStore:
             return None
 
         if default_config is not None:
+            from condor.trading_agent.config import strip_session_overrides
+
             merged = dict(strategy.default_config)
             for key, value in default_config.items():
                 if key == "risk_limits" and isinstance(value, dict):
@@ -258,10 +275,10 @@ class StrategyStore:
                     merged["risk_limits"] = sanitize_config_dict({"risk_limits": risk})["risk_limits"]
                 else:
                     merged[key] = value
-            strategy.default_config = sanitize_config_dict(merged)
+            strategy.default_config = sanitize_config_dict(strip_session_overrides(merged))
 
-        if default_trading_context is not None:
-            strategy.default_trading_context = default_trading_context
+        if trading_context is not None:
+            strategy.trading_context = trading_context
         if agent_key is not None:
             strategy.agent_key = agent_key
 
@@ -295,7 +312,7 @@ class StrategyStore:
             "agent_key": strategy.agent_key,
             "skills": strategy.skills,
             "default_config": strategy.default_config,
-            "default_trading_context": strategy.default_trading_context,
+            "trading_context": strategy.trading_context,
             "created_by": strategy.created_by,
             "created_at": strategy.created_at,
         }

@@ -28,7 +28,7 @@ import { buildConfigValues, formatAgo, formatInterval, invalidateRoutineQueries,
 import { setViewContext } from "@/lib/viewContext";
 import { useServer } from "@/hooks/useServer";
 import { useColorizeReportIframe } from "@/hooks/useColorizeReportIframe";
-import { RoutineConfigForm } from "./RoutineConfigForm";
+import { RoutineConfigFormShell } from "./RoutineConfigFormShell";
 import { RoutineHooksPanel } from "./RoutineHooksPanel";
 import { ScheduleDropdown } from "./ScheduleDropdown";
 
@@ -774,7 +774,7 @@ export function ReportBrowser({
 
         {/* Config panel (collapsible) */}
         {showConfigPanel && activeRoutine && (
-          <div className="border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
+          <div className="min-h-0 flex-1 overflow-y-auto border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 scrollbar-thin">
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)]">
                 Configuration
@@ -787,8 +787,9 @@ export function ReportBrowser({
               </button>
             </div>
             {Object.keys(activeRoutine.fields).length > 0 ? (
-              <RoutineConfigForm
+              <RoutineConfigFormShell
                 fields={activeRoutine.fields}
+                groups={activeRoutine.groups}
                 values={configValues}
                 onChange={(key, value) => {
                   setConfigValues((prev) => {
@@ -833,7 +834,7 @@ export function ReportBrowser({
         )}
 
         {/* Report timeline: scrollable tabs + jump dropdown with all runs */}
-        {reports.length > 1 && (
+        {!showConfigPanel && reports.length > 1 && (
           <div className="flex min-w-0 items-center overflow-hidden border-b border-[var(--color-border)]/50">
             {timelineOverflow && (
               <button
@@ -899,6 +900,7 @@ export function ReportBrowser({
         )}
 
         {/* Report content */}
+        {!showConfigPanel && (
         <div className="relative min-h-0 flex-1">
           {loadingReports ? (
             <div className="flex h-full items-center justify-center">
@@ -947,8 +949,9 @@ export function ReportBrowser({
                       <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)]">
                         Configuration
                       </h3>
-                      <RoutineConfigForm
+                      <RoutineConfigFormShell
                         fields={activeRoutine.fields}
+                        groups={activeRoutine.groups}
                         values={configValues}
                         onChange={(key, value) => {
                           setConfigValues((prev) => {
@@ -1014,6 +1017,7 @@ export function ReportBrowser({
             </button>
           )}
         </div>
+        )}
       </div>
 
       {/* Source code modal */}

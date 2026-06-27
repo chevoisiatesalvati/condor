@@ -196,8 +196,10 @@ export function AgentDetail() {
             <AgentControls
               slug={slug!}
               status={agent.status}
-              defaultContext={agent.default_trading_context || (agent.config.trading_context as string) || ""}
+              defaultContext={agent.trading_context || (agent.defaults as { trading_context?: string }).trading_context || ""}
+              defaultAgentKey={(agent.defaults as { agent_key?: string }).agent_key || ""}
               agentConfig={agent.config}
+              strategyPresets={agent.strategy_presets ?? []}
             />
           </div>
         </div>

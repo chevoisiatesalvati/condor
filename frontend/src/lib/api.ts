@@ -418,7 +418,8 @@ export interface AgentDetail {
   agent_md: string;
   config: Record<string, unknown>;
   defaults: Record<string, unknown>;
-  default_trading_context: string;
+  strategy_presets: Array<{ id: string; label: string }>;
+  trading_context: string;
   learnings: string;
   status: string;
   agent_id: string;
@@ -429,9 +430,10 @@ export interface AgentDetail {
 
 export interface AgentDefaults {
   default_config: Record<string, unknown>;
-  default_trading_context: string;
+  trading_context: string;
   agent_key: string;
   model_base_url: string;
+  strategy_presets: Array<{ id: string; label: string }>;
 }
 
 export interface SnapshotSummary {
@@ -446,10 +448,15 @@ export interface RoutineFieldInfo {
   type: string;
   default: unknown;
   description: string;
-  widget?: "select";
+  widget?: "select" | "date";
   options?: string[];
+  option_labels?: Record<string, string>;
   options_from?: string;
   group?: string;
+  visible_when?: Record<string, string>;
+  nullable?: boolean;
+  hidden?: boolean;
+  hidden_when?: Record<string, string>;
   duration?: boolean;
   effective_tick_key?: string;
 }
@@ -469,6 +476,7 @@ export interface RoutineInfo {
   category: string;
   source: string;
   fields: Record<string, RoutineFieldInfo>;
+  groups?: string[];
   report_count: number;
   preset_overrides?: Record<string, Record<string, unknown>>;
 }
@@ -941,7 +949,7 @@ export const api = {
     name: string;
     description?: string;
     instructions?: string;
-    default_trading_context?: string;
+    trading_context?: string;
     config?: Record<string, unknown>;
   }) =>
     apiFetch<AgentSummary>("/api/v1/agents", {
@@ -968,7 +976,7 @@ export const api = {
     slug: string,
     data: {
       default_config?: Record<string, unknown>;
-      default_trading_context?: string;
+      trading_context?: string;
       agent_key?: string;
       model_base_url?: string;
     },
@@ -984,15 +992,28 @@ export const api = {
   getStrategyConfigSchema: (slug: string) =>
     apiFetch<StrategyConfigSchema>(`/api/v1/agents/${slug}/strategy-config-schema`),
 
+  getStrategyPresetParams: (slug: string, preset: string, frequencySec: number) =>
+    apiFetch<{
+      strategy_params: Record<string, unknown>;
+      risk_limits: Record<string, unknown>;
+    }>(
+      `/api/v1/agents/${slug}/strategy-preset-params?preset=${encodeURIComponent(preset)}&frequency_sec=${frequencySec}`,
+    ),
+
   deleteAgent: (slug: string) =>
     apiFetch<{ deleted: boolean }>(`/api/v1/agents/${slug}`, {
       method: "DELETE",
     }),
 
-  startAgent: (slug: string, config: Record<string, unknown> = {}, trading_context = "") =>
+  startAgent: (
+    slug: string,
+    config: Record<string, unknown> = {},
+    trading_context = "",
+    agent_key = "",
+  ) =>
     apiFetch<{ started: boolean; agent_id: string }>(
       `/api/v1/agents/${slug}/start`,
-      { method: "POST", body: JSON.stringify({ config, trading_context }) },
+      { method: "POST", body: JSON.stringify({ config, trading_context, agent_key }) },
     ),
 
   stopAgent: (slug: string) =>
@@ -1166,6 +1187,21 @@ export const api = {
     apiFetch<{ options: string[] }>(
       `/api/v1/routines/options/${encodeURIComponent(source)}?server=${encodeURIComponent(server)}`,
     ),
+
+  getTimelineReportRange: (server: string) =>
+    apiFetch<{ start: string | null; end: string | null }>(
+      `/api/v1/routines/options/timeline_report_range?server=${encodeURIComponent(server)}`,
+    ),
+
+  getTimelineSnapshotRange: (server: string, snapshotDir?: string) => {
+    const params = new URLSearchParams({ server });
+    if (snapshotDir) {
+      params.set("snapshot_dir", snapshotDir);
+    }
+    return apiFetch<{ start: string | null; end: string | null }>(
+      `/api/v1/routines/options/timeline_snapshot_range?${params.toString()}`,
+    );
+  },
 
   getRoutineHooks: (name: string) =>
     apiFetch<RoutineHooks>(`/api/v1/routines/${encodeURIComponent(name)}/hooks`),

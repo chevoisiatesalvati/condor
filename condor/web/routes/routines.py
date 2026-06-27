@@ -206,6 +206,7 @@ async def put_hooks(
 async def get_field_options(
     source: str,
     server: str = Query("local", alias="server"),
+    snapshot_dir: str | None = Query(None),
     user: WebUser = Depends(get_current_user),
 ):
     """Return dynamic options for routine config fields (e.g. controller_configs)."""
@@ -223,6 +224,32 @@ async def get_field_options(
         except Exception as e:
             log.warning(f"Failed to fetch controller configs: {e}")
             return {"options": []}
+    if source == "timeline_report_range":
+        try:
+            from routines.macdbb_scanner_aggressive_hl_replay.replay_range import timeline_range_from_reports
+
+            start, end = timeline_range_from_reports()
+            return {"start": start, "end": end}
+        except Exception as e:
+            log.warning(f"Failed to fetch timeline report range: {e}")
+            return {"start": None, "end": None}
+    if source == "timeline_snapshot_range":
+        try:
+            from routines.macdbb_scanner_aggressive_hl_replay.replay_range import timeline_range_from_snapshots
+
+            start, end = timeline_range_from_snapshots(snapshot_dir)
+            return {"start": start, "end": end}
+        except Exception as e:
+            log.warning(f"Failed to fetch timeline snapshot range: {e}")
+            return {"start": None, "end": None}
+    if source == "replay_snapshot_dirs":
+        data_dir = Path("data")
+        options = sorted(
+            path.relative_to(Path(".")).as_posix()
+            for path in data_dir.glob("replay_snapshots*")
+            if (path / "manifest.json").is_file()
+        )
+        return {"options": options}
     return {"options": []}
 
 

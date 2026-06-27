@@ -12,6 +12,38 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field
 
+# Session-only keys: defaults live on Strategy frontmatter (agent_key, trading_context).
+SESSION_OVERRIDE_KEYS = ("agent_key", "trading_context")
+
+
+def strip_session_overrides(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Remove session override keys from a defaults/config dict."""
+    if not config:
+        return {}
+    result = dict(config)
+    for key in SESSION_OVERRIDE_KEYS:
+        result.pop(key, None)
+    return result
+
+
+def resolve_session_overrides(
+    config: dict[str, Any],
+    *,
+    strategy_agent_key: str = "",
+    strategy_trading_context: str = "",
+    trading_context_override: str = "",
+    agent_key_override: str = "",
+) -> dict[str, Any]:
+    """Fill session agent_key and trading_context from strategy defaults when unset."""
+    result = dict(config)
+    explicit_key = (agent_key_override or result.get("agent_key") or "").strip()
+    result["agent_key"] = explicit_key or strategy_agent_key or "claude-code"
+    if trading_context_override.strip():
+        result["trading_context"] = trading_context_override.strip()
+    elif not (result.get("trading_context") or "").strip():
+        result["trading_context"] = strategy_trading_context or ""
+    return result
+
 
 class RiskLimitsConfig(BaseModel):
     max_open_executors: int = Field(default=5, description="Max simultaneous executors")
@@ -93,13 +125,16 @@ def load_full_config(agent_dir: Path, defaults: dict[str, Any] | None = None) ->
 
     Starts from strategy defaults, overlays saved config.yml, then validates
     core fields via AgentConfig and merges defaults for any missing core fields.
+
+    Session overrides (agent_key, trading_context) are excluded — those belong
+    on Strategy frontmatter or per-session config at start time.
     """
-    result = dict(defaults or {})
+    result = strip_session_overrides(defaults)
 
     config_path = agent_dir / "config.yml"
     if config_path.exists():
         try:
-            saved = yaml.safe_load(config_path.read_text()) or {}
+            saved = strip_session_overrides(yaml.safe_load(config_path.read_text()) or {})
             result.update(saved)
         except Exception:
             pass
@@ -108,9 +143,11 @@ def load_full_config(agent_dir: Path, defaults: dict[str, Any] | None = None) ->
     core = AgentConfig.from_dict(result)
     core_defaults = core.model_dump()
     for k, v in core_defaults.items():
+        if k in SESSION_OVERRIDE_KEYS:
+            continue
         result.setdefault(k, v)
 
-    return result
+    return strip_session_overrides(result)
 
 
 def save_full_config(agent_dir: Path, config: dict[str, Any]) -> None:

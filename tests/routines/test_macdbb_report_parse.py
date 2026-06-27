@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from routines.macdbb_replay.reports import load_parsed_report, parse_report_html
-from routines.macdbb_replay.models import ReportMeta
+from routines.macdbb_scanner_aggressive_hl_replay.reports import load_parsed_report, parse_report_html
+from routines.macdbb_scanner_aggressive_hl_replay.models import ReportMeta
 import datetime as dt
 
 REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
@@ -50,6 +50,17 @@ def test_load_parsed_report_from_meta():
     )
     assert parsed is not None
     assert parsed.pair == "WLD-USD"
+
+
+def test_parse_report_html_bullish_cross_from_conditions_table():
+    path = REPORTS_DIR / "20260618_082153_macdbb_purr_usd_1h_2255a9.html"
+    if not path.exists():
+        return
+    parsed = parse_report_html(path.read_text(encoding="utf-8"))
+    assert parsed is not None
+    assert parsed.bullish_cross is True
+    assert parsed.price_le_mid is True
+    assert parsed.bearish_cross is False
 
 
 def test_parse_report_html_rejects_params_table_rows():

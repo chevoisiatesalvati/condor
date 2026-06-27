@@ -117,8 +117,19 @@ class RoutineInfo:
                 if "options" in extra and isinstance(extra["options"], list):
                     entry["options"] = extra["options"]
                     entry["widget"] = extra.get("widget", "select")
+                if "group" in extra:
+                    entry["group"] = extra["group"]
+                if "visible_when" in extra:
+                    entry["visible_when"] = extra["visible_when"]
             fields[name] = entry
         return fields
+
+    def get_routine_field_metadata(self) -> dict[str, dict]:
+        """Field metadata for UI; config class may override via get_routine_fields()."""
+        cls_get_fields = getattr(self.config_class, "get_routine_fields", None)
+        if callable(cls_get_fields):
+            return cls_get_fields()
+        return self.get_fields()
 
 
 def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:
@@ -200,20 +211,60 @@ def reload_routine_modules() -> None:
     """Reload all imported routines.* modules (deepest packages first)."""
     global _routines_cache
     _routines_cache = None
+    import importlib.util
+
     names = sorted(
         (name for name in list(importlib.sys.modules) if name.startswith("routines.")),
         key=lambda name: name.count("."),
         reverse=True,
     )
+    stale: list[str] = []
     for name in names:
         module = importlib.sys.modules.get(name)
         if module is None:
             continue
+        spec = getattr(module, "__spec__", None)
+        if spec is None:
+            try:
+                spec = importlib.util.find_spec(name)
+            except (ValueError, ModuleNotFoundError):
+                spec = None
+        if spec is None or spec.loader is None:
+            stale.append(name)
+            continue
+        origin = getattr(spec, "origin", None)
+        if origin and origin not in ("built-in", "<frozen importlib._bootstrap>") and not origin.startswith("<"):
+            if not Path(origin).exists():
+                stale.append(name)
+                continue
         try:
             importlib.reload(module)
             logger.info("Reloaded module: %s", name)
         except Exception as error:
             logger.warning("Failed to reload %s: %s", name, error)
+
+    for name in stale:
+        importlib.sys.modules.pop(name, None)
+        logger.debug("Removed stale module from sys.modules: %s", name)
+
+    for module_path in _agent_preset_module_paths():
+        module = importlib.sys.modules.get(module_path)
+        if module is None:
+            continue
+        try:
+            importlib.reload(module)
+            logger.info("Reloaded module: %s", module_path)
+        except Exception as error:
+            logger.warning("Failed to reload %s: %s", module_path, error)
+
+
+def _agent_preset_module_paths() -> tuple[str, ...]:
+    try:
+        from condor.trading_agent.agent_presets import AGENT_PRESET_LOADERS
+
+        return tuple(dict.fromkeys(AGENT_PRESET_LOADERS.values()))
+    except Exception:
+        return ()
 
 
 def discover_routines_from_path(

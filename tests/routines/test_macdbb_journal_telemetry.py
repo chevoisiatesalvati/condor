@@ -1,6 +1,6 @@
 """Tests for extended signals_1h journal telemetry parsing."""
 
-from routines.macdbb_replay.journal import _parse_signals_1h
+from routines.macdbb_scanner_aggressive_hl_replay.journal import _parse_decision_line, _parse_signals_1h, parse_dt
 
 
 def test_parse_signals_1h_legacy_format():
@@ -29,3 +29,92 @@ def test_parse_signals_1h_extended_format():
     assert sig.bearish_cross is True
     assert sig.price == 1.4911
     assert sig.has_replay_bands()
+
+
+def test_parse_macd_pairs_with_hip3_k_prefix():
+    tick_time_map = {1: parse_dt("2026-06-17 20:32")}
+    line = (
+        "- **#1** tick=1 | entry_class=formal | macd_reviewed=5 | "
+        "macd_pairs=kPEPE-USD,LIT-USD,PUMP-USD,ASTER-USD,ADA-USD | "
+        "queue_total=kPEPE-USD,LIT-USD,PUMP-USD,ASTER-USD,ADA-USD,AERO-USD | "
+        "signals_1h=kPEPE-USD:bb=7.85,macd=-0.0000,sig=0.0000,hist=-0.0000,"
+        "gap=5.0924,hr=1.0821,tr=bear,mom=inc,fL=0,fS=0,aL=0,aS=0,sL=3.1,sS=2.02,"
+        "mid=0.0030,up=0.0030,bX=0,sX=0,p=0.0029|"
+        "ADA-USD:bb=13.28,macd=-0.0018,sig=-0.0017,hist=-0.0001,gap=0.0305,hr=0.0296,"
+        "tr=bear,mom=inc,fL=0,fS=1,aL=0,aS=0,sL=1.5602,sS=0.4802,"
+        "mid=0.1703,up=0.1748,bX=0,sX=1,p=0.1670"
+    )
+    meta = _parse_decision_line(line, tick_time_map)
+    assert meta is not None
+    assert meta.macd_pairs == [
+        "kPEPE-USD",
+        "LIT-USD",
+        "PUMP-USD",
+        "ASTER-USD",
+        "ADA-USD",
+    ]
+    assert "ADA-USD" in meta.queue_total
+    assert meta.signals_1h["kPEPE-USD"].pair == "kPEPE-USD"
+    assert meta.signals_1h["ADA-USD"].formal_short is True
+
+
+def test_parse_signals_1h_pipe_with_spaces():
+    raw = (
+        "BTC-USD:bb=-4.81,macd=-157.7197,sig=-156.6245,hist=-1.0952,gap=0.0070,hr=0.0069,"
+        "tr=bear,mom=dec,fL=0,fS=1,aL=0,aS=0,sL=0,sS=0,mid=65415.6,up=66360.3771,bX=0,sX=1,p=64380"
+        " | HYPE-USD:bb=22.52,macd=0.2076,sig=0.2873,hist=-0.0797,gap=0.2774,hr=0.3837,"
+        "tr=bull,mom=inc,fL=0,fS=0,aL=1,aS=0,sL=2.1611,sS=0,mid=73.2934,up=75.7722,bX=0,sX=0,p=71.931"
+    )
+    signals = _parse_signals_1h(raw)
+    assert set(signals) == {"BTC-USD", "HYPE-USD"}
+    assert signals["HYPE-USD"].adaptive_long is True
+
+
+def test_parse_decision_line_signals_1h_with_spaces():
+    tick_time_map = {1: parse_dt("2026-06-17 19:39")}
+    line = (
+        "- **#1** (19:39) entry_class=regime_adaptive_half_size pair=HYPE-USD "
+        "macd_pairs=BTC-USD,HYPE-USD signals_1h=BTC-USD:bb=-4.81,macd=-157.7197,sig=-156.6245,"
+        "hist=-1.0952,gap=0.0070,hr=0.0069,tr=bear,mom=dec,fL=0,fS=1,aL=0,aS=0,sL=0,sS=0,"
+        "mid=65415.6,up=66360.3771,bX=0,sX=1,p=64380 | HYPE-USD:bb=22.52,macd=0.2076,sig=0.2873,"
+        "hist=-0.0797,gap=0.2774,hr=0.3837,tr=bull,mom=inc,fL=0,fS=0,aL=1,aS=0,sL=2.1611,sS=0,"
+        "mid=73.2934,up=75.7722,bX=0,sX=0,p=71.931 filter_4h=BTC-USD:tr=bull,pass=0"
+    )
+    meta = _parse_decision_line(line, tick_time_map)
+    assert meta is not None
+    assert "HYPE-USD" in meta.signals_1h
+    assert meta.signals_1h["HYPE-USD"].adaptive_long is True
+
+
+def test_parse_scanner_telemetry_on_decision_line():
+    tick_time_map = {3: parse_dt("2026-06-12 12:00")}
+    line = (
+        "- **#3** tick=3 | entry_class=hold | scanner_regime=mature | "
+        "tradeable_count=5 | natr_floor_used=0.08 | best_score=1.75 | "
+        "macd_pairs=SOL-USD"
+    )
+    meta = _parse_decision_line(line, tick_time_map)
+    assert meta is not None
+    assert meta.scanner_regime == "mature"
+    assert meta.natr_floor_used == 0.08
+    assert meta.best_score == 1.75
+
+
+def test_parse_create_plan_from_decision_line():
+    tick_time_map = {1: parse_dt("2026-06-17 20:32")}
+    line = (
+        "- **#1** tick=1 | entry_class=formal | pair=ADA-USD | "
+        "create_plan=ADA-USD:side=short,entry_class=formal,notional_req=500,"
+        "notional_cap=550,eff_sl=1.4,eff_tp=6.5,vol=0.19,size_mult=1.0,"
+        "amount=2994,attempt=1/3 | macd_pairs=ADA-USD"
+    )
+    meta = _parse_decision_line(line, tick_time_map)
+    assert meta is not None
+    plan = meta.create_plans["ADA-USD"]
+    assert plan.side == "short"
+    assert plan.entry_class == "formal"
+    assert plan.notional_req == 500.0
+    assert plan.eff_sl == 1.4
+    assert plan.eff_tp == 6.5
+    assert plan.vol == 0.19
+    assert plan.size_mult == 1.0

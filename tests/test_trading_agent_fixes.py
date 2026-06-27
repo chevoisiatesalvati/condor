@@ -12,6 +12,7 @@ from mcp_servers.condor.tools.trading_agent import _resolve_journal_tick, journa
 from mcp_servers.hummingbot_api.tools.executors import (
     _apply_notional_usd_to_amount,
     _apply_position_amount_from_trading_rules,
+    _position_executor_positive_amount_issue,
 )
 
 
@@ -55,6 +56,48 @@ class TestJournalTickResolution:
 
 
 class TestPositionExecutorSizing:
+    def test_notional_only_passes_precheck_before_conversion(self):
+        config = {
+            "connector_name": "hyperliquid_perpetual",
+            "trading_pair": "WLD-USD",
+            "notional_usd": 564.38,
+        }
+        assert _position_executor_positive_amount_issue(config) is None
+
+    def test_notional_only_pipeline_sets_base_amount(self):
+        client = MagicMock()
+        client.market_data.get_prices = AsyncMock(
+            return_value={"prices": {"HYPE-USD": 63.474}}
+        )
+        client.connectors.get_trading_rules = AsyncMock(
+            return_value={
+                "HYPE-USD": {
+                    "min_base_amount_increment": 0.01,
+                    "min_order_size": 0.01,
+                    "min_notional_size": 10,
+                }
+            }
+        )
+
+        config = {
+            "connector_name": "hyperliquid_perpetual",
+            "trading_pair": "HYPE-USD",
+            "notional_usd": 564.38,
+        }
+        assert _position_executor_positive_amount_issue(config) is None
+
+        err, note = asyncio.run(_apply_notional_usd_to_amount(client, config))
+        assert err is None
+        assert config["amount"] == pytest.approx(564.38 / 63.474, rel=1e-4)
+        assert "notional_usd" not in config
+
+        err, rules_note = asyncio.run(
+            _apply_position_amount_from_trading_rules(client, config)
+        )
+        assert err is None
+        assert config["amount"] > 0
+        assert _position_executor_positive_amount_issue(config) is None
+
     def test_notional_usd_converts_with_live_price(self):
         client = MagicMock()
         client.market_data.get_prices = AsyncMock(

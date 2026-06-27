@@ -1,0 +1,48 @@
+---
+description: How to run Python tests and scripts in this repo (PYTHONPATH / pytest)
+alwaysApply: true
+---
+
+# Python imports and test execution
+
+This repo keeps top-level packages at the project root (`condor/`, `routines/`). They are **not** installed as site-packages unless you do an editable install. Tests and scripts import them directly:
+
+```python
+from trading_agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
+from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import ...
+```
+
+## Running pytest
+
+Always run pytest **from the repo root** using the project venv:
+
+```bash
+cd /home/saul/projects/Hummingbot/condor
+.venv/bin/pytest tests/ -q
+```
+
+`pyproject.toml` sets `pythonpath = ["."]` so pytest adds the repo root automatically. **Do not** rely on bare `pytest` from system Python or Anaconda — that causes `ModuleNotFoundError: No module named 'routines'`.
+
+If pytest still cannot find modules, use an explicit fallback:
+
+```bash
+PYTHONPATH=. .venv/bin/pytest tests/ -q
+```
+
+## Running routines / sweep CLIs
+
+Same rule: repo root must be on `PYTHONPATH`:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m routines.macdbb_scanner_aggressive_hl_replay.config_sweep
+```
+
+## Common mistake
+
+This fails because Anaconda pytest runs without the repo on the path:
+
+```bash
+pytest tests/routines/test_dynamic_config_sweep.py   # wrong interpreter / no pythonpath
+```
+
+Use `.venv/bin/pytest` from the repo root instead.

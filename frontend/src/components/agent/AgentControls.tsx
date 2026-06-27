@@ -6,12 +6,14 @@ import {
   BudgetFrequencyFields,
   DigestIntervalField,
   ExecutionModePicker,
+  ModelFields,
   RiskLimitsFields,
   ServerSelect,
   TradingContextField,
   buildRiskLimitsPayload,
   type ExecutionMode,
 } from "@/components/agent/AgentSessionConfigFields";
+import { StrategyPresetSelect } from "@/components/agent/StrategyPresetSelect";
 import { StrategyParamsForm } from "@/components/agent/StrategyParamsForm";
 import { api } from "@/lib/api";
 
@@ -29,12 +31,16 @@ export function StartSessionDialog({
   slug,
   agentConfig,
   defaultContext,
+  defaultAgentKey,
+  strategyPresets = [],
 }: {
   open: boolean;
   onClose: () => void;
   slug: string;
   agentConfig: Record<string, unknown>;
   defaultContext: string;
+  defaultAgentKey: string;
+  strategyPresets?: Array<{ id: string; label: string }>;
 }) {
   const queryClient = useQueryClient();
 
@@ -42,6 +48,7 @@ export function StartSessionDialog({
     (agentConfig.execution_mode as ExecutionMode) || "loop",
   );
   const [context, setContext] = useState(defaultContext);
+  const [agentKey, setAgentKey] = useState(defaultAgentKey);
   const [serverName, setServerName] = useState((agentConfig.server_name as string) || "");
   const [totalAmountQuote, setTotalAmountQuote] = useState(String(agentConfig.total_amount_quote ?? 100));
   const [frequencySec, setFrequencySec] = useState(String(agentConfig.frequency_sec ?? 60));
@@ -52,6 +59,9 @@ export function StartSessionDialog({
     readRiskLimit(agentConfig, "max_open_executors", 5),
   );
   const [maxDrawdown, setMaxDrawdown] = useState(readRiskLimit(agentConfig, "max_drawdown_pct", -1));
+  const [strategyPreset, setStrategyPreset] = useState(
+    String(agentConfig.strategy_preset ?? "custom"),
+  );
   const [strategyParams, setStrategyParams] = useState<Record<string, unknown>>({});
 
   const { data: strategySchema } = useQuery({
@@ -64,19 +74,22 @@ export function StartSessionDialog({
     if (!open) return;
     setExecutionMode((agentConfig.execution_mode as ExecutionMode) || "loop");
     setContext(defaultContext);
+    setAgentKey(defaultAgentKey);
     setServerName((agentConfig.server_name as string) || "");
     setTotalAmountQuote(String(agentConfig.total_amount_quote ?? 100));
     setFrequencySec(String(agentConfig.frequency_sec ?? 60));
     setDigestIntervalTicks(String(agentConfig.digest_interval_ticks ?? 0));
     setMaxOpenExecutors(readRiskLimit(agentConfig, "max_open_executors", 5));
     setMaxDrawdown(readRiskLimit(agentConfig, "max_drawdown_pct", -1));
+    setStrategyPreset(String(agentConfig.strategy_preset ?? "custom"));
     const saved = agentConfig.strategy_params;
     setStrategyParams(
       typeof saved === "object" && saved !== null ? { ...(saved as Record<string, unknown>) } : {},
     );
-  }, [open, agentConfig, defaultContext]);
+  }, [open, agentConfig, defaultContext, defaultAgentKey]);
 
   const handleStrategyParamChange = (key: string, value: unknown) => {
+    setStrategyPreset("custom");
     setStrategyParams((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -88,12 +101,13 @@ export function StartSessionDialog({
         frequency_sec: Number(frequencySec) || 60,
         digest_interval_ticks: Math.max(0, Number(digestIntervalTicks) || 0),
         execution_mode: executionMode,
+        strategy_preset: strategyPreset,
         risk_limits: buildRiskLimitsPayload(maxOpenExecutors, maxDrawdown),
         ...(strategySchema && Object.keys(strategySchema.fields).length > 0
           ? { strategy_params: strategyParams }
           : {}),
       };
-      return api.startAgent(slug, config, context);
+      return api.startAgent(slug, config, context, agentKey);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agent", slug] });
@@ -118,6 +132,14 @@ export function StartSessionDialog({
 
         <div className="space-y-5">
           <ExecutionModePicker value={executionMode} onChange={setExecutionMode} />
+
+          <ModelFields
+            agentKey={agentKey}
+            modelBaseUrl=""
+            onAgentKeyChange={setAgentKey}
+            onModelBaseUrlChange={() => {}}
+            showModelBaseUrl={false}
+          />
 
           <TradingContextField
             value={context}
@@ -149,6 +171,25 @@ export function StartSessionDialog({
             onMaxOpenExecutorsChange={setMaxOpenExecutors}
             onMaxDrawdownChange={setMaxDrawdown}
           />
+
+          {strategyPresets.length > 0 && (
+            <StrategyPresetSelect
+              slug={slug}
+              value={strategyPreset}
+              presets={strategyPresets}
+              frequencySec={Number(frequencySec) || 60}
+              onChange={(preset, params, riskLimits) => {
+                setStrategyPreset(preset);
+                if (Object.keys(params).length > 0) {
+                  setStrategyParams(params);
+                }
+                const maxOpen = riskLimits?.max_open_executors;
+                if (maxOpen !== undefined && maxOpen !== null) {
+                  setMaxOpenExecutors(String(maxOpen));
+                }
+              }}
+            />
+          )}
 
           {strategySchema && Object.keys(strategySchema.fields).length > 0 && (
             <StrategyParamsForm
@@ -200,12 +241,16 @@ export function AgentControls({
   slug,
   status,
   defaultContext,
+  defaultAgentKey,
   agentConfig,
+  strategyPresets = [],
 }: {
   slug: string;
   status: string;
   defaultContext: string;
+  defaultAgentKey: string;
   agentConfig: Record<string, unknown>;
+  strategyPresets?: Array<{ id: string; label: string }>;
 }) {
   const queryClient = useQueryClient();
   const [showStartDialog, setShowStartDialog] = useState(false);
@@ -278,6 +323,8 @@ export function AgentControls({
         slug={slug}
         agentConfig={agentConfig}
         defaultContext={defaultContext}
+        defaultAgentKey={defaultAgentKey}
+        strategyPresets={strategyPresets}
       />
     </>
   );

@@ -1,6 +1,6 @@
 """Tests for report sentiment parsing and section ordering."""
 
-from condor.reports import ReportBuilder, _parse_signed_number, _sentiment_class
+from condor.reports import ReportBuilder, _parse_signed_number, _render_meta_badges, _sentiment_class
 
 
 def test_sentiment_class_currency_positive():
@@ -55,3 +55,16 @@ def test_params_panel_can_start_open():
         }
     )
     assert 'class="section params-panel" open' in html
+
+
+def test_render_meta_badges_includes_labeled_fields():
+    builder = ReportBuilder("MACDBB Backtest")
+    builder.source("routine", "macdbb_scanner_aggressive_hl_backtest")
+    builder.meta("Preset", "V5 refine winner")
+    builder.meta("Mode", "Timeline backtest")
+
+    html = _render_meta_badges(builder)
+    assert "Preset: V5 refine winner" in html
+    assert "Mode: Timeline backtest" in html
+    assert "routine: macdbb_scanner_aggressive_hl_backtest" not in html
+    assert "#trading-agent" not in html

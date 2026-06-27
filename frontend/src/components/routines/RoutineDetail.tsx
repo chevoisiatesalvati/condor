@@ -6,7 +6,7 @@ import { type RoutineInfo, type RoutineInstance, api } from "@/lib/api";
 import { buildConfigValues, formatRoutineName, invalidateRoutineQueries, saveConfig, updateConfigValues } from "@/lib/routineUtils";
 import { useServer } from "@/hooks/useServer";
 
-import { RoutineConfigForm } from "./RoutineConfigForm";
+import { RoutineConfigFormShell } from "./RoutineConfigFormShell";
 import { RoutineHooksPanel } from "./RoutineHooksPanel";
 import { RoutineInstances } from "./RoutineInstances";
 import { RoutineReports } from "./RoutineReports";
@@ -120,12 +120,13 @@ export function RoutineDetail({ routine, instances, onOpenReport }: RoutineDetai
 
       {/* Config Form */}
       {Object.keys(routine.fields).length > 0 && (
-        <div>
+        <div className="max-h-[min(50vh,28rem)] overflow-y-auto scrollbar-thin">
           <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)]">
             Configuration
           </h3>
-          <RoutineConfigForm
+          <RoutineConfigFormShell
             fields={routine.fields}
+            groups={routine.groups}
             values={configValues}
             onChange={handleConfigChange}
           />

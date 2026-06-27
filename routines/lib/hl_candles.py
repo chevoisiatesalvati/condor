@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import datetime as dt
 import logging
 import time
@@ -113,13 +114,24 @@ def hl_close_nearest(
     if not candles:
         return None
     target_ms = int(target.timestamp() * 1000)
-    with_ts = [candle for candle in candles if "timestamp_ms" in candle]
+    with_ts = [(int(c["timestamp_ms"]), float(c["close"])) for c in candles if "timestamp_ms" in c]
     if not with_ts:
         return None
-    best = min(with_ts, key=lambda candle: abs(candle["timestamp_ms"] - target_ms))
-    if abs(best["timestamp_ms"] - target_ms) > max_delta_ms:
+    with_ts.sort(key=lambda item: item[0])
+    timestamps = [item[0] for item in with_ts]
+    closes = [item[1] for item in with_ts]
+    idx = bisect.bisect_left(timestamps, target_ms)
+    best_idx: int | None = None
+    best_delta = max_delta_ms + 1
+    for candidate in (idx - 1, idx):
+        if 0 <= candidate < len(timestamps):
+            delta = abs(timestamps[candidate] - target_ms)
+            if delta < best_delta:
+                best_delta = delta
+                best_idx = candidate
+    if best_idx is None or best_delta > max_delta_ms:
         return None
-    return float(best["close"])
+    return closes[best_idx]
 
 
 async def fetch_hl_candles(
@@ -220,6 +232,28 @@ async def _fetch_hl_candle_chunk(
     )
 
 
+async def fetch_hl_candle_window(
+    trading_pair: str,
+    interval: str,
+    start: dt.datetime,
+    end: dt.datetime,
+    *,
+    session: aiohttp.ClientSession,
+) -> list[dict[str, float]]:
+    """Fetch a single candleSnapshot request for [start, end] (no chunking)."""
+    interval_ms = _INTERVAL_MS.get(interval)
+    if not interval_ms:
+        raise ValueError(f"Unsupported HL candle interval: {interval}")
+
+    start_ms = int(start.astimezone(dt.timezone.utc).timestamp() * 1000)
+    end_ms = int(end.astimezone(dt.timezone.utc).timestamp() * 1000)
+    if end_ms <= start_ms:
+        return []
+
+    coin = trading_pair_to_hl_coin(trading_pair)
+    return await _fetch_hl_candle_chunk(session, coin, interval, start_ms, end_ms)
+
+
 async def fetch_hl_candles_between(
     trading_pair: str,
     interval: str,
@@ -276,7 +310,9 @@ async def fetch_hl_candles_between(
 
 __all__ = [
     "HL_INFO_URL",
+    "_INTERVAL_MS",
     "configure_hl_rate_limit",
+    "fetch_hl_candle_window",
     "fetch_hl_candles",
     "fetch_hl_candles_between",
     "hl_close_nearest",
