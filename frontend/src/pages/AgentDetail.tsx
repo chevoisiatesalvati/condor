@@ -5,7 +5,6 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { AgentControls } from "@/components/agent/AgentControls";
 import { AgentDefaultsDialog } from "@/components/agent/AgentDefaultsDialog";
-import { AgentMarketStrip } from "@/components/agent/AgentMarketStrip";
 import {
   InstanceCard,
   LearningsArchivePanel,
@@ -14,9 +13,7 @@ import {
 } from "@/components/agent/AgentOverviewTab";
 import { SessionReviewer } from "@/components/agent/SessionReviewer";
 import { ReportBrowser } from "@/components/routines/ReportBrowser";
-import { ExecutorChart } from "@/components/charts/ExecutorChart";
-import { useAgentExecutors } from "@/hooks/useAgentExecutors";
-import { type ExecutorInfo, api } from "@/lib/api";
+import { api } from "@/lib/api";
 
 // ── Main Page ──
 
@@ -41,14 +38,21 @@ export function AgentDetail() {
     },
   });
 
-  // Check location.state for agent-switching (SessionReviewer up/down nav)
+  const navState = location.state as { openReviewer?: boolean; sessionNum?: number } | null;
+
+  // Sync reviewer open intent from router state (SessionReviewer agent-switch nav)
+  if (navState?.openReviewer) {
+    const navSession = navState.sessionNum ?? null;
+    if (reviewerSessionNum !== navSession) {
+      setReviewerSessionNum(navSession);
+    }
+  }
+
   useEffect(() => {
-    const state = location.state as { openReviewer?: boolean; sessionNum?: number } | null;
-    if (state?.openReviewer) {
-      setReviewerSessionNum(state.sessionNum ?? null);
+    if (navState?.openReviewer) {
       navigate(location.pathname, { replace: true, state: null });
     }
-  }, [location.state, location.pathname, navigate]);
+  }, [navState?.openReviewer, location.pathname, navigate]);
 
   // Close strategy modal on Escape
   useEffect(() => {
@@ -93,26 +97,6 @@ export function AgentDetail() {
     () => instances.map((inst) => inst.agent_id).filter(Boolean),
     [instances],
   );
-
-  // Real-time executor data via WS
-  const { executors: liveExecutors } = useAgentExecutors(
-    hasRunning ? serverName : null,
-    controllerIds,
-  );
-
-  // Group live executors by connector:pair for charts
-  const chartGroups = useMemo(() => {
-    if (!serverName || liveExecutors.length === 0) return [];
-    const groups = new Map<string, ExecutorInfo[]>();
-    for (const ex of liveExecutors) {
-      if (!ex.trading_pair) continue;
-      const key = `${ex.connector}:${ex.trading_pair}`;
-      const arr = groups.get(key);
-      if (arr) arr.push(ex);
-      else groups.set(key, [ex]);
-    }
-    return Array.from(groups.entries());
-  }, [liveExecutors, serverName]);
 
   // Session/experiment click -> open reviewer
   const handleSessionClick = useCallback((sessionNum: number, kind?: "session" | "experiment") => {
@@ -220,32 +204,6 @@ export function AgentDetail() {
           </span>
         )}
       </div>
-
-      {/* Market Context Strip */}
-      {hasRunning && liveExecutors.length > 0 && (
-        <div className="mb-6">
-          <AgentMarketStrip serverName={serverName} executors={liveExecutors} />
-        </div>
-      )}
-
-      {/* Live Executor Charts */}
-      {hasRunning && chartGroups.length > 0 && (
-        <div className="mb-6 space-y-4">
-          <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
-            <Zap className="h-3.5 w-3.5" /> Live Executors
-          </h3>
-          {chartGroups.map(([key, group]) => (
-            <ExecutorChart
-              key={key}
-              server={serverName}
-              executors={group}
-              connector={group[0].connector}
-              tradingPair={group[0].trading_pair}
-              height={300}
-            />
-          ))}
-        </div>
-      )}
 
       {/* Running Instances */}
       {hasRunning && (

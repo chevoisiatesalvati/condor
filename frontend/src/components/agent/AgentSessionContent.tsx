@@ -445,10 +445,11 @@ function SnapshotDetail({ slug, sessionNum, tick }: { slug: string; sessionNum: 
     enabled: tick > 0,
   });
 
+  const content = data?.content;
   const parsed = useMemo<ParsedSnapshot | null>(() => {
-    if (!data?.content) return null;
-    return parseSnapshot(data.content);
-  }, [data?.content]);
+    if (!content) return null;
+    return parseSnapshot(content);
+  }, [content]);
 
   if (isLoading) {
     return (
