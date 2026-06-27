@@ -189,6 +189,8 @@ async def run_timeline_dynamic_sweep(
     workers: int = 1,
     worker_ram_gb: float = 2.0,
     allow_non_fork: bool = False,
+    start_index: int = 0,
+    resume_results: list[SweepResult] | None = None,
 ) -> tuple[list[SweepResult], str, float, str, str]:
     timeline_fields = timeline_sweep_overrides(
         range_start_utc=range_start_utc,
@@ -273,7 +275,19 @@ async def run_timeline_dynamic_sweep(
             merged["snapshot_dir"] = snapshot_dir
         merged_items.append((name, merged))
 
-    config_total = len(merged_items)
+    full_config_total = len(merged_items)
+    if start_index < 0 or start_index > full_config_total:
+        raise ValueError(
+            f"start_index {start_index} out of range for {full_config_total} configs"
+        )
+    if start_index:
+        merged_items = merged_items[start_index:]
+        print(
+            f"Resuming sweep from config {start_index + 1}/{full_config_total} "
+            f"({len(merged_items)} remaining)"
+        )
+    config_total = full_config_total
+    remaining_total = len(merged_items)
     sweep_started = time.monotonic()
     snap_label = snapshot_dir or "default"
     checkpoint_path: Path | None = None
@@ -281,13 +295,16 @@ async def run_timeline_dynamic_sweep(
         output_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = _checkpoint_csv_path(output_dir, stem)
 
-    results: list[SweepResult] = []
+    results: list[SweepResult] = list(resume_results or [])
+    if results:
+        print(f"Loaded {len(results)} prior sweep result(s) from checkpoint")
 
     def _record_progress(done: int, result: SweepResult) -> None:
         result.snapshot_dir = snap_label
         elapsed = time.monotonic() - sweep_started
-        rate = done / elapsed if elapsed > 0 else 0.0
-        remaining_local = config_total - done
+        local_done = done - start_index
+        rate = local_done / elapsed if elapsed > 0 else 0.0
+        remaining_local = remaining_total - local_done
         eta_local = remaining_local / rate if rate > 0 else None
         global_done = global_index_offset + done
         global_rem = (global_total - global_done) if global_total else None
@@ -300,7 +317,7 @@ async def run_timeline_dynamic_sweep(
         ):
             _write_checkpoint_csv(checkpoint_path, results)
 
-        if progress_path is not None:
+        if progress_path is not None and results:
             top_row = max(results, key=lambda row: row.capital_normalized_pnl)
             progress_payload: dict[str, Any] = {
                 "status": "running",
@@ -308,6 +325,7 @@ async def run_timeline_dynamic_sweep(
                 "snapshot_dir": snap_label,
                 "config_index": done,
                 "config_total": config_total,
+                "resume_from_index": start_index or None,
                 "global_index": global_done,
                 "global_total": global_total,
                 "last_config": result.name,
@@ -349,9 +367,9 @@ async def run_timeline_dynamic_sweep(
         benchmark_avg_notional=benchmark_avg_notional,
     )
 
-    def _on_batch_result(done: int, result: SweepResult) -> None:
+    def _on_batch_result(local_done: int, result: SweepResult) -> None:
         results.append(result)
-        _record_progress(done, result)
+        _record_progress(start_index + local_done, result)
 
     run_sweep_config_batch(
         merged_items,

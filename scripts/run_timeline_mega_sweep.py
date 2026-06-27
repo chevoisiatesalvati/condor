@@ -100,6 +100,23 @@ def _parse_args() -> argparse.Namespace:
         default=2.0,
         help="Estimated RAM per worker for worker cap (default 2.0)",
     )
+    sweep.add_argument(
+        "--start-index",
+        type=int,
+        default=-1,
+        help="Skip first N configs (0-based). -1 = auto-resume from progress.json",
+    )
+    sweep.add_argument(
+        "--resume-checkpoint",
+        type=Path,
+        default=None,
+        help="Checkpoint CSV with prior results (default: stem.checkpoint.csv)",
+    )
+    sweep.add_argument(
+        "--no-auto-resume",
+        action="store_true",
+        help="Ignore progress.json and start from config 0",
+    )
 
     sweep_all = sub.add_parser(
         "sweep-all",
@@ -217,13 +234,36 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         or f"macdbb_scanner_aggressive_hl_backtest_{args.dynamic_mode}_{grid_tag}_timeline"
     )
     progress_path = args.output_dir / f"{output_stem}.progress.json"
-    checkpoint_path = args.output_dir / f"{output_stem}.checkpoint.csv"
+    checkpoint_path = args.resume_checkpoint or (
+        args.output_dir / f"{output_stem}.checkpoint.csv"
+    )
+    start_index = 0
+    resume_results = None
+    if not args.no_auto_resume:
+        if args.start_index >= 0:
+            start_index = args.start_index
+        elif progress_path.is_file():
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            if progress.get("status") == "running" and progress.get("config_index"):
+                start_index = int(progress["config_index"])
+        if start_index and checkpoint_path.is_file():
+            from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+                load_sweep_results_from_csv,
+            )
+
+            resume_results = load_sweep_results_from_csv(checkpoint_path)
+            print(
+                f"Auto-resume: start_index={start_index} "
+                f"checkpoint_rows={len(resume_results)}"
+            )
     print(
         f"Timeline sweep grid={args.sweep_grid} mode={args.dynamic_mode} | "
         f"space~{sweep_space_size(args.sweep_grid, args.dynamic_mode):,} | "
         f"min_configs={min_configs} | range {start} -> {end} | snapshots={args.snapshot_dir}"
     )
     print(f"Checkpoint CSV (every {args.checkpoint_every} configs): {checkpoint_path}")
+    if start_index:
+        print(f"Resuming from config index {start_index} with {args.workers} worker(s)")
     results, _baseline, _benchmark, range_start, range_end = await run_timeline_dynamic_sweep(
         dynamic_mode=args.dynamic_mode,
         output_dir=args.output_dir,
@@ -242,6 +282,8 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         workers=args.workers,
         worker_ram_gb=args.worker_ram_gb,
         sweep_grid=args.sweep_grid,
+        start_index=start_index,
+        resume_results=resume_results,
     )
     csv_path = args.output_dir / f"{output_stem}.csv"
     if results:

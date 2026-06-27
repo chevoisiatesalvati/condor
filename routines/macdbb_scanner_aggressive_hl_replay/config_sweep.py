@@ -589,6 +589,43 @@ def load_sweep_winner_from_csv(
     return row["name"], diff, full
 
 
+def _sweep_result_from_csv_row(row: dict[str, str]) -> SweepResult:
+    exits = {
+        "take_profit_close_proxy": int(float(row["exit_tp"])),
+        "stop_loss_close_proxy": int(float(row["exit_sl"])),
+        "thesis_decay_exit": int(float(row["exit_thesis_decay"])),
+        "session_end_proxy": int(float(row["exit_session_end"])),
+        "flip_confirmed": int(float(row["exit_flip"])),
+    }
+    return SweepResult(
+        name=row["name"],
+        pnl=float(row["pnl"]),
+        trades=int(row["trades"]),
+        formal=int(row["formal"]),
+        adaptive=int(row["adaptive"]),
+        win_rate=float(row["win_rate_pct"]) / 100.0,
+        exits=exits,
+        overrides=json.loads(row["overrides_json"]),
+        capital_normalized_pnl=float(row["capital_normalized_pnl"]),
+        pnl_per_exposure=float(row["pnl_per_exposure"]),
+        total_exposure=float(row["total_exposure"]),
+        avg_notional=float(row["avg_notional"]),
+        avg_size_mult=float(row["avg_size_mult"]),
+        avg_sl_pct=float(row["avg_sl_pct"]),
+        avg_tp_pct=float(row["avg_tp_pct"]),
+        sl_saturation_pct=float(row["sl_saturation_pct"]),
+        tp_saturation_pct=float(row["tp_saturation_pct"]),
+        dynamic_mode=row.get("dynamic_mode", ""),
+        snapshot_dir=row.get("snapshot_dir", ""),
+    )
+
+
+def load_sweep_results_from_csv(csv_path: Path) -> list[SweepResult]:
+    """Load all sweep rows from a checkpoint or final results CSV."""
+    with csv_path.open(encoding="utf-8") as handle:
+        return [_sweep_result_from_csv_row(row) for row in csv.DictReader(handle)]
+
+
 def _dynamic_grid_for_mode(mode: str) -> dict[str, tuple[Any, ...]]:
     preset = DYNAMIC_MODE_PRESETS[mode]
     grid = dict(MEGA_SWEEP_GRID)

@@ -28,7 +28,7 @@ setup:
 	@chmod +x setup-environment.sh && ./setup-environment.sh
 
 install: setup
-	uv sync --dev
+	uv sync --extra dev
 	@bash -c ' \
 		export NVM_DIR="$$HOME/.nvm"; \
 		[ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh"; \

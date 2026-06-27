@@ -202,6 +202,9 @@ class ReplayConfigBase(BaseModel):
         "hl_dynamic_session_parity",
         "hl_dynamic_timeline_refine_v5_winner_binance_1y",
         "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
+        "hl_dynamic_timeline_v6_entry_sltp_sl20_tpmin10_patient_thesis_binance_1y",
+        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_fast_thesis_binance_1y",
+        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_mid_thesis_binance_1y",
     ] = Field(
         default="custom",
         description="Named parameter profile",
@@ -380,6 +383,9 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
         "hl_dynamic_session_parity",
         "hl_dynamic_timeline_refine_v5_winner_binance_1y",
         "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
+        "hl_dynamic_timeline_v6_entry_sltp_sl20_tpmin10_patient_thesis_binance_1y",
+        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_fast_thesis_binance_1y",
+        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_mid_thesis_binance_1y",
     ] = Field(
         default="hl_dynamic_timeline_refine_v5_winner_binance_1y",
         description="Named parameter profile",
