@@ -8,6 +8,7 @@ import { AgentDefaultsDialog } from "@/components/agent/AgentDefaultsDialog";
 import { AgentMarketStrip } from "@/components/agent/AgentMarketStrip";
 import {
   InstanceCard,
+  LearningsArchivePanel,
   MarkdownEditor,
   PerformancePanel,
 } from "@/components/agent/AgentOverviewTab";
@@ -299,7 +300,7 @@ export function AgentDetail() {
             </div>
             {/* Modal content */}
             <div className="flex-1 overflow-y-auto p-6">
-              <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-2">
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <MarkdownEditor
                   slug={agent.slug}
                   label="Strategy"
@@ -310,10 +311,13 @@ export function AgentDetail() {
                 <MarkdownEditor
                   slug={agent.slug}
                   label="Learnings"
-                  sublabel="persists across sessions"
+                  sublabel="execution notes — sent to agent each tick"
                   content={agent.learnings}
                   mutationFn={api.updateAgentLearnings}
                 />
+              </div>
+              <div className="mt-6">
+                <LearningsArchivePanel slug={agent.slug} />
               </div>
             </div>
           </div>

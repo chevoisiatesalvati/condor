@@ -309,7 +309,21 @@ def journal_write(
     jm = JournalManager(agent_id, session_dir=session_dir, agent_dir=agent_dir)
 
     if entry_type == "learning":
-        jm.append_learning(text, category=category or "market")
+        cat = (category or "execution").strip().lower()
+        if cat == "market":
+            return {
+                "written": False,
+                "reason": (
+                    "market learnings retired; use entry_type=action for tick logs "
+                    "or category=execution for durable platform notes"
+                ),
+            }
+        written = jm.append_learning(text, category=cat)
+        if not written:
+            return {
+                "written": False,
+                "reason": "duplicate or rejected learning (execution-only; max 20)",
+            }
     elif entry_type == "state":
         jm.write_state(text)
     else:

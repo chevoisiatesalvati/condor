@@ -1035,6 +1035,9 @@ export const api = {
   getAgentLearnings: (slug: string) =>
     apiFetch<{ content: string }>(`/api/v1/agents/${slug}/learnings`),
 
+  getAgentLearningsArchive: (slug: string) =>
+    apiFetch<{ content: string }>(`/api/v1/agents/${slug}/learnings/archive`),
+
   updateAgentLearnings: (slug: string, content: string) =>
     apiFetch<{ updated: boolean }>(`/api/v1/agents/${slug}/learnings`, {
       method: "PUT",

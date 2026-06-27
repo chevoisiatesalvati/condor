@@ -62,7 +62,7 @@ In short: executors give us the cleanest possible boundary between "what this ag
 |---|---|
 | `engine.py` | `TickEngine` — one instance per running agent. Runs the tick loop, builds prompts, drives ACP sessions, captures tool calls, persists snapshots. |
 | `strategy.py` | `Strategy` + `StrategyStore`. Strategies live as `agent.md` files (YAML frontmatter + markdown body) under `trading_agents/{slug}/`. |
-| `journal.py` | `JournalManager` — compact, human-readable per-session memory: summary, decisions, ticks, snapshots, executors. Also `learnings.md` cross-session. |
+| `journal.py` | `JournalManager` — compact, human-readable per-session memory: summary, decisions, ticks, snapshots, executors. Also `learnings.md` (execution notes) and `learnings_archive.md` (human-only). |
 | `prompts.py` | Builds the per-tick prompt: system prompt + strategy + provider summaries + journal context + risk state + user directives. |
 | `risk.py` | `RiskEngine` + `RiskLimits`. Hard guardrails (max exposure, max drawdown, max open executors) and the permission callback that auto-approves tool calls only if they pass the risk check. |
 | `providers/` | Deterministic pre-tick data fetchers. Two core providers ship: `executors.py` (filtered by `controller_id`) and `positions.py` (positions summary, also filtered by `controller_id`). |
@@ -74,7 +74,8 @@ In short: executors give us the cleanest possible boundary between "what this ag
 trading_agents/
   river_scalper/
     agent.md                  # strategy definition (frontmatter + LLM instructions)
-    learnings.md              # cross-session lessons the agent writes itself
+    learnings.md              # execution notes injected each tick
+    learnings_archive.md      # human-only historical observations
     routines/                 # deterministic Python helpers (e.g. process_candles.py)
     sessions/
       session_1/
@@ -92,7 +93,7 @@ trading_agents/
 
 1. **Resolve API client** for the configured server.
 2. **Run core providers** — currently `executors` and `positions`, both filtered by `controller_id == agent_id`. Their structured `data` is kept for tracking; their `summary` strings go into the prompt.
-3. **Read journal context** — `learnings.md`, `summary`, and the last 3 decisions.
+3. **Read journal context** — execution notes from `learnings.md`, `summary`, and the last 3 decisions.
 4. **Get risk state** from `RiskEngine` (exposure, drawdown, open count). If the agent is blocked, log it and return without invoking the LLM.
 5. **Build the prompt** via `build_tick_prompt(...)`, optionally appending any user directives queued via `inject_directive()`.
 6. **Spawn an ACP session** for the strategy's `agent_key` (claude-code, gemini, copilot…) with MCP servers wired in (Hummingbot tools, market data, notifications, journal writes). Stream events, capture text and tool calls.
@@ -222,7 +223,8 @@ In production, agents are normally started/stopped from the Telegram `/agent` fl
 
 - `trading_agents/{slug}/sessions/session_N/journal.md` — chronological summary, last decisions, tick log, executors, snapshot index.
 - `trading_agents/{slug}/sessions/session_N/snapshots/snapshot_K.md` — the *full* tick: system prompt, response text, every tool call with arguments and status, executor snapshot, risk state, duration.
-- `trading_agents/{slug}/learnings.md` — lessons the agent has chosen to keep across sessions.
+- `trading_agents/{slug}/learnings.md` — execution/platform quirks the agent keeps across sessions (injected each tick).
+- `trading_agents/{slug}/learnings_archive.md` — retired market observations for human debugging only.
 - `trading_agents/{slug}/dry_runs/experiment_N.md` — dry-run / run-once results.
 
 ### 4.5 Injecting directives mid-flight

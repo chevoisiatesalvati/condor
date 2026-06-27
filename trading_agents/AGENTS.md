@@ -11,7 +11,8 @@ Each agent **slug** (directory name) is the stable identifier everywhere: MCP, r
 ```
 trading_agents/{slug}/
   agent.md                 # Strategy definition — YAML frontmatter + markdown body
-  learnings.md             # Cross-session notes (agent-maintained)
+  learnings.md             # Execution notes injected each tick (agent-maintained)
+  learnings_archive.md     # Human-only archive — not sent to the agent
   routines/                # Agent-scoped deterministic Python (optional)
     {routine_name}.py      # Discovered as {slug}/{routine_name}
   sessions/

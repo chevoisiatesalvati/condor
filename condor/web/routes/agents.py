@@ -858,9 +858,9 @@ async def create_agent(
     # Create empty learnings.md
     learnings_path = strategy.agent_dir / "learnings.md"
     if not learnings_path.exists():
-        learnings_path.write_text(
-            "# Learnings\n\n## Active Insights\n\n## Retired Insights\n"
-        )
+        from condor.trading_agent.journal import LEARNINGS_TEMPLATE
+
+        learnings_path.write_text(LEARNINGS_TEMPLATE)
 
     return AgentSummary(
         slug=strategy.slug,
@@ -1180,6 +1180,17 @@ async def get_learnings(slug: str, user: WebUser = Depends(get_current_user)):
     strategy = _get_strategy_by_slug(slug)
     learnings_path = strategy.agent_dir / "learnings.md"
     content = learnings_path.read_text() if learnings_path.exists() else ""
+    return {"content": content}
+
+
+@router.get("/{slug}/learnings/archive")
+async def get_learnings_archive(slug: str, user: WebUser = Depends(get_current_user)):
+    """Read learnings_archive.md (human-only, not sent to agent prompts)."""
+    from condor.trading_agent.journal import LEARNINGS_ARCHIVE_FILENAME
+
+    strategy = _get_strategy_by_slug(slug)
+    archive_path = strategy.agent_dir / LEARNINGS_ARCHIVE_FILENAME
+    content = archive_path.read_text() if archive_path.exists() else ""
     return {"content": content}
 
 

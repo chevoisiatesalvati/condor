@@ -91,7 +91,8 @@ Each agent is a directory under `trading_agents/{slug}/`:
 ```
 trading_agents/{slug}/
   agent.md              # YAML frontmatter + LLM system prompt / tick instructions
-  learnings.md          # Cross-session lessons (agent-written)
+  learnings.md          # Execution notes (injected each tick; agent-written)
+  learnings_archive.md  # Human-only historical observations (never injected)
   routines/             # Deterministic helpers scoped to this agent
   sessions/session_N/   # Live run: config.yml, journal.md, snapshots/
   dry_runs/             # One-shot dry-run snapshots

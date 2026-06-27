@@ -49,6 +49,62 @@ def _is_barrier_close_type(close_type: str) -> bool:
     return _normalize_close_type(close_type) in _TRIPLE_BARRIER_CLOSE_TYPES
 
 
+def _running_executor_ids(all_executors: list[dict[str, Any]]) -> set[str]:
+    return {
+        str(e["id"])
+        for e in all_executors
+        if e.get("status") == "RUNNING" and e.get("id")
+    }
+
+
+async def _fetch_running_executor_ids(client: Any, agent_id: str) -> set[str]:
+    """Return RUNNING executor ids for barrier-close tracking at end of tick."""
+    from condor.trading_agent.performance import fetch_agent_performance
+
+    perf = await fetch_agent_performance(client, agent_id)
+    return _running_executor_ids(perf.executors)
+
+
+def _parse_tool_call_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            import json
+
+            parsed = json.loads(value)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _executor_id_from_tool_payload(payload: dict[str, Any]) -> str | None:
+    for key in ("executor_id", "id"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _extract_agent_created_executor_ids(tool_calls: list[dict[str, Any]]) -> set[str]:
+    """Executor IDs created this tick (manage_executors action=create)."""
+    created: set[str] = set()
+    for tc in tool_calls:
+        name = (tc.get("name") or "").lower()
+        if "manage_executors" not in name:
+            continue
+        inp = _parse_tool_call_payload(tc.get("input"))
+        if not inp or str(inp.get("action") or "").lower() != "create":
+            continue
+        out = _parse_tool_call_payload(tc.get("output"))
+        if out:
+            eid = _executor_id_from_tool_payload(out)
+            if eid:
+                created.add(eid)
+    return created
+
+
 def _extract_agent_closed_executor_ids(tool_calls: list[dict[str, Any]]) -> set[str]:
     """Executor IDs the agent stopped this tick (manage_executors action=stop)."""
     closed: set[str] = set()
@@ -56,15 +112,8 @@ def _extract_agent_closed_executor_ids(tool_calls: list[dict[str, Any]]) -> set[
         name = (tc.get("name") or "").lower()
         if "manage_executors" not in name:
             continue
-        inp = tc.get("input") or {}
-        if isinstance(inp, str):
-            try:
-                import json
-
-                inp = json.loads(inp)
-            except Exception:
-                continue
-        if not isinstance(inp, dict):
+        inp = _parse_tool_call_payload(tc.get("input"))
+        if not inp:
             continue
         action = str(inp.get("action") or "").lower()
         if action not in ("stop", "close"):
@@ -372,11 +421,8 @@ class TickEngine:
                 eid = ex.get("id")
                 if eid:
                     self._notified_barrier_close_ids.add(eid)
-            self._last_running_executor_ids = {
-                e["id"]
-                for e in all_executors
-                if e.get("status") == "RUNNING" and e.get("id")
-            }
+            # Keep last_running until post-tick refresh — do not overwrite here.
+            # Barrier detection compares end-of-previous-tick RUNNING ids to this fetch.
 
         # 3. Read journal context (sessions only)
         learnings = self.journal.read_learnings() if self.journal else ""
@@ -556,7 +602,22 @@ class TickEngine:
             if agent_closed:
                 self._agent_closed_executor_ids.update(agent_closed)
                 self._notified_barrier_close_ids.update(agent_closed)
-                self._last_running_executor_ids -= agent_closed
+
+            try:
+                self._last_running_executor_ids = await _fetch_running_executor_ids(
+                    client, self.agent_id
+                )
+            except Exception:
+                log.warning(
+                    "TickEngine %s: failed to refresh running executor ids after tick",
+                    self.agent_id,
+                    exc_info=True,
+                )
+                created = _extract_agent_created_executor_ids(tool_calls)
+                if created:
+                    self._last_running_executor_ids.update(created)
+                if agent_closed:
+                    self._last_running_executor_ids -= agent_closed
 
     async def _collect_stream(
         self,

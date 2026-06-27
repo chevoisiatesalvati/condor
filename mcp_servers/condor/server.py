@@ -301,7 +301,7 @@ async def trading_agent_journal_read(
         agent_id: The trading agent instance ID.
         section: What to read:
                  "recent" (last 10 decisions from run snapshots),
-                 "learnings" (all learnings, max 20),
+                 "learnings" (execution notes only, max 20),
                  "summary" (current status one-liner),
                  "state" (alias for summary),
                  "full" (entire journal),
@@ -333,17 +333,18 @@ async def trading_agent_journal_write(
             CONDOR_AGENT_ID for this tick session (see [TICK INFO]).
         entry_type: "action", "learning", or "state".
             - "action": What you did this tick (auto-trimmed to last 10).
-            - "learning": A new insight. Duplicates are auto-filtered. Only write
-              if this is genuinely new and not already in learnings (max 20).
+            - "learning": A new execution insight (category="execution" only).
+              Duplicates are auto-filtered. Only write if genuinely new (max 20).
+              Valid: executor create failures/schema fixes, missing RUNNING after create,
+              retry patterns. Invalid: signal snapshots, 4h blocks, thesis_decay — use action line.
             - "state": Overwrite the current state snapshot (e.g. price, position, grids).
         text: The entry content. Keep it to ONE short line.
         reasoning: One-sentence reasoning (for actions only).
         risk_note: Optional risk note (for actions only).
         tick: Current tick number from [TICK INFO] (for actions only). If omitted/0,
             Condor infers from tick=N in text or the running engine's tick.
-        category: Learning category: "market" (observations, patterns, volatility)
-            or "execution" (errors, fills, timing). Only used when entry_type="learning".
-            Defaults to "market".
+        category: Learning category — "execution" only (defaults to "execution").
+            "market" is rejected. Only used when entry_type="learning".
 
     Returns:
         {"written": true}

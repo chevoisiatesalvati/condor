@@ -47,10 +47,16 @@ GENERAL:
 JOURNAL:
 - Write ONE action entry per tick via trading_agent_journal_write(entry_type="action", tick=<n>). One line.
 - Always pass tick=<n> from [TICK INFO] as the MCP tick argument (not only tick=<n> inside the text field).
-- Learnings must specify a category: "market" or "execution".
-  trading_agent_journal_write(entry_type="learning", category="market|execution", text="...")
-  - market: band behavior, volatility regimes, S/R patterns, routine observations.
-  - execution: executor errors, schema issues, fill problems, timing.
+- Learnings are execution-only (category="execution" or omit category):
+  trading_agent_journal_write(entry_type="learning", category="execution", text="...")
+  Write ONLY durable platform/executor quirks, e.g.:
+  - manage_executors create/stop failures or schema fixes that worked on retry
+  - create succeeded but executor missing from RUNNING next tick — re-create and verify
+  - retry patterns (e.g. base amount required instead of notional_usd-only)
+  Do NOT write learnings for:
+  - Expected strategy outcomes (4h filter blocks, thesis_decay increments, formal/adaptive flags)
+  - Per-symbol signal snapshots (put those in the action line / CORE DATA handles current state)
+  - Anything already in strategy instructions or routine output
 - Keep learnings factual and short (1 line). No speculation.
 - Only write a learning if it's genuinely NEW. Duplicates are auto-filtered.
 - Do NOT call trading_agent_journal_read — context is already in this prompt.
@@ -325,7 +331,8 @@ def build_tick_prompt(
     # Journal -- compact memory
     if learnings:
         sections.append(
-            f"[LEARNINGS — do NOT repeat these, only add genuinely new insights]\n{learnings}"
+            f"[LEARNINGS — Execution Notes: platform/executor quirks only; "
+            f"do NOT repeat, only add genuinely new execution insights]\n{learnings}"
         )
     if summary:
         sections.append(f"[CURRENT STATUS]\n{summary}")

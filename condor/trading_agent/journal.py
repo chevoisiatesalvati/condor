@@ -6,7 +6,8 @@ Data is organized by strategy and session::
         {strategy_slug}/
             agent.md            # strategy definition
             config.yml          # runtime config
-            learnings.md        # cross-session learnings
+            learnings.md        # execution notes (injected each tick)
+            learnings_archive.md  # human-only historical observations
             dry_runs/           # experiment snapshots (experiment_N.md)
             sessions/
                 session_1/
@@ -29,6 +30,8 @@ log = logging.getLogger(__name__)
 _DATA_ROOT = Path(__file__).parent.parent.parent / "trading_agents"
 
 MAX_LEARNINGS = 20
+LEARNINGS_ARCHIVE_FILENAME = "learnings_archive.md"
+LEGACY_MARKET_SECTION = "Market Observations"
 
 
 def resolve_agent_dirs(agent_id: str) -> tuple[Path | None, Path | None]:
@@ -80,18 +83,24 @@ No ticks yet.
 LEARNINGS_TEMPLATE = """\
 # Learnings
 
-## Market Observations
-
 ## Execution Notes
 
-## Retired Insights
+"""
+
+LEARNINGS_ARCHIVE_TEMPLATE = """\
+# Learnings Archive
+
+Historical observations — not sent to the agent. For human debugging only.
+
+## Market Observations
+
 """
 
 LEARNING_CATEGORIES = {
-    "market": "Market Observations",
     "execution": "Execution Notes",
 }
-DEFAULT_LEARNING_CATEGORY = "market"
+DEFAULT_LEARNING_CATEGORY = "execution"
+RETIRED_MARKET_CATEGORY = "market"
 
 SNAPSHOT_TEMPLATE = """\
 # Snapshot #{tick} — {timestamp}
@@ -253,6 +262,69 @@ def save_experiment_snapshot(
     return path
 
 
+def migrate_legacy_market_learnings(agent_dir: Path) -> bool:
+    """Move legacy Market Observations from learnings.md into learnings_archive.md.
+
+    Idempotent: no-op when the Market Observations section is absent or empty.
+    Returns True when migration ran, False otherwise.
+    """
+    learnings_path = agent_dir / "learnings.md"
+    if not learnings_path.exists():
+        return False
+
+    text = learnings_path.read_text()
+    pattern = rf"^## {re.escape(LEGACY_MARKET_SECTION)}\n(.*?)(?=^## |\Z)"
+    match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+    if not match:
+        return False
+
+    bullets = [line for line in match.group(1).splitlines() if line.startswith("- ")]
+    if not bullets:
+        # Remove empty legacy section only
+        new_text = text[: match.start()] + text[match.end() :]
+        new_text = _strip_empty_retired_insights(new_text)
+        learnings_path.write_text(new_text.rstrip() + "\n")
+        return False
+
+    archive_path = agent_dir / LEARNINGS_ARCHIVE_FILENAME
+    if archive_path.exists():
+        archive_text = archive_path.read_text()
+    else:
+        archive_text = LEARNINGS_ARCHIVE_TEMPLATE
+
+    archive_section_pattern = rf"(^## {re.escape(LEGACY_MARKET_SECTION)}\n)(.*?)(?=^## |\Z)"
+    archive_match = re.search(archive_section_pattern, archive_text, re.MULTILINE | re.DOTALL)
+    if archive_match:
+        existing = [line for line in archive_match.group(2).splitlines() if line.startswith("- ")]
+        merged = existing + bullets
+        archive_body = "\n".join(merged)
+        archive_text = (
+            archive_text[: archive_match.start(2)]
+            + archive_body
+            + "\n"
+            + archive_text[archive_match.end(2) :]
+        )
+    else:
+        archive_text = archive_text.rstrip() + f"\n\n## {LEGACY_MARKET_SECTION}\n" + "\n".join(bullets) + "\n"
+    archive_path.write_text(archive_text)
+
+    new_text = text[: match.start()] + text[match.end() :]
+    new_text = _strip_empty_retired_insights(new_text)
+    learnings_path.write_text(new_text.rstrip() + "\n")
+    log.info(
+        "Migrated %d market observation(s) from learnings.md to %s",
+        len(bullets),
+        archive_path.name,
+    )
+    return True
+
+
+def _strip_empty_retired_insights(text: str) -> str:
+    """Remove empty ## Retired Insights legacy section."""
+    pattern = r"^## Retired Insights\s*\n(?=^## |\Z)"
+    return re.sub(pattern, "", text, flags=re.MULTILINE)
+
+
 class JournalManager:
     """Read/write journal + tracker for one agent session.
 
@@ -295,6 +367,7 @@ class JournalManager:
             learnings_path = self._agent_dir / "learnings.md"
             if not learnings_path.exists():
                 learnings_path.write_text(LEARNINGS_TEMPLATE)
+            migrate_legacy_market_learnings(self._agent_dir)
 
         self._tick_count = self._count_ticks()
 
@@ -312,47 +385,63 @@ class JournalManager:
             return parent.parent / "learnings.md"
         return None
 
+    def _learnings_archive_path(self) -> Path | None:
+        """Get the human-only learnings archive file path."""
+        if self._agent_dir:
+            return self._agent_dir / LEARNINGS_ARCHIVE_FILENAME
+        parent = self._session_dir.parent
+        if parent.name in ("sessions", "trading_sessions"):
+            return parent.parent / LEARNINGS_ARCHIVE_FILENAME
+        return None
+
     def read_learnings(self) -> str:
-        """Return the learnings content (cross-session), grouped by category."""
+        """Return execution learnings injected into tick prompts (cross-session)."""
         path = self._learnings_path()
         if path and path.exists():
             text = path.read_text()
             parts = []
-            # Read each category section
-            for cat_key, cat_header in LEARNING_CATEGORIES.items():
+            for _cat_key, cat_header in LEARNING_CATEGORIES.items():
                 m = re.search(rf"^## {re.escape(cat_header)}\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
                 if m and m.group(1).strip():
                     parts.append(f"**{cat_header}:**\n{m.group(1).strip()}")
             if parts:
                 return "\n\n".join(parts)
-            # Legacy fallback: try Active Insights
-            m = re.search(r"^## Active Insights\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
-            if m:
-                return m.group(1).strip()
-            lines = text.strip().splitlines()
-            content = [l for l in lines if not l.startswith("# ")]
-            return "\n".join(content).strip()
-        # Fallback: read from journal Learnings section (legacy)
-        return self._get_section("Learnings")
+        return ""
 
-    def append_learning(self, text_content: str, category: str = "") -> None:
-        """Add a learning under a category, deduplicating against existing ones.
+    def read_learnings_archive(self) -> str:
+        """Return human-only archive content (never injected into tick prompts)."""
+        path = self._learnings_archive_path()
+        if path and path.exists():
+            return path.read_text()
+        return ""
+
+    def append_learning(self, text_content: str, category: str = "") -> bool:
+        """Add an execution learning, deduplicating against existing ones.
 
         Args:
             text_content: The learning text.
-            category: "market" or "execution". Defaults to "market".
+            category: Must be "execution" (or empty for default). "market" is rejected.
+
+        Returns:
+            True if a new line was written, False if rejected or duplicate.
         """
+        cat_key = (category or DEFAULT_LEARNING_CATEGORY).strip().lower()
+        if cat_key == RETIRED_MARKET_CATEGORY:
+            log.debug("Rejected market learning (retired category): %s", text_content[:80])
+            return False
+        if cat_key not in LEARNING_CATEGORIES:
+            log.debug("Rejected learning with unknown category %r", category)
+            return False
+
         path = self._learnings_path()
         if not path:
             self._append_learning_to_journal(text_content)
-            return
+            return True
 
         if not path.exists():
             path.write_text(LEARNINGS_TEMPLATE)
 
-        # Resolve category to section header
-        cat = category if category in LEARNING_CATEGORIES else DEFAULT_LEARNING_CATEGORY
-        section_header = LEARNING_CATEGORIES[cat]
+        section_header = LEARNING_CATEGORIES[cat_key]
 
         full_text = path.read_text()
 
@@ -377,9 +466,9 @@ class JournalManager:
                     continue
                 existing_text = re.sub(r"^- (\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] |\[\d{2}:\d{2}\] )?", "", line)
                 if _normalize(existing_text) == normalized_new:
-                    return
+                    return False
                 if _word_overlap(normalized_new, _normalize(existing_text)) > 0.5:
-                    return
+                    return False
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
         existing_lines.append(f"- [{now}] {text_content}")
@@ -393,6 +482,7 @@ class JournalManager:
         else:
             new_text = full_text.rstrip() + f"\n\n## {section_header}\n{new_section}\n"
         path.write_text(new_text)
+        return True
 
     def _append_learning_to_journal(self, text_content: str) -> None:
         """Legacy: append learning to journal's Learnings section."""

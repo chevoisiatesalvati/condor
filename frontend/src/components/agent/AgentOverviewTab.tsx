@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
+  ChevronDown,
   ChevronRight,
   Clock,
   FlaskConical,
@@ -7,6 +9,8 @@ import {
   Zap,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { computeMaxTotalExposure } from "@/components/agent/AgentSessionConfigFields";
 import { ExecutorChart } from "@/components/charts/ExecutorChart";
@@ -69,6 +73,59 @@ export function MarkdownEditor({
         spellCheck={false}
         className="min-h-[500px] w-full resize-y rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4 font-mono text-sm leading-relaxed text-[var(--color-text)] outline-none transition-colors focus:border-[var(--color-primary)]/50"
       />
+    </div>
+  );
+}
+
+export function LearningsArchivePanel({ slug }: { slug: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["agent", slug, "learnings-archive"],
+    queryFn: () => api.getAgentLearningsArchive(slug),
+    enabled: expanded,
+  });
+  const content = data?.content?.trim() ?? "";
+
+  return (
+    <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]">
+      <button
+        type="button"
+        onClick={() => setExpanded((open) => !open)}
+        className="flex w-full items-center justify-between px-4 py-3 text-left"
+      >
+        <div className="flex items-center gap-2">
+          {expanded ? (
+            <ChevronDown className="h-4 w-4 text-[var(--color-text-muted)]" />
+          ) : (
+            <ChevronRight className="h-4 w-4 text-[var(--color-text-muted)]" />
+          )}
+          <Archive className="h-4 w-4 text-[var(--color-text-muted)]" />
+          <span className="text-xs font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
+            Archive (not sent to agent)
+          </span>
+        </div>
+        <span className="text-[10px] text-[var(--color-text-muted)]">
+          Historical market observations — for debugging only
+        </span>
+      </button>
+      {expanded && (
+        <div className="border-t border-[var(--color-border)] px-4 py-4">
+          {isLoading && (
+            <p className="text-sm text-[var(--color-text-muted)]">Loading archive...</p>
+          )}
+          {isError && (
+            <p className="text-sm text-red-400">Failed to load archive.</p>
+          )}
+          {!isLoading && !isError && !content && (
+            <p className="text-sm text-[var(--color-text-muted)]">No archived observations yet.</p>
+          )}
+          {!isLoading && !isError && content && (
+            <div className="prose prose-invert max-w-none text-sm text-[var(--color-text)]">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -427,11 +484,13 @@ export function OverviewTab({ agent }: { agent: AgentDetail }) {
         <MarkdownEditor
           slug={agent.slug}
           label="Learnings"
-          sublabel="persists across sessions"
+          sublabel="execution notes — sent to agent each tick"
           content={agent.learnings}
           mutationFn={api.updateAgentLearnings}
         />
       </div>
+
+      <LearningsArchivePanel slug={agent.slug} />
     </div>
   );
 }
