@@ -199,6 +199,7 @@ async def _notify_via_telegram_bot_api(chat_id: int, text: str) -> None:
 _engines: dict[str, "TickEngine"] = {}
 _lifecycle_locks: dict[str, asyncio.Lock] = {}
 
+
 def _lifecycle_lock(agent_id: str) -> asyncio.Lock:
     lock = _lifecycle_locks.get(agent_id)
     if lock is None:

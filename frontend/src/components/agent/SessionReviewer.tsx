@@ -63,7 +63,7 @@ export function SessionReviewer({
   initialSessionNum,
   initialKind = "session",
   serverName,
-  controllerIds,
+  controllerIds: _controllerIds,
   allAgents: _allAgents,
   runningInstances = [],
   onClose,
@@ -148,7 +148,7 @@ export function SessionReviewer({
     [activeInstance],
   );
 
-  const liveSessionStatus = activeInstance?.status ?? "closed";
+  const liveSessionStatus = activeInstance?.status;
 
   const currentIdx = sidebarItems.findIndex(
     (s) => s.number === selectedNum && s.kind === selectedKind,
@@ -159,14 +159,6 @@ export function SessionReviewer({
     setSelectedNum(item.number);
     setSelectedKind(item.kind);
     setActiveSubTab("overview");
-  }, []);
-
-  // Snapshot click from chart → navigate to snapshots tab with that tick
-  const [pendingSnapshotTick, setPendingSnapshotTick] = useState<number | null>(null);
-
-  const handleSnapshotClick = useCallback((tick: number) => {
-    setPendingSnapshotTick(tick);
-    setActiveSubTab("snapshots");
   }, []);
 
   // Keyboard: Escape only
@@ -418,7 +410,6 @@ export function SessionReviewer({
                       sessionNum={selectedNum}
                       serverName={serverName}
                       controllerIds={sessionControllerIds}
-                      onSnapshotClick={handleSnapshotClick}
                       sessionSummary={parsedJournal.summary}
                       liveSessionStatus={liveSessionStatus}
                     />
@@ -427,7 +418,7 @@ export function SessionReviewer({
                 )}
                 {activeSubTab === "activity" && <SessionActivity journal={parsedJournal} />}
                 {activeSubTab === "snapshots" && (
-                  <SessionSnapshots slug={slug} sessionNum={selectedNum} initialTick={pendingSnapshotTick} />
+                  <SessionSnapshots slug={slug} sessionNum={selectedNum} />
                 )}
               </>
             )

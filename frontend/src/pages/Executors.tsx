@@ -277,19 +277,23 @@ function exportCsv(executors: ExecutorInfo[], filename = "executors.csv") {
 
 // ── Executor Table ──
 
+const EMPTY_SELECTED_IDS = new Set<string>();
+
 export function ExecutorTable({
   executors,
   sortKey,
   sortDir,
   onSort,
-  selectedIds,
+  selectedIds = EMPTY_SELECTED_IDS,
   onToggleSelect,
   onSelectAll,
-  allSelected,
+  allSelected = false,
   onRowClick,
   selectedExecutorId,
   onStop,
   stoppingIds,
+  showCheckboxes = true,
+  highlightSelectedIds = false,
   rateFormatPnl,
   rateFormatValue,
   rateFormatDetailed,
@@ -298,14 +302,16 @@ export function ExecutorTable({
   sortKey: SortKey;
   sortDir: SortDir;
   onSort: (key: SortKey) => void;
-  selectedIds: Set<string>;
-  onToggleSelect: (id: string) => void;
-  onSelectAll: () => void;
-  allSelected: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  onSelectAll?: () => void;
+  allSelected?: boolean;
   onRowClick: (ex: ExecutorInfo) => void;
   selectedExecutorId: string | null;
   onStop: (id: string) => void;
   stoppingIds: Set<string>;
+  showCheckboxes?: boolean;
+  highlightSelectedIds?: boolean;
   rateFormatPnl?: (val: number, quote: string) => string;
   rateFormatValue?: (val: number, quote: string) => string;
   rateFormatDetailed?: (val: number, quote: string) => string;
@@ -325,14 +331,16 @@ export function ExecutorTable({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-              <th className="px-3 py-3 w-8">
-                <input
-                  type="checkbox"
-                  checked={allSelected && executors.length > 0}
-                  onChange={onSelectAll}
-                  className="rounded border-[var(--color-border)]"
-                />
-              </th>
+              {showCheckboxes && (
+                <th className="px-3 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={allSelected && executors.length > 0}
+                    onChange={onSelectAll}
+                    className="rounded border-[var(--color-border)]"
+                  />
+                </th>
+              )}
               <SortHeader label="ID" sortKey="id" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="Type" sortKey="type" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="Connector" sortKey="connector" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
@@ -349,7 +357,9 @@ export function ExecutorTable({
           </thead>
           <tbody>
             {sorted.map((ex) => {
-              const isSelected = selectedExecutorId === ex.id;
+              const isSelected = highlightSelectedIds
+                ? selectedIds.has(ex.id)
+                : selectedExecutorId === ex.id;
               const isChecked = selectedIds.has(ex.id);
               const side = ex.side.toUpperCase();
               const pnlBorder = ex.pnl >= 0 ? "var(--color-green)" : "var(--color-red)";
@@ -361,14 +371,16 @@ export function ExecutorTable({
                   style={{ borderLeft: `3px solid ${pnlBorder}` }}
                   onClick={() => onRowClick(ex)}
                 >
-                  <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onChange={() => onToggleSelect(ex.id)}
-                      className="rounded border-[var(--color-border)]"
-                    />
-                  </td>
+                  {showCheckboxes && (
+                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => onToggleSelect?.(ex.id)}
+                        className="rounded border-[var(--color-border)]"
+                      />
+                    </td>
+                  )}
                   <td className="px-4 py-2.5 text-xs font-mono text-[var(--color-text-muted)]" title={ex.id}>
                     {ex.id.slice(0, 8)}
                   </td>
@@ -448,6 +460,7 @@ export function DetailPanel({
   onClose,
   onStop,
   stopping,
+  variant = "sidebar",
   rateFormatPnl,
   rateFormatValue,
   rateFormatDetailed,
@@ -457,11 +470,13 @@ export function DetailPanel({
   onClose: () => void;
   onStop: (id: string) => void;
   stopping: boolean;
+  variant?: "sidebar" | "inline";
   rateFormatPnl?: (val: number, quote: string) => string;
   rateFormatValue?: (val: number, quote: string) => string;
   rateFormatDetailed?: (val: number, quote: string) => string;
 }) {
   const navigate = useNavigate();
+  const isInline = variant === "inline";
   const [panelWidth, setPanelWidth] = useState(480);
   const isDragging = useRef(false);
 
@@ -514,13 +529,19 @@ export function DetailPanel({
 
   return (
       <div
-        className="h-full bg-[var(--color-bg)] border-l border-[var(--color-border)] overflow-y-auto shadow-xl shrink-0 relative"
-        style={{ width: panelWidth }}
+        className={
+          isInline
+            ? "w-full min-w-0 max-h-[70vh] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] overflow-y-auto relative"
+            : "h-full bg-[var(--color-bg)] border-l border-[var(--color-border)] overflow-y-auto shadow-xl shrink-0 relative"
+        }
+        style={isInline ? undefined : { width: panelWidth }}
       >
-        <div
-          className="absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-[var(--color-primary)]/30 transition-colors z-10"
-          onMouseDown={onMouseDown}
-        />
+        {!isInline && (
+          <div
+            className="absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-[var(--color-primary)]/30 transition-colors z-10"
+            onMouseDown={onMouseDown}
+          />
+        )}
 
         <div className="sticky top-0 bg-[var(--color-bg)] border-b border-[var(--color-border)] px-5 py-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold truncate pr-4 font-mono" title={executor.id}>
@@ -819,7 +840,12 @@ export function DetailPanel({
                   // Parse JSON strings into objects for display
                   let parsed = val;
                   if (typeof val === "string") {
-                    try { const p = JSON.parse(val); if (typeof p === "object" && p !== null) parsed = p; } catch {}
+                    try {
+                      const p = JSON.parse(val);
+                      if (typeof p === "object" && p !== null) parsed = p;
+                    } catch {
+                      // Not JSON — display the raw string
+                    }
                   }
                   const isNested = typeof parsed === "object" && parsed !== null;
 
@@ -979,6 +1005,12 @@ function StopConfirmDialog({
 
 // ── Main Page ──
 
+function kpiPeriodSeconds(period: string): number {
+  if (period === "1W") return 7 * 86400;
+  if (period === "1M") return 30 * 86400;
+  return 90 * 86400;
+}
+
 export function Executors() {
   const { server } = useServer();
   const navigate = useNavigate();
@@ -998,6 +1030,12 @@ export function Executors() {
   const [stoppingIds, setStoppingIds] = useState<Set<string>>(new Set());
   const [pendingStopIds, setPendingStopIds] = useState<string[] | null>(null);
   const [kpiPeriod, setKpiPeriod] = useState<string>("3M");
+  const [kpiCutoff, setKpiCutoff] = useState(() => Date.now() / 1000 - kpiPeriodSeconds("3M"));
+
+  const handleKpiPeriodChange = useCallback((period: string) => {
+    setKpiPeriod(period);
+    setKpiCutoff(Date.now() / 1000 - kpiPeriodSeconds(period));
+  }, []);
 
   // WebSocket for real-time updates
   const wsChannels = useMemo(
@@ -1132,14 +1170,10 @@ export function Executors() {
   const activePnl = useMemo(() => activeExecutors.reduce((s, ex) => s + convert(ex.pnl, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [activeExecutors, convert]);
   const activeVolume = useMemo(() => activeExecutors.reduce((s, ex) => s + convert(ex.volume, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [activeExecutors, convert]);
 
-  const periodFilteredArchived = useMemo(() => {
-    const now = Date.now() / 1000;
-    const cutoff =
-      kpiPeriod === "1W" ? now - 7 * 86400 :
-      kpiPeriod === "1M" ? now - 30 * 86400 :
-      now - 90 * 86400;
-    return archivedExecutors.filter((ex) => ex.timestamp >= cutoff);
-  }, [archivedExecutors, kpiPeriod]);
+  const periodFilteredArchived = useMemo(
+    () => archivedExecutors.filter((ex) => ex.timestamp >= kpiCutoff),
+    [archivedExecutors, kpiCutoff],
+  );
 
   const archivedPnl = useMemo(() => periodFilteredArchived.reduce((s, ex) => s + convert(ex.pnl, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [periodFilteredArchived, convert]);
   const archivedVolume = useMemo(() => periodFilteredArchived.reduce((s, ex) => s + convert(ex.volume, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [periodFilteredArchived, convert]);
@@ -1318,7 +1352,7 @@ export function Executors() {
                   {(["1W", "1M", "3M"] as const).map((p) => (
                     <button
                       key={p}
-                      onClick={() => setKpiPeriod(p)}
+                      onClick={() => handleKpiPeriodChange(p)}
                       className={`px-2 py-1 text-[10px] rounded font-medium transition-colors ${
                         kpiPeriod === p
                           ? "bg-[var(--color-accent)] text-white shadow-sm"

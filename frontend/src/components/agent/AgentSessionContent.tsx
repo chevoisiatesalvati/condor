@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
-import { ExecutorChart, type SnapshotBubble } from "@/components/charts/ExecutorChart";
 import { AgentPnlChart, metricsToDataPoints } from "@/components/agent/AgentPnlChart";
 import { useAgentExecutors } from "@/hooks/useAgentExecutors";
 import { type AgentExecutorRow, type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
@@ -105,14 +104,13 @@ export function SessionActivity({ journal }: { journal: ParsedJournal }) {
   );
 }
 
-// ── Session Executors (chart-focused with WS streaming) ──
+// ── Session Executors ──
 
 export function SessionExecutors({
   slug,
   sessionNum,
   serverName,
   controllerIds,
-  onSnapshotClick,
   sessionSummary,
   liveSessionStatus,
 }: {
@@ -120,7 +118,6 @@ export function SessionExecutors({
   sessionNum: number;
   serverName: string;
   controllerIds?: string[];
-  onSnapshotClick?: (tick: number) => void;
   sessionSummary?: { status: string; lastTick: number; lastAction: string };
   liveSessionStatus?: string;
 }) {
@@ -153,7 +150,9 @@ export function SessionExecutors({
     return merged;
   }, [restExecutors, wsExecutors]);
 
-  const displaySessionStatus = liveSessionStatus ?? sessionSummary?.status ?? "idle";
+  // Live engine status only — matches /performance table ("closed" when no TickEngine).
+  // Journal "Status: Running" is written each tick and is not cleared on unclean engine loss.
+  const displaySessionStatus = liveSessionStatus ?? "closed";
 
   // Currency conversion
   const quoteCurrencies = useMemo(
@@ -161,61 +160,6 @@ export function SessionExecutors({
     [executorInfos],
   );
   const { formatPnlValue, formatValue, formatValueDetailed } = useRates(quoteCurrencies);
-
-  // Fetch snapshots for bubble markers
-  const { data: snapshotsData } = useQuery({
-    queryKey: ["agent", slug, "session", sessionNum, "snapshots"],
-    queryFn: () => api.getSessionSnapshots(slug, sessionNum),
-  });
-
-  // Fetch each snapshot content for agent response previews
-  const snapshotSummaries = snapshotsData?.snapshots ?? [];
-  const snapshotQueries = useQuery({
-    queryKey: ["agent", slug, "session", sessionNum, "snapshot-contents", snapshotSummaries.map((s) => s.tick).join(",")],
-    queryFn: async () => {
-      const results: SnapshotBubble[] = [];
-      for (const snap of snapshotSummaries) {
-        try {
-          const data = await api.getSnapshot(slug, sessionNum, snap.tick);
-          if (data?.content) {
-            const parsed = parseSnapshot(data.content);
-            results.push({
-              tick: snap.tick,
-              timestamp: snap.timestamp,
-              agentResponse: parsed.agentResponse,
-              toolCallCount: parsed.toolCalls.length,
-            });
-          } else {
-            results.push({ tick: snap.tick, timestamp: snap.timestamp });
-          }
-        } catch {
-          results.push({ tick: snap.tick, timestamp: snap.timestamp });
-        }
-      }
-      return results;
-    },
-    enabled: snapshotSummaries.length > 0,
-    staleTime: 60000,
-  });
-
-  const snapshotBubbles = snapshotQueries.data ?? snapshotSummaries.map((s) => ({
-    tick: s.tick,
-    timestamp: s.timestamp,
-  }));
-
-  // Group executors by connector:pair for charts
-  const chartGroups = useMemo(() => {
-    if (!serverName || executorInfos.length === 0) return [];
-    const groups = new Map<string, ExecutorInfo[]>();
-    for (const ex of executorInfos) {
-      if (!ex.trading_pair) continue;
-      const key = `${ex.connector}:${ex.trading_pair}`;
-      const arr = groups.get(key);
-      if (arr) arr.push(ex);
-      else groups.set(key, [ex]);
-    }
-    return Array.from(groups.entries());
-  }, [executorInfos, serverName]);
 
   // Aggregate stats
   const stats = useMemo(() => {
@@ -238,7 +182,11 @@ export function SessionExecutors({
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const stoppingIds = useMemo(() => new Set<string>(), []);
-  const [selectedExecutor, setSelectedExecutor] = useState<ExecutorInfo | null>(null);
+
+  const selectedExecutors = useMemo(
+    () => executorInfos.filter((ex) => selectedIds.has(ex.id)),
+    [executorInfos, selectedIds],
+  );
 
   // Positions held (filtered by controller IDs)
   const { data: positionsData } = useQuery({
@@ -267,14 +215,6 @@ export function SessionExecutors({
       return next;
     });
   }, []);
-
-  const selectAll = useCallback(() => {
-    setSelectedIds((prev) =>
-      prev.size === executorInfos.length ? new Set() : new Set(executorInfos.map((e) => e.id)),
-    );
-  }, [executorInfos]);
-
-  const allSelected = selectedIds.size === executorInfos.length && executorInfos.length > 0;
 
   if (!sessionDetail) {
     return (
@@ -399,63 +339,39 @@ export function SessionExecutors({
         </div>
       )}
 
-      {/* Chart-focused view — each trading pair gets a prominent chart */}
-      {chartGroups.map(([key, group]) => {
-        const pairPnl = group.reduce((sum, ex) => sum + (ex.pnl ?? 0), 0);
-        return (
-          <div key={key}>
-            {/* Pair header (only when multiple pairs) */}
-            {chartGroups.length > 1 && (
-              <div className="mb-1.5 flex items-center gap-2 px-1">
-                <span className="text-xs font-medium text-[var(--color-text)]">{group[0].trading_pair}</span>
-                <span className="text-[10px] text-[var(--color-text-muted)]">{group[0].connector}</span>
-                <span className={`ml-auto font-mono text-xs ${pairPnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                  {pairPnl >= 0 ? "+" : ""}{fmtUsd(pairPnl)}
-                </span>
-                <span className="text-[10px] text-[var(--color-text-muted)]">{group.length} exec</span>
-              </div>
-            )}
-            <ExecutorChart
-              server={serverName}
-              executors={group}
-              connector={group[0].connector}
-              tradingPair={group[0].trading_pair}
-              height={500}
-              snapshots={snapshotBubbles}
-              onSnapshotClick={onSnapshotClick}
-            />
-          </div>
-        );
-      })}
-
       {/* Executor table */}
       <ExecutorTable
         executors={executorInfos}
         sortKey={sortKey}
         sortDir={sortDir}
         onSort={handleSort}
+        showCheckboxes={false}
+        highlightSelectedIds
         selectedIds={selectedIds}
-        onToggleSelect={toggleSelect}
-        onSelectAll={selectAll}
-        allSelected={allSelected}
-        onRowClick={(ex) => setSelectedExecutor(ex)}
-        selectedExecutorId={selectedExecutor?.id ?? null}
+        onRowClick={(ex) => toggleSelect(ex.id)}
+        selectedExecutorId={null}
         onStop={() => {}}
         stoppingIds={stoppingIds}
       />
 
-      {/* Executor Detail Panel */}
-      {selectedExecutor && (
-        <DetailPanel
-          executor={selectedExecutor}
-          server={serverName}
-          onClose={() => setSelectedExecutor(null)}
-          onStop={() => {}}
-          stopping={false}
-          rateFormatPnl={formatPnlValue}
-          rateFormatValue={formatValue}
-          rateFormatDetailed={formatValueDetailed}
-        />
+      {/* Executor detail panels */}
+      {selectedExecutors.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {selectedExecutors.map((ex) => (
+            <DetailPanel
+              key={ex.id}
+              variant="inline"
+              executor={ex}
+              server={serverName}
+              onClose={() => toggleSelect(ex.id)}
+              onStop={() => {}}
+              stopping={false}
+              rateFormatPnl={formatPnlValue}
+              rateFormatValue={formatValue}
+              rateFormatDetailed={formatValueDetailed}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
