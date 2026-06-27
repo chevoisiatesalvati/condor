@@ -106,6 +106,13 @@ export function SessionActivity({ journal }: { journal: ParsedJournal }) {
 
 // ── Session Executors ──
 
+function detailPanelGridClass(count: number): string {
+  const base = "grid gap-3";
+  if (count <= 1) return `${base} grid-cols-1`;
+  if (count === 2) return `${base} grid-cols-1 sm:grid-cols-2`;
+  return `${base} grid-cols-1 sm:grid-cols-2 lg:grid-cols-3`;
+}
+
 export function SessionExecutors({
   slug,
   sessionNum,
@@ -356,7 +363,7 @@ export function SessionExecutors({
 
       {/* Executor detail panels */}
       {selectedExecutors.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className={detailPanelGridClass(selectedExecutors.length)}>
           {selectedExecutors.map((ex) => (
             <DetailPanel
               key={ex.id}
