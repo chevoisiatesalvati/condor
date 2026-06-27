@@ -363,6 +363,7 @@ export interface AgentExecutorRow {
   status: string;
   close_type: string;
   pnl: number;
+  net_pnl_pct?: number;
   volume: number;
   fees: number;
   entry_price: number;

@@ -29,7 +29,7 @@ function agentRowToExecutorInfo(row: AgentExecutorRow): ExecutorInfo {
     timestamp: row.timestamp,
     controller_id: row.controller_id,
     cum_fees_quote: row.fees,
-    net_pnl_pct: 0,
+    net_pnl_pct: row.net_pnl_pct ?? 0,
     entry_price: row.entry_price,
     current_price: row.current_price,
     close_timestamp: row.close_timestamp,
@@ -137,10 +137,17 @@ export function SessionExecutors({
 
   const restExecutors = sessionDetail?.executors ?? [];
 
-  // WS-backed live executors (only for the selected session when it is live)
+  // Always include this session's controller id so WS can overlay live PnL / PnL%.
+  const sessionControllerIds = useMemo(() => {
+    const ids = new Set<string>([`${slug}_${sessionNum}`]);
+    for (const id of controllerIds ?? []) ids.add(id);
+    return Array.from(ids);
+  }, [slug, sessionNum, controllerIds]);
+
+  // WS-backed live executors for the selected session
   const { executors: wsExecutors } = useAgentExecutors(
-    controllerIds?.length ? serverName : null,
-    controllerIds || [],
+    serverName || null,
+    sessionControllerIds,
   );
 
   // Merge: prefer WS data for matching IDs, keep REST for historical
@@ -199,15 +206,15 @@ export function SessionExecutors({
   const { data: positionsData } = useQuery({
     queryKey: ["positions-held", serverName],
     queryFn: () => api.getPositionsHeld(serverName),
-    enabled: !!serverName && (controllerIds?.length ?? 0) > 0,
+    enabled: !!serverName && sessionControllerIds.length > 0,
     refetchInterval: 10000,
   });
 
   const positions = useMemo(() => {
-    if (!positionsData?.positions || !controllerIds?.length) return [];
-    const cidSet = new Set(controllerIds);
+    if (!positionsData?.positions || sessionControllerIds.length === 0) return [];
+    const cidSet = new Set(sessionControllerIds);
     return positionsData.positions.filter((p) => p.controller_id && cidSet.has(p.controller_id));
-  }, [positionsData, controllerIds]);
+  }, [positionsData, sessionControllerIds]);
 
   const handleSort = useCallback((key: SortKey) => {
     setSortDir((prev) => (sortKey === key ? (prev === "asc" ? "desc" : "asc") : "desc"));
