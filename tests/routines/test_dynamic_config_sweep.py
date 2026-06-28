@@ -244,6 +244,31 @@ def test_refine_output_slug_from_preset():
     assert refine_output_slug("dyn_both_on_entry_sltp_sl3.8_td44") == "entry_sltp_sl3.8_td44"
 
 
+def test_refine_parent_relative_candidates_include_baseline():
+    from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+        _refine_candidates_for_key,
+    )
+
+    parent_sl_min = 5.0
+    candidates = _refine_candidates_for_key("sl_min_pct", parent_sl_min, phase="A")
+    assert parent_sl_min in candidates
+    assert all(3.5 <= value <= 6.5 for value in candidates)
+
+    parent_long = 86.0
+    long_candidates = _refine_candidates_for_key(
+        "adaptive_long_bb_pos_max", parent_long, phase="C"
+    )
+    assert parent_long in long_candidates
+    assert all(74.0 <= value <= 98.0 for value in long_candidates)
+
+    parent_td = 44
+    td_candidates = _refine_candidates_for_key(
+        "thesis_decay_exit_ticks", parent_td, phase="C"
+    )
+    assert parent_td in td_candidates
+    assert all(28 <= value <= 60 for value in td_candidates)
+
+
 def test_iter_refine_sweep_configs_yields_anchor_and_samples():
     parent = dict(LIVE_AGENT_DEFAULT_OVERRIDES)
     parent["sl_min_pct"] = 1.4

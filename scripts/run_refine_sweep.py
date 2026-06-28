@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refine sweep around any named winner preset (trade-analysis driven grids).
+"""Refine sweep around any named winner preset (parent-relative grids).
 
 Phases (sequential, parent chaining):
   A — barrier floors / vol curve (SL slippage leak)
@@ -7,7 +7,8 @@ Phases (sequential, parent chaining):
   C — adaptive long quality + cooldown churn
   D — combined narrow grid on A+B+C winners
 
-Use ``BCD`` to run B→C→D when phase A CSV already exists.
+Each phase samples ±%%/±abs steps around the current parent baseline (not fixed
+absolute grids). Use ``BCD`` to run B→C→D when phase A CSV already exists.
 """
 
 from __future__ import annotations

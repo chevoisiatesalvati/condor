@@ -200,6 +200,7 @@ class ReplayConfigBase(BaseModel):
     preset: Literal[
         "custom",
         "hl_dynamic_session_parity",
+        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_sweep_winner_binance_1y",
         "hl_dynamic_timeline_refine_v5_winner_binance_1y",
         "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
         "hl_dynamic_timeline_v6_entry_sltp_sl20_tpmin10_patient_thesis_binance_1y",
@@ -381,6 +382,7 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
     preset: Literal[
         "custom",
         "hl_dynamic_session_parity",
+        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_sweep_winner_binance_1y",
         "hl_dynamic_timeline_refine_v5_winner_binance_1y",
         "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
         "hl_dynamic_timeline_v6_entry_sltp_sl20_tpmin10_patient_thesis_binance_1y",

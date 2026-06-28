@@ -229,56 +229,156 @@ REFINE_DYNAMIC_MODE = "both_on"
 
 REFINE_STAGED_PHASES: tuple[str, ...] = ("A", "B", "C", "D")
 
-# Narrow grids around staged v5 Phase C winner (trade-analysis driven).
-REFINE_PHASE_A_GRID: dict[str, tuple[Any, ...]] = {
-    "sl_min_pct": (1.4, 1.6, 1.8, 2.0, 2.2, 2.4),
-    "tp_min_pct": (6.5, 7.5, 8.5, 9.5, 10.0),
-    "ref_volatility_pct": (2.5, 3.0, 3.5, 4.0, 4.5, 5.0),
-    "sl_vol_exponent": (0.85, 1.05, 1.25),
-    "tp_vol_exponent": (1.0, 1.35, 1.6),
-    "sl_pct": (3.2, 3.8, 4.2),
-    "tp_pct": (5.0, 5.5, 6.5),
-    "volatility_source": ("auto", "bb_width", "natr"),
+# Phase keys (values are derived parent-relative — see RefineParamSpec below).
+REFINE_PHASE_A_KEYS: tuple[str, ...] = (
+    "sl_min_pct",
+    "tp_min_pct",
+    "ref_volatility_pct",
+    "sl_vol_exponent",
+    "tp_vol_exponent",
+    "sl_pct",
+    "tp_pct",
+    "volatility_source",
+)
+REFINE_PHASE_B_KEYS: tuple[str, ...] = (
+    "max_conviction_mult",
+    "strength_mult_per_unit",
+    "min_conviction_mult",
+    "max_notional_quote",
+    "min_notional_quote",
+    "extreme_displacement_mult",
+    "thin_universe_mult",
+)
+REFINE_PHASE_C_KEYS: tuple[str, ...] = (
+    "adaptive_long_bb_pos_max",
+    "adaptive_score_open_min",
+    "adaptive_min_hist_ratio",
+    "adaptive_score_open_min_extreme",
+    "adaptive_min_macd_gap_ratio",
+    "adaptive_momentum_penalty",
+    "sl_cooldown_ticks",
+    "flip_cooldown_ticks",
+    "thesis_decay_exit_ticks",
+)
+REFINE_PHASE_D_KEYS: tuple[str, ...] = (
+    "sl_min_pct",
+    "tp_min_pct",
+    "ref_volatility_pct",
+    "max_conviction_mult",
+    "strength_mult_per_unit",
+    "adaptive_long_bb_pos_max",
+    "adaptive_score_open_min",
+    "sl_cooldown_ticks",
+)
+
+# Backward-compatible aliases (tests import these names).
+REFINE_PHASE_A_GRID = REFINE_PHASE_A_KEYS
+REFINE_PHASE_B_GRID = REFINE_PHASE_B_KEYS
+REFINE_PHASE_C_GRID = REFINE_PHASE_C_KEYS
+REFINE_PHASE_D_GRID = REFINE_PHASE_D_KEYS
+
+REFINE_PHASE_GRIDS: dict[str, tuple[str, ...]] = {
+    "A": REFINE_PHASE_A_KEYS,
+    "B": REFINE_PHASE_B_KEYS,
+    "C": REFINE_PHASE_C_KEYS,
+    "D": REFINE_PHASE_D_KEYS,
 }
 
-REFINE_PHASE_B_GRID: dict[str, tuple[Any, ...]] = {
-    "max_conviction_mult": (1.5, 1.7, 1.9, 2.0, 2.15),
-    "strength_mult_per_unit": (0.20, 0.26, 0.32, 0.38),
-    "min_conviction_mult": (0.85, 0.92, 1.0),
-    "max_notional_quote": (850.0, 950.0, 1100.0, 1250.0),
-    "min_notional_quote": (125.0, 150.0, 200.0),
-    "extreme_displacement_mult": (1.35, 1.55, 1.65),
-    "thin_universe_mult": (0.82, 0.88, 0.96),
+# Narrower relative steps for phase D combined grid.
+REFINE_PHASE_STEP_SCALE: dict[str, float] = {
+    "A": 1.0,
+    "B": 1.0,
+    "C": 1.0,
+    "D": 0.5,
 }
 
-REFINE_PHASE_C_GRID: dict[str, tuple[Any, ...]] = {
-    "adaptive_long_bb_pos_max": (68.0, 72.0, 76.0, 80.0),
-    "adaptive_score_open_min": (1.8, 2.2, 2.6, 3.0),
-    "adaptive_min_hist_ratio": (0.17, 0.22, 0.26),
-    "adaptive_score_open_min_extreme": (0.6, 0.85, 1.2),
-    "adaptive_min_macd_gap_ratio": (0.03, 0.07, 0.11),
-    "adaptive_momentum_penalty": (0.06, 0.12, 0.18),
-    "sl_symbol_cooldown_ticks": (2, 4, 8, 12),
-    "flip_cooldown_ticks": (4, 8, 16),
-    "thesis_decay_exit_ticks": (16, 32, 48, 64),
-}
 
-REFINE_PHASE_D_GRID: dict[str, tuple[Any, ...]] = {
-    "sl_min_pct": (1.6, 1.8, 2.0, 2.2),
-    "tp_min_pct": (7.5, 8.5, 9.5),
-    "ref_volatility_pct": (3.0, 3.5, 4.0),
-    "max_conviction_mult": (1.7, 1.9, 2.15),
-    "strength_mult_per_unit": (0.26, 0.32),
-    "adaptive_long_bb_pos_max": (68.0, 72.0, 76.0),
-    "adaptive_score_open_min": (2.2, 2.6),
-    "sl_symbol_cooldown_ticks": (4, 8),
-}
+@dataclass(frozen=True)
+class RefineParamSpec:
+    """How to build candidate values around a parent baseline."""
 
-REFINE_PHASE_GRIDS: dict[str, dict[str, tuple[Any, ...]]] = {
-    "A": REFINE_PHASE_A_GRID,
-    "B": REFINE_PHASE_B_GRID,
-    "C": REFINE_PHASE_C_GRID,
-    "D": REFINE_PHASE_D_GRID,
+    kind: str  # pct | abs | int_abs | categorical
+    steps: tuple[float, ...]
+    minimum: float | None = None
+    maximum: float | None = None
+    decimals: int = 2
+    choices: tuple[Any, ...] = ()
+
+
+# Relative / absolute step templates per swept key.
+REFINE_PARAM_SPECS: dict[str, RefineParamSpec] = {
+    "sl_min_pct": RefineParamSpec(
+        "pct", (-0.25, -0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15, 0.25), 0.5, 10.0, 1
+    ),
+    "tp_min_pct": RefineParamSpec(
+        "pct", (-0.20, -0.10, -0.05, 0.0, 0.05, 0.10, 0.20), 3.0, 25.0, 1
+    ),
+    "ref_volatility_pct": RefineParamSpec(
+        "pct", (-0.25, -0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15, 0.25), 0.08, 6.0, 2
+    ),
+    "sl_vol_exponent": RefineParamSpec(
+        "abs", (-0.20, -0.10, -0.05, 0.0, 0.05, 0.10, 0.20), 0.3, 2.0, 2
+    ),
+    "tp_vol_exponent": RefineParamSpec(
+        "abs", (-0.25, -0.15, -0.05, 0.0, 0.05, 0.15, 0.25), 0.3, 2.5, 2
+    ),
+    "sl_pct": RefineParamSpec(
+        "pct", (-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15), 1.0, 12.0, 1
+    ),
+    "tp_pct": RefineParamSpec(
+        "pct", (-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15), 3.0, 20.0, 1
+    ),
+    "volatility_source": RefineParamSpec(
+        "categorical", (), choices=("auto", "bb_width", "natr")
+    ),
+    "max_conviction_mult": RefineParamSpec(
+        "pct", (-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15), 0.5, 3.0, 2
+    ),
+    "strength_mult_per_unit": RefineParamSpec(
+        "abs", (-0.08, -0.04, -0.02, 0.0, 0.02, 0.04, 0.08), 0.0, 1.0, 2
+    ),
+    "min_conviction_mult": RefineParamSpec(
+        "pct", (-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15), 0.3, 1.5, 2
+    ),
+    "max_notional_quote": RefineParamSpec(
+        "pct", (-0.20, -0.10, -0.05, 0.0, 0.05, 0.10, 0.20), 100.0, 2500.0, 0
+    ),
+    "min_notional_quote": RefineParamSpec(
+        "pct", (-0.20, -0.10, -0.05, 0.0, 0.05, 0.10, 0.20), 40.0, 500.0, 0
+    ),
+    "extreme_displacement_mult": RefineParamSpec(
+        "pct", (-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15), 0.5, 3.0, 2
+    ),
+    "thin_universe_mult": RefineParamSpec(
+        "pct", (-0.12, -0.08, -0.04, 0.0, 0.04, 0.08, 0.12), 0.5, 1.5, 2
+    ),
+    "adaptive_long_bb_pos_max": RefineParamSpec(
+        "int_abs", (-12.0, -8.0, -4.0, 0.0, 4.0, 8.0, 12.0), 20.0, 98.0, 0
+    ),
+    "adaptive_score_open_min": RefineParamSpec(
+        "abs", (-0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6), 0.0, 5.0, 1
+    ),
+    "adaptive_min_hist_ratio": RefineParamSpec(
+        "abs", (-0.08, -0.05, -0.03, 0.0, 0.03, 0.05, 0.08), 0.0, 0.5, 2
+    ),
+    "adaptive_score_open_min_extreme": RefineParamSpec(
+        "abs", (-0.4, -0.25, -0.15, 0.0, 0.15, 0.25, 0.4), 0.0, 5.0, 2
+    ),
+    "adaptive_min_macd_gap_ratio": RefineParamSpec(
+        "abs", (-0.04, -0.03, -0.02, 0.0, 0.02, 0.03, 0.04), 0.0, 0.3, 2
+    ),
+    "adaptive_momentum_penalty": RefineParamSpec(
+        "abs", (-0.06, -0.04, -0.02, 0.0, 0.02, 0.04, 0.06), 0.0, 0.5, 2
+    ),
+    "sl_cooldown_ticks": RefineParamSpec(
+        "int_abs", (-8.0, -4.0, -2.0, 0.0, 2.0, 4.0, 8.0), 1.0, 24.0, 0
+    ),
+    "flip_cooldown_ticks": RefineParamSpec(
+        "int_abs", (-8.0, -4.0, -2.0, 0.0, 2.0, 4.0, 8.0), 1.0, 32.0, 0
+    ),
+    "thesis_decay_exit_ticks": RefineParamSpec(
+        "int_abs", (-16.0, -12.0, -8.0, -4.0, 0.0, 4.0, 8.0, 12.0, 16.0), 4.0, 96.0, 0
+    ),
 }
 
 REFINE_MIN_CONFIGS_BY_PHASE: dict[str, int] = {
@@ -714,22 +814,93 @@ def default_min_configs_for_refine_phase(phase: str) -> int:
     return REFINE_MIN_CONFIGS_BY_PHASE[phase]
 
 
-def _refine_grid_for_phase(phase: str) -> dict[str, tuple[Any, ...]]:
+def _refine_grid_for_phase(phase: str) -> tuple[str, ...]:
     if phase not in REFINE_PHASE_GRIDS:
         valid = ", ".join(REFINE_STAGED_PHASES)
         raise ValueError(f"Unknown refine phase {phase!r}; choose one of: {valid}")
     return REFINE_PHASE_GRIDS[phase]
 
 
-def _random_refine_combo(rng: random.Random, phase: str) -> dict[str, Any]:
-    grid = _refine_grid_for_phase(phase)
-    combo = {key: rng.choice(values) for key, values in grid.items()}
-    if "ref_volatility_pct" in combo:
-        source = combo.get("volatility_source", "auto")
-        resampled = _sample_ref_volatility_pct(rng, source)
-        if resampled is not None and "volatility_source" in grid:
-            combo["ref_volatility_pct"] = resampled
-    return combo
+def _clamp_refine_value(value: float, spec: RefineParamSpec) -> float:
+    if spec.minimum is not None:
+        value = max(value, spec.minimum)
+    if spec.maximum is not None:
+        value = min(value, spec.maximum)
+    return value
+
+
+def _round_refine_value(value: float, spec: RefineParamSpec) -> float | int:
+    value = _clamp_refine_value(value, spec)
+    if spec.kind == "int_abs":
+        return int(round(value))
+    if spec.decimals == 0:
+        return int(round(value))
+    return round(value, spec.decimals)
+
+
+def _refine_candidates_for_key(
+    key: str,
+    parent_value: Any,
+    *,
+    phase: str,
+) -> tuple[Any, ...]:
+    """Build discrete candidates around the parent baseline for one swept key."""
+    spec = REFINE_PARAM_SPECS.get(key)
+    if spec is None:
+        raise KeyError(f"No RefineParamSpec for refine key {key!r}")
+
+    if spec.kind == "categorical":
+        ordered: list[Any] = []
+        for choice in spec.choices:
+            if choice not in ordered:
+                ordered.append(choice)
+        if parent_value is not None and parent_value not in ordered:
+            ordered.insert(0, parent_value)
+        return tuple(ordered)
+
+    if parent_value is None:
+        raise ValueError(f"Refine key {key!r} requires a parent value")
+
+    scale = REFINE_PHASE_STEP_SCALE.get(phase, 1.0)
+    base = float(parent_value)
+    candidates: set[float | int] = set()
+    for step in spec.steps:
+        scaled = step * scale
+        if spec.kind == "pct":
+            candidate = base * (1.0 + scaled)
+        elif spec.kind == "abs":
+            candidate = base + scaled
+        elif spec.kind == "int_abs":
+            candidate = base + scaled
+        else:
+            raise ValueError(f"Unknown refine kind {spec.kind!r} for {key}")
+        candidates.add(_round_refine_value(candidate, spec))
+
+    candidates.add(_round_refine_value(base, spec))
+    return tuple(sorted(candidates, key=lambda item: (isinstance(item, str), item)))
+
+
+def _refine_grid_for_parent(
+    phase: str,
+    parent_overrides: dict[str, Any],
+) -> dict[str, tuple[Any, ...]]:
+    return {
+        key: _refine_candidates_for_key(
+            key,
+            parent_overrides.get(key),
+            phase=phase,
+        )
+        for key in _refine_grid_for_phase(phase)
+    }
+
+
+def _random_refine_combo(
+    rng: random.Random,
+    phase: str,
+    parent_overrides: dict[str, Any],
+) -> dict[str, Any]:
+    grid = _refine_grid_for_parent(phase, parent_overrides)
+    return {key: rng.choice(values) for key, values in grid.items()}
 
 
 def _refine_config_name(overrides: dict[str, Any], phase: str) -> str:
@@ -748,8 +919,8 @@ def _refine_config_name(overrides: dict[str, Any], phase: str) -> str:
         bits.append(f"L{int(overrides['adaptive_long_bb_pos_max'])}")
     if "adaptive_score_open_min" in overrides:
         bits.append(f"sc{overrides['adaptive_score_open_min']}")
-    if "sl_symbol_cooldown_ticks" in overrides:
-        bits.append(f"slcd{overrides['sl_symbol_cooldown_ticks']}")
+    if "sl_cooldown_ticks" in overrides:
+        bits.append(f"slcd{overrides['sl_cooldown_ticks']}")
     if "thesis_decay_exit_ticks" in overrides:
         bits.append(f"td{overrides['thesis_decay_exit_ticks']}")
     return "_".join(bits)
@@ -762,11 +933,12 @@ def iter_refine_sweep_configs(
     seed: int = 42,
     parent_overrides: dict[str, Any],
 ) -> Iterator[tuple[str, dict[str, Any]]]:
-    """Yield refine configs around a parent winner (staged v5 Phase C by default).
+    """Yield refine configs around a parent winner.
 
     Each phase sweeps a focused parameter subset while keeping ``both_on`` dynamic
-    mode. Random samples are merged onto ``parent_overrides`` (prior phase winner
-    or the v5 staged ABC winner for phase A).
+    mode. Random samples pick parent-relative values (±%%/±abs steps from the
+    parent baseline) and merge onto ``parent_overrides`` (prior phase winner or
+    the named preset for phase A).
     """
     if phase not in REFINE_PHASE_GRIDS:
         valid = ", ".join(REFINE_STAGED_PHASES)
@@ -790,7 +962,7 @@ def iter_refine_sweep_configs(
 
     while emitted < target and attempts < max_attempts:
         attempts += 1
-        combo = _random_refine_combo(rng, phase)
+        combo = _random_refine_combo(rng, phase, base)
         merged = _finalize_mega_dynamic_config(_merge(base, **combo))
         if not is_sensible_replay_config(merged):
             continue
