@@ -71,6 +71,19 @@ def _snapshot_tick(path: Path) -> int:
     return int(m.group(1)) if m else 0
 
 
+def prune_old_snapshots(snapshots_dir: Path) -> None:
+    """Remove oldest snapshots (lowest tick numbers) if over MAX_SNAPSHOTS."""
+    if not snapshots_dir.exists():
+        return
+    files = sorted(
+        snapshots_dir.glob("snapshot_*.md"),
+        key=_snapshot_tick,
+    )
+    if len(files) > MAX_SNAPSHOTS:
+        for f in files[: len(files) - MAX_SNAPSHOTS]:
+            f.unlink()
+
+
 JOURNAL_TEMPLATE = """\
 # Journal - {agent_id}
 
@@ -669,16 +682,7 @@ class JournalManager:
         return "\n".join(lines[-count:])
 
     def _cleanup_old_snapshots(self) -> None:
-        """Remove oldest snapshots (lowest tick numbers) if over MAX_SNAPSHOTS."""
-        if not self._snapshots_dir.exists():
-            return
-        files = sorted(
-            self._snapshots_dir.glob("snapshot_*.md"),
-            key=_snapshot_tick,
-        )
-        if len(files) > MAX_SNAPSHOTS:
-            for f in files[: len(files) - MAX_SNAPSHOTS]:
-                f.unlink()
+        prune_old_snapshots(self._snapshots_dir)
 
     # ------------------------------------------------------------------
     # Legacy run support (reads from runs/ dir)

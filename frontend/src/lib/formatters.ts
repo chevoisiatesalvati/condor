@@ -73,6 +73,16 @@ export function formatPct(val: number): string {
   return (val >= 0 ? "+" : "") + (val * 100).toFixed(2) + "%";
 }
 
+export function normalizeExecutorType(raw: string): string {
+  const label = raw
+    .toLowerCase()
+    .replace("_executor", "")
+    .replace("executor", "")
+    .replace(/^_+|_+$/g, "");
+  return label || raw;
+}
+
 export function isExecutorActive(status: string) {
-  return status === "active" || status === "running";
+  const s = (status || "").toLowerCase();
+  return s === "active" || s === "running" || s === "active_position";
 }

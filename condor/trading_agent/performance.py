@@ -53,11 +53,16 @@ def _executor_notional_quote(cfg: dict, entry_price: float) -> float:
     return base_amount
 
 
+def _is_running_status(status: str) -> bool:
+    return (status or "").lower() in {"running", "active", "active_position"}
+
+
 def _executor_row(ex: dict) -> dict[str, Any]:
     from condor.fetchers.executors import (
         get_executor_entry_price,
         get_executor_fees,
         get_executor_pnl,
+        get_executor_type,
         get_executor_volume,
     )
 
@@ -83,12 +88,12 @@ def _executor_row(ex: dict) -> dict[str, Any]:
 
     return {
         "id": str(ex.get("id") or ex.get("executor_id") or ""),
-        "type": cfg.get("type") or ex.get("type") or "",
+        "type": get_executor_type(ex),
         "connector": cfg.get("connector_name") or ex.get("connector_name") or cfg.get("connector") or ex.get("connector") or "",
         "pair": cfg.get("trading_pair") or ex.get("trading_pair") or "",
         "side": str(cfg.get("side") or ex.get("side") or ""),
-        "status": str(ex.get("status") or "").upper(),
-        "close_type": str(ex.get("close_type") or ""),
+        "status": str(ex.get("status") or "").lower(),
+        "close_type": str(ex.get("close_type") or "").lower(),
         "pnl": get_executor_pnl(ex),
         "net_pnl_pct": float(ex.get("net_pnl_pct") or 0),
         "volume": get_executor_volume(ex),
@@ -122,8 +127,8 @@ def _build_perf_from_rows(
     # performance_report endpoint returns net_pnl_quote which already includes
     # open-position PnL; using it as "realized" and then adding unrealized on
     # top double-counts open positions.
-    running = [r for r in rows if r["status"] == "RUNNING"]
-    closed = [r for r in rows if r["status"] != "RUNNING"]
+    running = [r for r in rows if _is_running_status(r["status"])]
+    closed = [r for r in rows if not _is_running_status(r["status"])]
 
     unrealized = sum(r["pnl"] for r in running)
     realized_pnl = sum(r["pnl"] for r in closed)

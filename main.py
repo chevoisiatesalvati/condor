@@ -595,6 +595,17 @@ class WebServerRunner:
         self.task = None
 
     async def restart(self, extra_modules: list[str] | None = None) -> None:
+        modules = extra_modules or []
+        if "condor.trading_agent.engine" in modules:
+            from condor.trading_agent.engine import get_all_engines, stop_engine_by_id
+
+            for engine in list(get_all_engines().values()):
+                try:
+                    await stop_engine_by_id(engine.agent_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to stop %s before hot-reload: %s", engine.agent_id, exc
+                    )
         await self.stop()
         reload_web_modules(extra_modules)
         await self.start()

@@ -355,6 +355,30 @@ def _infer_latest_session_status(agent_dir: Path, slug: str) -> dict[str, Any] |
     }
 
 
+def _journal_shows_active(session_dir: Path) -> bool:
+    from condor.trading_agent.session_status import journal_shows_active
+
+    return journal_shows_active(session_dir)
+
+
+def _iter_session_dirs(agent_dir: Path) -> list[tuple[int, Path]]:
+    from condor.trading_agent.session_status import iter_session_dirs
+
+    return iter_session_dirs(agent_dir)
+
+
+def _find_orphaned_active_sessions(slug: str, agent_dir: Path) -> list[int]:
+    """Sessions with recent journal activity but no registered TickEngine."""
+    from condor.trading_agent.engine import get_engine
+    from condor.trading_agent.session_status import find_orphaned_active_sessions
+
+    return find_orphaned_active_sessions(
+        slug,
+        agent_dir,
+        is_registered=lambda agent_id: get_engine(agent_id) is not None,
+    )
+
+
 def _count_sessions(agent_dir: Path) -> int:
     for dirname in ("sessions", "trading_sessions"):
         sessions_dir = agent_dir / dirname
@@ -1078,6 +1102,7 @@ async def start_agent(
     )
 
     strategy = _get_strategy_by_slug(slug)
+    orphaned = _find_orphaned_active_sessions(slug, strategy.agent_dir)
 
     resume_session_num: int | None = None
     if req.session_num is not None:
@@ -1102,6 +1127,19 @@ async def start_agent(
         config_dict = session_config
         resume_session_num = req.session_num
     else:
+        if orphaned:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot start a new session: session(s) {orphaned} journal shows "
+                    f"Running/Paused but no engine is registered (likely orphaned after "
+                    f"hot-reload). Resume session {orphaned[-1]} or fully restart Condor."
+                ),
+            )
+
+        for engine in list(_get_engines_for_slug(slug)):
+            await stop_engine_by_id(engine.agent_id)
+
         # Load config (merge request overrides)
         config_dict = load_full_config(strategy.agent_dir, strategy.default_config)
         config_dict = _merge_config_strategy_params(strategy.slug, config_dict)

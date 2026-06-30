@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any
 
-from handlers.cex._shared import get_correct_pair_format, validate_trading_pair
+from handlers.cex._shared import get_correct_pair_format
 from mcp_servers.hummingbot_api.executor_preferences import executor_preferences
 from mcp_servers.hummingbot_api.formatters.executors import (
     format_executor_detail,
@@ -185,6 +185,30 @@ async def _fetch_mid_price_for_pair(client: Any, connector_name: str, trading_pa
             return p
     except (TypeError, ValueError):
         pass
+    return None
+
+
+def _hl_symbol_max_leverage(trading_pair: str) -> int | None:
+    """Public HL meta max leverage for a perp symbol (debug / pre-trade validation)."""
+    try:
+        import urllib.request
+
+        base = str(trading_pair).split("-")[0].split(":")[-1].upper()
+        body = json.dumps({"type": "meta"}).encode()
+        req = urllib.request.Request(
+            "https://api.hyperliquid.xyz/info",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            meta = json.loads(resp.read())
+        for asset in meta.get("universe", []):
+            if str(asset.get("name", "")).upper() == base:
+                lev = int(asset.get("maxLeverage", 0))
+                return lev if lev > 0 else None
+    except Exception:
+        return None
     return None
 
 

@@ -8,9 +8,13 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from utils.config import ADMIN_USER_ID, WEB_PORT
+from condor.trading_agent.session_status import latest_orphaned_session_num
 from condor.web.auth import create_jwt
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _api(method: str, path: str, body: dict | None = None) -> dict:
@@ -53,6 +57,26 @@ def main() -> int:
         if inst.get("status") in ("running", "paused")
     ]
     if not running:
+        agent_dir = PROJECT_ROOT / "trading_agents" / slug
+        resume_num = (
+            latest_orphaned_session_num(slug, agent_dir) if agent_dir.is_dir() else None
+        )
+        if resume_num is not None:
+            print(
+                f"No API instance for {slug}, but session {resume_num} journal shows "
+                f"active — resuming instead of starting fresh"
+            )
+            start_body = {
+                "session_num": resume_num,
+                "user_id": ADMIN_USER_ID,
+                "chat_id": ADMIN_USER_ID,
+            }
+            result = _api("POST", f"/agents/{slug}/start", start_body)
+            print(
+                f"Resumed {slug}: agent_id={result.get('agent_id')} "
+                f"session_num={result.get('session_num')}"
+            )
+            return 0
         print(f"No running/paused instance for {slug}; starting fresh session")
         preserved: dict = {}
     else:

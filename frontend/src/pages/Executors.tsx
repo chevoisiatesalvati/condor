@@ -162,6 +162,10 @@ export type SortKey =
 
 export type SortDir = "asc" | "desc";
 
+function statusSortRank(status: string): number {
+  return isExecutorActive(status) ? 1 : 0;
+}
+
 function compareExecutors(a: ExecutorInfo, b: ExecutorInfo, key: SortKey, dir: SortDir): number {
   let cmp = 0;
   switch (key) {
@@ -170,9 +174,12 @@ function compareExecutors(a: ExecutorInfo, b: ExecutorInfo, key: SortKey, dir: S
     case "connector":
     case "trading_pair":
     case "side":
-    case "status":
     case "close_type":
       cmp = (a[key] || "").localeCompare(b[key] || "");
+      break;
+    case "status":
+      cmp = statusSortRank(a.status) - statusSortRank(b.status);
+      if (cmp === 0) cmp = (a.status || "").localeCompare(b.status || "");
       break;
     case "pnl":
     case "net_pnl_pct":
@@ -346,6 +353,7 @@ export function ExecutorTable({
               <SortHeader label="Connector" sortKey="connector" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="Pair" sortKey="trading_pair" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="Side" sortKey="side" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
+              <SortHeader label="Status" sortKey="status" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="PnL" sortKey="pnl" currentKey={sortKey} currentDir={sortDir} onSort={onSort} align="right" />
               <SortHeader label="PnL%" sortKey="net_pnl_pct" currentKey={sortKey} currentDir={sortDir} onSort={onSort} align="right" />
               <SortHeader label="Volume" sortKey="volume" currentKey={sortKey} currentDir={sortDir} onSort={onSort} align="right" />
@@ -402,6 +410,14 @@ export function ExecutorTable({
                     >
                       {side}
                     </span>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-1.5">
+                      <StatusDot status={ex.status} />
+                      <span className="text-xs capitalize text-[var(--color-text-muted)]">
+                        {ex.status || "\u2014"}
+                      </span>
+                    </div>
                   </td>
                   <td
                     className="px-4 py-2.5 text-sm text-right tabular-nums font-medium"
@@ -934,7 +950,7 @@ function BulkActionBar({
 
 // ── Stop Confirm Dialog ──
 
-function StopConfirmDialog({
+export function StopConfirmDialog({
   ids,
   onConfirm,
   onCancel,

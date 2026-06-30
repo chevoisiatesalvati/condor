@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
   ChevronRight,
@@ -11,19 +11,20 @@ import { useAgentExecutors } from "@/hooks/useAgentExecutors";
 import { type AgentExecutorRow, type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
 import { type ParsedJournal, type ParsedSnapshot, parseSnapshot } from "@/lib/parse-agent";
 import { useRates } from "@/hooks/useRates";
-import { DetailPanel, ExecutorTable, type SortDir, type SortKey } from "@/pages/Executors";
+import { normalizeExecutorType } from "@/lib/formatters";
+import { DetailPanel, ExecutorTable, StopConfirmDialog, type SortDir, type SortKey } from "@/pages/Executors";
 
 // ── Helper ──
 
 function agentRowToExecutorInfo(row: AgentExecutorRow): ExecutorInfo {
   return {
     id: row.id,
-    type: row.type,
+    type: normalizeExecutorType(row.type),
     connector: row.connector || "unknown",
     trading_pair: row.pair,
     side: row.side,
-    status: row.status,
-    close_type: row.close_type,
+    status: (row.status || "").toLowerCase(),
+    close_type: (row.close_type || "").toLowerCase(),
     pnl: row.pnl,
     volume: row.volume,
     timestamp: row.timestamp,
@@ -128,6 +129,8 @@ export function SessionExecutors({
   sessionSummary?: { status: string; lastTick: number; lastAction: string };
   liveSessionStatus?: string;
 }) {
+  const queryClient = useQueryClient();
+
   // REST data (fallback + historical executors)
   const { data: sessionDetail } = useQuery({
     queryKey: ["agent-session-executors", slug, sessionNum],
@@ -195,7 +198,38 @@ export function SessionExecutors({
   const [sortKey, setSortKey] = useState<SortKey>("timestamp");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const stoppingIds = useMemo(() => new Set<string>(), []);
+  const [stoppingIds, setStoppingIds] = useState<Set<string>>(new Set());
+  const [pendingStopIds, setPendingStopIds] = useState<string[] | null>(null);
+
+  const stopMutation = useMutation({
+    mutationFn: async ({ ids, keepPosition }: { ids: string[]; keepPosition: boolean }) => {
+      setStoppingIds((prev) => new Set([...prev, ...ids]));
+      return Promise.allSettled(
+        ids.map((id) => api.stopExecutor(serverName, id, keepPosition)),
+      );
+    },
+    onSettled: (_data, _error, vars) => {
+      setStoppingIds((prev) => {
+        const next = new Set(prev);
+        vars?.ids.forEach((id) => next.delete(id));
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: ["agent-session-executors", slug, sessionNum] });
+      queryClient.invalidateQueries({ queryKey: ["executors", serverName] });
+    },
+  });
+
+  const handleStopOne = useCallback((id: string) => {
+    setPendingStopIds([id]);
+  }, []);
+
+  const handleConfirmStop = useCallback(
+    (ids: string[], keepPosition: boolean) => {
+      setPendingStopIds(null);
+      stopMutation.mutate({ ids, keepPosition });
+    },
+    [stopMutation],
+  );
 
   const selectedExecutors = useMemo(
     () => executorInfos.filter((ex) => selectedIds.has(ex.id)),
@@ -364,9 +398,17 @@ export function SessionExecutors({
         selectedIds={selectedIds}
         onRowClick={(ex) => toggleSelect(ex.id)}
         selectedExecutorId={null}
-        onStop={() => {}}
+        onStop={handleStopOne}
         stoppingIds={stoppingIds}
       />
+
+      {pendingStopIds && (
+        <StopConfirmDialog
+          ids={pendingStopIds}
+          onConfirm={handleConfirmStop}
+          onCancel={() => setPendingStopIds(null)}
+        />
+      )}
 
       {/* Executor detail panels */}
       {selectedExecutors.length > 0 && (
@@ -378,8 +420,8 @@ export function SessionExecutors({
               executor={ex}
               server={serverName}
               onClose={() => toggleSelect(ex.id)}
-              onStop={() => {}}
-              stopping={false}
+              onStop={handleStopOne}
+              stopping={stoppingIds.has(ex.id)}
               rateFormatPnl={formatPnlValue}
               rateFormatValue={formatValue}
               rateFormatDetailed={formatValueDetailed}
