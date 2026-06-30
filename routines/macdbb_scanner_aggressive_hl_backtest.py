@@ -4,6 +4,8 @@ from __future__ import annotations
 
 CATEGORY = "Bot Analysis"
 
+RUN_IN_SUBPROCESS = True
+
 import json
 import logging
 from typing import Any

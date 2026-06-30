@@ -180,7 +180,7 @@ async def schedule_routine_v2(
 async def stop_instance(instance_id: str, user: WebUser = Depends(get_current_user)):
     """Stop a running or scheduled instance."""
     store = get_routine_store()
-    if not store.stop(instance_id):
+    if not await store.stop(instance_id):
         raise HTTPException(404, "Instance not found")
     return {"stopped": True}
 

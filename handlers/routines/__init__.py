@@ -278,19 +278,49 @@ async def _execute_routine(
 
     # Reset report capture before execution
     condor.reports._last_report_id = None
+    subprocess_outcome = None
 
     try:
         config = routine.config_class(**config_dict)
-        raw_result = await routine.run_fn(config, context)
-        rich_result = normalize_result(raw_result)
-        result_text = rich_result.text[:500] if rich_result.text else "Completed"
+        if routine.run_in_subprocess:
+            server_name = active_server or "local"
+            try:
+                from config_manager import get_effective_server
+
+                server_name = (
+                    active_server
+                    or get_effective_server(chat_id, context.user_data)
+                    or "local"
+                )
+            except Exception:
+                pass
+            subprocess_outcome = await get_routine_store().run_subprocess_and_wait(
+                routine_name,
+                config_dict,
+                server_name,
+                user_id=chat_id,
+                instance_id=instance_id,
+            )
+            rich_result = subprocess_outcome.result
+            result_text = rich_result.text[:500] if rich_result.text else "Completed"
+            failed = not subprocess_outcome.ok
+        else:
+            raw_result = await routine.run_fn(config, context)
+            rich_result = normalize_result(raw_result)
+            result_text = rich_result.text[:500] if rich_result.text else "Completed"
+            failed = False
     except Exception as e:
         result_text = f"Error: {e}"
         rich_result = None
+        failed = True
         logger.error(f"Routine {routine_name}[{instance_id}] failed: {e}")
 
     duration = time.time() - start
-    report_id = condor.reports._last_report_id
+    report_id = (
+        subprocess_outcome.report_id
+        if subprocess_outcome is not None
+        else condor.reports._last_report_id
+    )
 
     # Bridge to shared store so web dashboard can see Telegram-triggered results
     if rich_result:
@@ -303,7 +333,8 @@ async def _execute_routine(
     # Fire post-execution hooks (Telegram notification).
     # On failure rich_result is None — pass the error text so the notification
     # reflects the failure instead of a misleading "Completed".
-    failed = rich_result is None
+    if subprocess_outcome is None:
+        failed = rich_result is None
     hook_result = rich_result if rich_result is not None else normalize_result(result_text)
     try:
         await routine_hooks.dispatch(
