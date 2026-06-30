@@ -61,6 +61,18 @@ export function formatAge(timestamp: number): string {
   }
 }
 
+export function formatTimestampLocal(timestamp: number): string {
+  if (!timestamp) return "";
+  try {
+    const ms = timestamp > 1e12 ? timestamp : timestamp * 1000;
+    const date = new Date(ms);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString();
+  } catch {
+    return "";
+  }
+}
+
 export function formatPrice(val: number): string {
   if (!val) return "\u2014";
   if (val >= 1000) return val.toLocaleString("en-US", { maximumFractionDigits: 2 });

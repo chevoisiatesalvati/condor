@@ -31,6 +31,7 @@ import {
   formatPnl,
   pnlColor,
   formatAge,
+  formatTimestampLocal,
   formatPrice,
   formatPct,
   isExecutorActive,
@@ -180,6 +181,7 @@ function compareExecutors(a: ExecutorInfo, b: ExecutorInfo, key: SortKey, dir: S
     case "status":
       cmp = statusSortRank(a.status) - statusSortRank(b.status);
       if (cmp === 0) cmp = (a.status || "").localeCompare(b.status || "");
+      if (cmp === 0) cmp = (a.timestamp || 0) - (b.timestamp || 0);
       break;
     case "pnl":
     case "net_pnl_pct":
@@ -442,7 +444,17 @@ export function ExecutorTable({
                   </td>
                   <td className="px-4 py-2.5 text-sm text-right tabular-nums text-[var(--color-text-muted)]">
                     <div className="flex items-center gap-1 justify-end">
-                      <Clock className="h-3 w-3" />
+                      {ex.timestamp > 0 ? (
+                        <span
+                          className="inline-flex shrink-0 cursor-default"
+                          title={formatTimestampLocal(ex.timestamp)}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Clock className="h-3 w-3 pointer-events-none" aria-hidden="true" />
+                        </span>
+                      ) : (
+                        <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      )}
                       {formatAge(ex.timestamp)}
                     </div>
                   </td>
