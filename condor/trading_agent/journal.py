@@ -65,6 +65,12 @@ def resolve_agent_dirs(agent_id: str) -> tuple[Path | None, Path | None]:
     return session_dir, agent_dir
 MAX_SNAPSHOTS = 100
 
+
+def _snapshot_tick(path: Path) -> int:
+    m = re.match(r"snapshot_(\d+)\.md", path.name)
+    return int(m.group(1)) if m else 0
+
+
 JOURNAL_TEMPLATE = """\
 # Journal - {agent_id}
 
@@ -663,12 +669,15 @@ class JournalManager:
         return "\n".join(lines[-count:])
 
     def _cleanup_old_snapshots(self) -> None:
-        """Remove oldest snapshots if over MAX_SNAPSHOTS."""
+        """Remove oldest snapshots (lowest tick numbers) if over MAX_SNAPSHOTS."""
         if not self._snapshots_dir.exists():
             return
-        files = sorted(self._snapshots_dir.glob("snapshot_*.md"))
+        files = sorted(
+            self._snapshots_dir.glob("snapshot_*.md"),
+            key=_snapshot_tick,
+        )
         if len(files) > MAX_SNAPSHOTS:
-            for f in files[:len(files) - MAX_SNAPSHOTS]:
+            for f in files[: len(files) - MAX_SNAPSHOTS]:
                 f.unlink()
 
     # ------------------------------------------------------------------
