@@ -27,6 +27,13 @@ from condor.acp.client import (
 )
 from condor.acp.cursor_sdk_client import CursorSdkClient, is_cursor_sdk_model
 from condor.acp.pydantic_ai_client import PydanticAIClient, is_pydantic_ai_model
+from condor.open_position_audit import (
+    config_audit_slice,
+    log_open_position_event,
+    summarize_executor_open_state,
+)
+
+from condor.trading_agent.performance import is_running_status
 
 from .journal import JournalManager, next_experiment_number, next_session_number
 from .prompts import build_tick_prompt
@@ -53,7 +60,7 @@ def _running_executor_ids(all_executors: list[dict[str, Any]]) -> set[str]:
     return {
         str(e["id"])
         for e in all_executors
-        if e.get("status") == "RUNNING" and e.get("id")
+        if e.get("id") and is_running_status(str(e.get("status") or ""))
     }
 
 
@@ -105,6 +112,59 @@ def _extract_agent_created_executor_ids(tool_calls: list[dict[str, Any]]) -> set
     return created
 
 
+async def _audit_created_executors_post_tick(
+    client: Any,
+    tool_calls: list[dict[str, Any]],
+    *,
+    agent_id: str,
+    tick_num: int,
+) -> None:
+    """Log executor open state at end-of-tick for every create from this tick."""
+    created = _extract_agent_created_executor_ids(tool_calls)
+    if not created:
+        return
+    from condor.fetchers.executors import get_executor_detail
+
+    for executor_id in sorted(created):
+        create_config: dict[str, Any] = {}
+        for tc in tool_calls:
+            inp = _parse_tool_call_payload(tc.get("input"))
+            out = _parse_tool_call_payload(tc.get("output"))
+            if not inp or str(inp.get("action") or "").lower() != "create":
+                continue
+            if _executor_id_from_tool_payload(out or {}) != executor_id:
+                continue
+            cfg = inp.get("executor_config") if isinstance(inp.get("executor_config"), dict) else {}
+            create_config = config_audit_slice(cfg)
+            break
+        try:
+            detail = await get_executor_detail(client, executor_id)
+        except Exception as exc:
+            log_open_position_event(
+                phase="tick_end_fetch_error",
+                message="post-tick get_executor failed",
+                data={
+                    "agent_id": agent_id,
+                    "tick_num": tick_num,
+                    "executor_id": executor_id,
+                    "error": str(exc),
+                    "create_config": create_config,
+                },
+            )
+            continue
+        log_open_position_event(
+            phase="tick_end",
+            message="post-tick executor state after agent create",
+            data={
+                "agent_id": agent_id,
+                "tick_num": tick_num,
+                "executor_id": executor_id,
+                "create_config": create_config,
+                **summarize_executor_open_state(detail),
+            },
+        )
+
+
 def _extract_agent_closed_executor_ids(tool_calls: list[dict[str, Any]]) -> set[str]:
     """Executor IDs the agent stopped this tick (manage_executors action=stop)."""
     closed: set[str] = set()
@@ -135,7 +195,9 @@ def _detect_barrier_closes(
         return []
 
     running_ids = {
-        e["id"] for e in all_executors if e.get("status") == "RUNNING" and e.get("id")
+        e["id"]
+        for e in all_executors
+        if e.get("id") and is_running_status(str(e.get("status") or ""))
     }
     by_id = {e["id"]: e for e in all_executors if e.get("id")}
 
@@ -144,11 +206,64 @@ def _detect_barrier_closes(
         if eid in running_ids or eid in already_notified or eid in agent_closed_ids:
             continue
         ex = by_id.get(eid)
-        if not ex or ex.get("status") == "RUNNING":
+        if not ex or is_running_status(str(ex.get("status") or "")):
             continue
         if _is_barrier_close_type(str(ex.get("close_type") or "")):
             closes.append(ex)
     return closes
+
+
+def _resolve_sl_cooldown_ticks(strategy_slug: str, config: dict[str, Any]) -> int:
+    raw = config.get("strategy_params")
+    if not isinstance(raw, dict):
+        return 0
+    from condor.trading_agent.strategy_configs import resolve_effective_strategy_params
+
+    frequency_sec = int(config.get("frequency_sec") or 60)
+    params = resolve_effective_strategy_params(strategy_slug, raw, frequency_sec)
+    return max(0, int(params.get("sl_symbol_cooldown_ticks") or 0))
+
+
+def _register_sl_cooldowns(
+    cooldowns: dict[str, int],
+    closes: list[dict[str, Any]],
+    *,
+    current_tick: int,
+    cooldown_ticks: int,
+) -> None:
+    if cooldown_ticks <= 0:
+        return
+    until = current_tick + cooldown_ticks
+    for ex in closes:
+        if _normalize_close_type(str(ex.get("close_type") or "")) != "STOP_LOSS":
+            continue
+        pair = str(ex.get("pair") or "").strip()
+        if pair:
+            cooldowns[pair] = max(cooldowns.get(pair, 0), until)
+
+
+def _active_sl_cooldowns(
+    cooldowns: dict[str, int], current_tick: int
+) -> dict[str, int]:
+    """Return pair -> remaining agent ticks for active SL cooldowns."""
+    return {
+        pair: until - current_tick
+        for pair, until in cooldowns.items()
+        if until > current_tick
+    }
+
+
+def _format_sl_cooldown_section(active: dict[str, int]) -> str:
+    if not active:
+        return ""
+    lines = [
+        "[SL SYMBOL COOLDOWN — engine enforced]",
+        "STOP_LOSS barrier close — do not open these pairs until cooldown expires. "
+        'Condor blocks manage_executors(action="create") for listed pairs:',
+    ]
+    for pair in sorted(active):
+        lines.append(f"- {pair}: {active[pair]} agent tick(s) remaining")
+    return "\n".join(lines)
 
 
 def _format_barrier_closes_section(closes: list[dict[str, Any]]) -> str:
@@ -281,6 +396,7 @@ class TickEngine:
     _last_running_executor_ids: set[str] = field(default_factory=set, init=False)
     _notified_barrier_close_ids: set[str] = field(default_factory=set, init=False)
     _agent_closed_executor_ids: set[str] = field(default_factory=set, init=False)
+    _sl_cooldown_until_tick: dict[str, int] = field(default_factory=dict, init=False)
     _executing_tick: int = field(default=0, init=False)
 
     def __post_init__(self):
@@ -462,6 +578,7 @@ class TickEngine:
         }
 
         barrier_closes_section = ""
+        barrier_closes: list[dict[str, Any]] = []
         if executors_result and not self.is_experiment:
             all_executors = executors_result.data.get("all_executors") or []
             barrier_closes = _detect_barrier_closes(
@@ -482,6 +599,16 @@ class TickEngine:
         learnings = self.journal.read_learnings() if self.journal else ""
         next_tick = self.journal.tick_count + 1 if self.journal else 1
         self._executing_tick = next_tick
+        if not self.is_experiment and barrier_closes:
+            _register_sl_cooldowns(
+                self._sl_cooldown_until_tick,
+                barrier_closes,
+                current_tick=next_tick,
+                cooldown_ticks=_resolve_sl_cooldown_ticks(self.strategy.slug, self.config),
+            )
+        sl_cooldown_section = _format_sl_cooldown_section(
+            _active_sl_cooldowns(self._sl_cooldown_until_tick, next_tick)
+        )
         digest_interval = int(self.config.get("digest_interval_ticks", 0) or 0)
         is_digest_boundary = digest_interval > 0 and next_tick % digest_interval == 0
         recent_count = digest_interval if is_digest_boundary else 3
@@ -526,6 +653,7 @@ class TickEngine:
             digest_boundary=is_digest_boundary,
             digest_interval=digest_interval,
             barrier_closes_section=barrier_closes_section,
+            sl_cooldown_section=sl_cooldown_section,
         )
 
         # Inject pending user directives
@@ -663,6 +791,7 @@ class TickEngine:
                 self._agent_closed_executor_ids.update(agent_closed)
                 self._notified_barrier_close_ids.update(agent_closed)
 
+            created = _extract_agent_created_executor_ids(tool_calls)
             try:
                 self._last_running_executor_ids = await _fetch_running_executor_ids(
                     client, self.agent_id
@@ -673,11 +802,17 @@ class TickEngine:
                     self.agent_id,
                     exc_info=True,
                 )
-                created = _extract_agent_created_executor_ids(tool_calls)
-                if created:
-                    self._last_running_executor_ids.update(created)
-                if agent_closed:
-                    self._last_running_executor_ids -= agent_closed
+            if created:
+                self._last_running_executor_ids.update(created)
+            if agent_closed:
+                self._last_running_executor_ids -= agent_closed
+
+            await _audit_created_executors_post_tick(
+                client,
+                tool_calls,
+                agent_id=self.agent_id,
+                tick_num=tick_num,
+            )
 
     async def _collect_stream(
         self,
@@ -719,7 +854,18 @@ class TickEngine:
                 execution_mode=mode,
                 agent_id=self.agent_id,
             )
-        permission_cb = auto_approve_with_risk_check(self.risk, risk_state, execution_mode=mode)
+        permission_cb = auto_approve_with_risk_check(
+            self.risk,
+            risk_state,
+            execution_mode=mode,
+            sl_cooldown_pairs=frozenset(
+                _active_sl_cooldowns(
+                    self._sl_cooldown_until_tick,
+                    self._executing_tick
+                    or (self.journal.tick_count + 1 if self.journal else 1),
+                )
+            ),
+        )
 
         agent_key = self.config.get("agent_key") or self.strategy.agent_key
 

@@ -7,10 +7,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from condor.trading_agent.engine import (
+    _active_sl_cooldowns,
     _detect_barrier_closes,
     _extract_agent_created_executor_ids,
     _fetch_running_executor_ids,
     _format_barrier_closes_section,
+    _format_sl_cooldown_section,
+    _register_sl_cooldowns,
     _running_executor_ids,
 )
 from condor.trading_agent.performance import AgentPerformance
@@ -40,8 +43,8 @@ def test_detect_barrier_closes_finds_stop_loss_after_running_snapshot():
     all_executors = [
         _executor_row(
             eid=eid,
-            status="CLOSED",
-            close_type="STOP_LOSS",
+            status="closed",
+            close_type="stop_loss",
             pnl=-8.12,
         )
     ]
@@ -56,7 +59,7 @@ def test_detect_barrier_closes_finds_stop_loss_after_running_snapshot():
     section = _format_barrier_closes_section(closes)
     assert "[BARRIER CLOSES SINCE LAST TICK]" in section
     assert "XPL-USD" in section
-    assert "STOP_LOSS" in section
+    assert "stop_loss" in section
 
 
 def test_detect_barrier_closes_empty_when_last_running_not_tracked():
@@ -100,10 +103,46 @@ def test_detect_barrier_closes_ignores_agent_stops():
 
 def test_running_executor_ids_filters_running_only():
     rows = [
-        _executor_row(eid="run1", status="RUNNING"),
-        _executor_row(eid="done1", status="CLOSED", close_type="STOP_LOSS"),
+        _executor_row(eid="run1", status="running"),
+        _executor_row(eid="done1", status="closed", close_type="STOP_LOSS"),
     ]
     assert _running_executor_ids(rows) == {"run1"}
+
+
+def test_running_executor_ids_accepts_uppercase_status():
+    rows = [_executor_row(eid="run1", status="RUNNING")]
+    assert _running_executor_ids(rows) == {"run1"}
+
+
+def test_register_sl_cooldowns_only_for_stop_loss():
+    cooldowns: dict[str, int] = {}
+    closes = [
+        _executor_row(
+            eid="sl1",
+            status="closed",
+            close_type="stop_loss",
+            pair="SPX-USD",
+        ),
+        _executor_row(
+            eid="tp1",
+            status="closed",
+            close_type="take_profit",
+            pair="BTC-USD",
+        ),
+    ]
+    _register_sl_cooldowns(
+        cooldowns, closes, current_tick=39, cooldown_ticks=2
+    )
+    assert cooldowns == {"SPX-USD": 41}
+
+
+def test_active_sl_cooldowns_and_prompt_section():
+    cooldowns = {"SPX-USD": 41, "ETH-USD": 38}
+    active = _active_sl_cooldowns(cooldowns, current_tick=39)
+    assert active == {"SPX-USD": 2}
+    section = _format_sl_cooldown_section(active)
+    assert "[SL SYMBOL COOLDOWN — engine enforced]" in section
+    assert "SPX-USD: 2 agent tick(s) remaining" in section
 
 
 def test_extract_agent_created_executor_ids_from_create_output():
@@ -122,8 +161,8 @@ async def test_fetch_running_executor_ids(monkeypatch):
     perf = AgentPerformance(
         agent_id="macdbb_scanner_aggressive_hl_74",
         executors=[
-            _executor_row(eid="run1", status="RUNNING"),
-            _executor_row(eid="done1", status="CLOSED", close_type="STOP_LOSS"),
+            _executor_row(eid="run1", status="running"),
+            _executor_row(eid="done1", status="closed", close_type="STOP_LOSS"),
         ],
     )
     mock_fetch = AsyncMock(return_value=perf)

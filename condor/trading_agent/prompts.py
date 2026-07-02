@@ -175,6 +175,7 @@ def build_tick_prompt(
     digest_boundary: bool = False,
     digest_interval: int = 0,
     barrier_closes_section: str = "",
+    sl_cooldown_section: str = "",
 ) -> str:
     """Build the full prompt for one agent tick."""
     from condor.acp.cursor_sdk_client import is_cursor_sdk_model
@@ -327,6 +328,9 @@ def build_tick_prompt(
 
     if barrier_closes_section:
         sections.append(barrier_closes_section)
+
+    if sl_cooldown_section:
+        sections.append(sl_cooldown_section)
 
     # Journal -- compact memory
     if learnings:
