@@ -4,6 +4,7 @@ Executor management tools for Hummingbot MCP Server.
 This module provides business logic for managing trading executors including
 creation, viewing, stopping, and position management with progressive disclosure.
 """
+import asyncio
 import json
 import logging
 import math
@@ -12,7 +13,13 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any
 
-from handlers.cex._shared import get_correct_pair_format
+from condor.hyperliquid_leverage import apply_hyperliquid_leverage_cap, hl_symbol_max_leverage
+from condor.open_position_audit import (
+    config_audit_slice,
+    log_open_position_event,
+    summarize_executor_open_state,
+)
+from handlers.cex._shared import get_correct_pair_format, validate_trading_pair
 from mcp_servers.hummingbot_api.executor_preferences import executor_preferences
 from mcp_servers.hummingbot_api.formatters.executors import (
     format_executor_detail,
@@ -185,30 +192,6 @@ async def _fetch_mid_price_for_pair(client: Any, connector_name: str, trading_pa
             return p
     except (TypeError, ValueError):
         pass
-    return None
-
-
-def _hl_symbol_max_leverage(trading_pair: str) -> int | None:
-    """Public HL meta max leverage for a perp symbol (debug / pre-trade validation)."""
-    try:
-        import urllib.request
-
-        base = str(trading_pair).split("-")[0].split(":")[-1].upper()
-        body = json.dumps({"type": "meta"}).encode()
-        req = urllib.request.Request(
-            "https://api.hyperliquid.xyz/info",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            meta = json.loads(resp.read())
-        for asset in meta.get("universe", []):
-            if str(asset.get("name", "")).upper() == base:
-                lev = int(asset.get("maxLeverage", 0))
-                return lev if lev > 0 else None
-    except Exception:
-        return None
     return None
 
 
@@ -408,15 +391,74 @@ def _truncate_audit_text(text: str, max_len: int = 12000) -> str:
 def _condor_mcp_audit(event: dict[str, Any]) -> None:
     """Append one JSON line to CONDOR_MCP_AUDIT_LOG when set (e.g. MCP stdio detached from Condor logs)."""
     path = os.environ.get("CONDOR_MCP_AUDIT_LOG", "").strip()
-    if not path:
-        return
     payload = dict(event)
     payload["ts"] = datetime.now(timezone.utc).isoformat()
+    log_open_position_event(
+        phase=str(event.get("event") or "mcp_audit"),
+        message=str(event.get("event") or "mcp_audit"),
+        data=payload,
+        run_id="mcp-audit",
+    )
+    if not path:
+        return
     try:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, default=str, ensure_ascii=False) + "\n")
     except OSError as exc:
         logger.warning("CONDOR_MCP_AUDIT_LOG write failed (%s): %s", path, exc)
+
+
+async def _poll_executor_open_outcome(
+    client: Any,
+    executor_id: str,
+    create_config: dict[str, Any],
+    *,
+    controller_id: str | None = None,
+) -> None:
+    """Background: sample executor state after create to catch delayed open-order failures."""
+    delays = (0, 2, 5, 10, 20, 30)
+    prev_key: tuple[Any, ...] | None = None
+    config_slice = config_audit_slice(create_config)
+    for delay in delays:
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            detail = await client.executors.get_executor(executor_id=executor_id)
+        except Exception as exc:
+            log_open_position_event(
+                phase="open_poll_fetch_error",
+                message=f"get_executor failed at {delay}s",
+                data={
+                    "executor_id": executor_id,
+                    "controller_id": controller_id,
+                    "delay_s": delay,
+                    "error": str(exc),
+                    "create_config": config_slice,
+                },
+            )
+            continue
+        snap = summarize_executor_open_state(detail)
+        snap["delay_s"] = delay
+        snap["executor_id"] = executor_id
+        snap_key = (
+            snap.get("status"),
+            snap.get("has_position"),
+            snap.get("close_type"),
+            tuple(sorted((snap.get("error_fields") or {}).items())),
+        )
+        if snap_key != prev_key:
+            log_open_position_event(
+                phase="open_poll",
+                message="executor state after create",
+                data={
+                    "controller_id": controller_id,
+                    "create_config": config_slice,
+                    **snap,
+                },
+            )
+            prev_key = snap_key
+        if snap.get("has_position") or snap.get("status") == "TERMINATED":
+            break
 
 
 def _exception_audit_detail(exc: BaseException) -> str:
@@ -697,6 +739,9 @@ async def manage_executors(client: Any, request: ManageExecutorsRequest) -> dict
                     "error": sizing_issue,
                     "formatted_output": f"Error: {sizing_issue}",
                 }
+            lev_note = apply_hyperliquid_leverage_cap(merged_config)
+            if lev_note:
+                amount_rules_note = lev_note + (amount_rules_note or "")
 
         # Validate config fields against backend schema before sending
         try:
@@ -738,6 +783,33 @@ async def manage_executors(client: Any, request: ManageExecutorsRequest) -> dict
             }
         )
 
+        # #region agent log
+        if executor_type == "position_executor":
+            tp_dbg = str(merged_config.get("trading_pair") or "")
+            cn_dbg = str(merged_config.get("connector_name") or "")
+            tbc_dbg = (
+                merged_config.get("triple_barrier_config")
+                if isinstance(merged_config.get("triple_barrier_config"), dict)
+                else {}
+            )
+            hl_max_lev = hl_symbol_max_leverage(tp_dbg) if "hyperliquid" in cn_dbg.lower() else None
+            log_open_position_event(
+                phase="create_request",
+                message="position_executor create payload",
+                data={
+                    "trading_pair": tp_dbg,
+                    "connector_name": cn_dbg,
+                    "leverage": merged_config.get("leverage"),
+                    "amount": merged_config.get("amount"),
+                    "entry_price": merged_config.get("entry_price"),
+                    "open_order_type": tbc_dbg.get("open_order_type"),
+                    "hl_max_leverage": hl_max_lev,
+                    "controller_id": controller_id,
+                    "account": account,
+                },
+            )
+        # #endregion
+
         try:
             result = await client.executors.create_executor(
                 executor_config=merged_config,
@@ -761,6 +833,39 @@ async def manage_executors(client: Any, request: ManageExecutorsRequest) -> dict
                     "result_keys": sorted(result.keys()) if isinstance(result, dict) else None,
                 }
             )
+
+            if executor_type == "position_executor" and executor_id:
+                try:
+                    immediate = await client.executors.get_executor(executor_id=executor_id)
+                    log_open_position_event(
+                        phase="create_immediate",
+                        message="executor state right after create",
+                        data={
+                            "executor_id": executor_id,
+                            "controller_id": controller_id,
+                            "create_config": config_audit_slice(merged_config),
+                            **summarize_executor_open_state(immediate),
+                        },
+                    )
+                except Exception as exc:
+                    log_open_position_event(
+                        phase="create_immediate_fetch_error",
+                        message="get_executor failed immediately after create",
+                        data={
+                            "executor_id": executor_id,
+                            "controller_id": controller_id,
+                            "error": str(exc),
+                            "create_config": config_audit_slice(merged_config),
+                        },
+                    )
+                asyncio.create_task(
+                    _poll_executor_open_outcome(
+                        client,
+                        str(executor_id),
+                        merged_config,
+                        controller_id=controller_id,
+                    )
+                )
 
             formatted = f"Executor created successfully!\n\n"
             formatted += f"Executor ID: {executor_id or 'N/A'}\n"

@@ -14,6 +14,8 @@ from mcp_servers.hummingbot_api.tools.executors import (
     _apply_position_amount_from_trading_rules,
     _position_executor_positive_amount_issue,
 )
+from condor.hyperliquid_leverage import apply_hyperliquid_leverage_cap
+from condor.open_position_audit import summarize_executor_open_state
 
 
 class TestJournalTickResolution:
@@ -168,3 +170,57 @@ class TestPositionExecutorSizing:
         )
         assert err is None
         assert config["amount"] == 100
+
+
+class TestHyperliquidLeverageCap:
+    def test_clamps_low_max_leverage_assets(self, monkeypatch):
+        monkeypatch.setattr(
+            "condor.hyperliquid_leverage.hl_symbol_max_leverage",
+            lambda tp: {"MANTA-USD": 3, "DYDX-USD": 5, "ETH-USD": 25}.get(tp),
+        )
+        for pair, expected in (("MANTA-USD", 3), ("DYDX-USD", 5), ("ETH-USD", 25)):
+            cfg = {
+                "connector_name": "hyperliquid_perpetual",
+                "trading_pair": pair,
+                "leverage": 30,
+            }
+            note = apply_hyperliquid_leverage_cap(cfg)
+            assert cfg["leverage"] == expected
+            assert "clamped" in note.lower()
+
+    def test_leaves_btc_leverage_unchanged(self, monkeypatch):
+        monkeypatch.setattr(
+            "condor.hyperliquid_leverage.hl_symbol_max_leverage",
+            lambda _tp: 40,
+        )
+        cfg = {
+            "connector_name": "hyperliquid_perpetual",
+            "trading_pair": "BTC-USD",
+            "leverage": 30,
+        }
+        note = apply_hyperliquid_leverage_cap(cfg)
+        assert cfg["leverage"] == 30
+        assert note == ""
+
+
+class TestOpenPositionAudit:
+    def test_summarize_detects_unfilled_running_executor(self):
+        detail = {
+            "status": "RUNNING",
+            "trading_pair": "DYDX-USD",
+            "connector_name": "hyperliquid_perpetual",
+            "custom_info": {"side": 1},
+        }
+        snap = summarize_executor_open_state(detail)
+        assert snap["status"] == "RUNNING"
+        assert snap["has_position"] is False
+
+    def test_summarize_detects_filled_position(self):
+        detail = {
+            "status": "RUNNING",
+            "trading_pair": "DYDX-USD",
+            "filled_amount_quote": 250.0,
+            "entry_price": 0.19,
+        }
+        snap = summarize_executor_open_state(detail)
+        assert snap["has_position"] is True
