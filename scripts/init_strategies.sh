@@ -31,5 +31,4 @@ echo "For local-only development (placeholder agent only — not production tuni
 echo "  mkdir -p strategies/macdbb_scanner_aggressive_hl"
 echo "  cp trading_agents/macdbb_scanner_aggressive_hl/presets.private.example.yaml strategies/macdbb_scanner_aggressive_hl/presets.yaml"
 echo ""
-echo "For production: copy your real agent.md into strategies/ or push from an existing private clone."
-echo "  See scripts/setup_condor_strategies_remote.sh"
+echo "For production: add agent.md and presets.yaml under strategies/{slug}/ in the private repo."

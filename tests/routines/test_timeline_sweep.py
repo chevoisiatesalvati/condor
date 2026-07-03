@@ -208,6 +208,10 @@ def test_dynamic_replay_field_groups():
 
 def test_dynamic_replay_field_metadata_has_groups_and_visibility():
     fields = DynamicStrategyReplayConfig.get_routine_fields()
+    assert fields["preset"]["widget"] == "select"
+    assert "custom" in fields["preset"]["options"]
+    assert "hl_dynamic_session_parity" in fields["preset"]["options"]
+    assert fields["preset"]["option_labels"]["custom"] == "Custom"
     assert fields["range_start_utc"]["group"] == "Timeline"
     assert fields["range_start_utc"]["visible_when"]["replay_mode"] == "timeline_backtest"
     assert fields["session_nums"]["visible_when"]["replay_mode"] == "session_parity"
