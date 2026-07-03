@@ -48,11 +48,12 @@ from routines.macdbb_scanner_aggressive_hl_replay.reports import (
 )
 from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
 from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
+from trading_agents.macdbb_scanner_aggressive_hl.presets import current_winner_preset_name
 
 logger = logging.getLogger(__name__)
 
-# Timeline mega sweep anchor — refine v5 winner (``presets.py``).
-CURRENT_WINNER_PRESET = "hl_dynamic_timeline_refine_v5_winner_binance_1y"
+# Timeline mega sweep anchor — private presets.yaml when present, else session parity.
+CURRENT_WINNER_PRESET = current_winner_preset_name()
 
 CURRENT_WINNER_OVERRIDES: dict[str, Any] = {
     **DYNAMIC_PRESET_OVERRIDES[CURRENT_WINNER_PRESET],

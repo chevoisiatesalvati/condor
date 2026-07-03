@@ -24,7 +24,7 @@ MAX_PNL_DELTA = 3.0
 
 def test_timeline_snapshot_config_prefetches_barrier_candles():
     config = DynamicStrategyReplayConfig(
-        preset="hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
+        preset="hl_dynamic_timeline_public_fixture",
         data_source="snapshots",
         replay_mode="timeline_backtest",
     )
@@ -47,7 +47,7 @@ def test_hydrated_timeline_prefetch_discovers_pairs():
     manifest = load_manifest(snapshot_dir=snapshot_dir) or {}
     overrides = merge_timeline_config(
         {
-            "preset": "hl_dynamic_timeline_refine_v5_winner_binance_1y",
+            "preset": "hl_dynamic_session_parity",
             "snapshot_dir": snapshot_dir,
             "replay_mode": "timeline_backtest",
             "data_source": "snapshots",

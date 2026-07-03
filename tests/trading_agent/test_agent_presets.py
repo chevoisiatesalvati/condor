@@ -8,18 +8,23 @@ from condor.trading_agent.agent_presets import (
 
 
 def test_macdbb_agent_preset_catalog():
+    from trading_agents.macdbb_scanner_aggressive_hl.presets import private_presets_available
+
     catalog = get_agent_strategy_preset_catalog("macdbb_scanner_aggressive_hl")
     assert catalog is not None
     ids = [row["id"] for row in catalog]
     assert ids[0] == "custom"
-    assert "hl_dynamic_timeline_refine_v5_winner_binance_1y" in ids
+    if private_presets_available():
+        assert len(ids) > 1
+    else:
+        assert "hl_dynamic_session_parity" in ids
 
 
-def test_apply_refine_preset_merges_strategy_params():
+def test_apply_session_parity_preset_merges_strategy_params():
     config = apply_agent_strategy_preset(
         "macdbb_scanner_aggressive_hl",
         {"frequency_sec": 1800, "strategy_params": {"sl_pct": 1.0}},
-        preset="hl_dynamic_timeline_refine_v5_winner_binance_1y",
+        preset="hl_dynamic_session_parity",
     )
     params = config["strategy_params"]
     assert params["sl_pct"] == 3.8

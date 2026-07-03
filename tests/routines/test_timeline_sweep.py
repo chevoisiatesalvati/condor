@@ -4,6 +4,8 @@ import csv
 
 import pytest
 
+TIMELINE_TEST_PRESET = "hl_dynamic_timeline_public_fixture"
+
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import SweepResult, _dynamic_sweep_base
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_scanner_aggressive_hl_replay.presets import (
@@ -122,7 +124,7 @@ def test_timeline_sweep_overrides_sets_backtest_mode():
 
 
 def test_timeline_preset_static_dict_has_default_snapshot_infra():
-    preset = DYNAMIC_PRESET_OVERRIDES["hl_dynamic_timeline_refine_v5_winner_binance_1y"]
+    preset = DYNAMIC_PRESET_OVERRIDES[TIMELINE_TEST_PRESET]
     assert "session_nums" not in preset
     assert preset["replay_mode"] == "timeline_backtest"
     assert preset["snapshot_dir"] == "data/replay_snapshots_binance_1y"
@@ -151,14 +153,14 @@ def test_merge_timeline_config_includes_fixed_activation():
 def test_timeline_preset_loads_and_fills_range():
     config = resolve_config_with_preset(
         DynamicStrategyReplayConfig(
-            preset="hl_dynamic_timeline_refine_v5_winner_binance_1y",
+            preset=TIMELINE_TEST_PRESET,
             range_start_utc=None,
             range_end_utc=None,
         )
     )
     assert config.replay_mode == "timeline_backtest"
-    assert config.sl_pct == 3.8
-    assert config.tp_pct == 5.0
+    assert config.sl_pct == 4.5
+    assert config.tp_pct == 6.2
     assert config.range_start_utc
     assert config.range_end_utc
     assert config.range_start_utc.endswith("Z")
@@ -168,7 +170,7 @@ def test_timeline_preset_loads_and_fills_range():
 def test_timeline_preset_respects_user_range():
     config = resolve_config_with_preset(
         DynamicStrategyReplayConfig(
-            preset="hl_dynamic_timeline_refine_v5_winner_binance_1y",
+            preset=TIMELINE_TEST_PRESET,
             range_start_utc="2026-06-01T00:00:00Z",
             range_end_utc="2026-06-10T23:59:59Z",
         )
@@ -180,7 +182,7 @@ def test_timeline_preset_respects_user_range():
 def test_timeline_preset_respects_user_snapshot_dir():
     config = resolve_config_with_preset(
         DynamicStrategyReplayConfig(
-            preset="hl_dynamic_timeline_refine_v5_winner_binance_1y",
+            preset=TIMELINE_TEST_PRESET,
             snapshot_dir="data/replay_snapshots_binance_1y",
         )
     )
@@ -218,8 +220,8 @@ def test_dynamic_replay_field_metadata_has_groups_and_visibility():
 
 def test_replay_config_to_agent_strategy_params_hours():
     config = resolve_config_with_preset(
-        DynamicStrategyReplayConfig(preset="hl_dynamic_timeline_refine_v5_winner_binance_1y")
+        DynamicStrategyReplayConfig(preset=TIMELINE_TEST_PRESET)
     )
     params = replay_config_to_agent_strategy_params(config, frequency_sec=1800)
-    assert params["thesis_decay_exit_hours"] == 32.0
-    assert params["sl_pct"] == 3.8
+    assert params["thesis_decay_exit_hours"] == 14.0
+    assert params["sl_pct"] == 4.5

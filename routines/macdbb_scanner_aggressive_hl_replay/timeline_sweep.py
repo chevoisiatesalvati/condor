@@ -718,7 +718,17 @@ def apply_winner_to_agent(
     agent_path: Path | None = None,
     frequency_sec: int = DEFAULT_FREQUENCY_SEC,
 ) -> dict[str, Any]:
-    agent_path = agent_path or (TRADING_AGENTS_DIR / AGENT_SLUG / "agent.md")
+    from condor.trading_agent.strategy_paths import agent_md_write_path
+
+    agent_path = agent_path or agent_md_write_path(AGENT_SLUG)
+    agent_path.parent.mkdir(parents=True, exist_ok=True)
+    if not agent_path.is_file():
+        from condor.trading_agent.strategy_paths import resolve_agent_md_for_read
+
+        source = resolve_agent_md_for_read(AGENT_SLUG)
+        if source is None:
+            raise ValueError(f"No agent.md template found for {AGENT_SLUG}")
+        agent_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     front, body = _split_agent_front_matter(agent_path)
     default_config = front.setdefault("default_config", {})
     default_config.setdefault("frequency_sec", frequency_sec)
@@ -758,30 +768,40 @@ def apply_winner_to_presets(
     presets_path: Path | None = None,
     models_path: Path | None = None,
 ) -> None:
+    del models_path  # preset names are validated dynamically; models.py no longer lists them
+    from condor.trading_agent.strategy_paths import private_strategy_dir
+
     preset_name = preset_name or TIMELINE_PRESET_NAME
-    presets_path = presets_path or Path(
-        "trading_agents/macdbb_scanner_aggressive_hl/presets.py"
-    )
-    models_path = models_path or Path(
-        "routines/macdbb_scanner_aggressive_hl_replay/models.py"
-    )
-    preset_text = presets_path.read_text(encoding="utf-8")
-    if preset_name in preset_text:
-        raise ValueError(f"Preset {preset_name!r} already exists in {presets_path}")
-    marker = '    "hl_dynamic_session_parity": _merge_preset_layers('
+    yaml_path = presets_path or (private_strategy_dir(AGENT_SLUG) / "presets.yaml")
+    bundle: dict[str, Any] = {}
+    if yaml_path.is_file():
+        loaded = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        if isinstance(loaded, dict):
+            bundle = loaded
+
+    dynamic_overrides = bundle.setdefault("dynamic_preset_overrides", {})
+    if preset_name in dynamic_overrides:
+        raise ValueError(f"Preset {preset_name!r} already exists in {yaml_path}")
+
     filtered = {
         key: value
         for key, value in preset_overrides.items()
         if key not in PRESET_STRIP_KEYS
     }
-    block = render_preset_block(preset_name, filtered)
-    preset_text = preset_text.replace(marker, block + "\n" + marker, 1)
-    presets_path.write_text(preset_text, encoding="utf-8")
+    dynamic_overrides[preset_name] = filtered
 
-    models_text = models_path.read_text(encoding="utf-8")
-    if preset_name not in models_text:
-        models_text = models_text.replace(
-            '"hl_dynamic_session_parity",',
-            f'"hl_dynamic_session_parity",\n        "{preset_name}",',
-        )
-    models_path.write_text(models_text, encoding="utf-8")
+    labels = bundle.setdefault("labels", {})
+    labels.setdefault(preset_name, preset_name)
+
+    names = list(bundle.get("agent_strategy_preset_names") or [])
+    if preset_name not in names:
+        names.insert(0, preset_name)
+    bundle["agent_strategy_preset_names"] = names
+    bundle["default_agent_strategy_preset"] = preset_name
+    bundle["current_winner_preset"] = preset_name
+
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_path.write_text(
+        yaml.safe_dump(bundle, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )

@@ -75,7 +75,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--preset-name",
         default=STAGED_V5_WINNER_PRESET,
-        help="New backtest preset name to register in presets.py",
+        help="New backtest preset name to register in strategies/ presets.yaml",
     )
     parser.add_argument("--frequency-sec", type=int, default=DEFAULT_FREQUENCY_SEC)
     parser.add_argument("--skip-routine", action="store_true")
@@ -175,7 +175,7 @@ async def _main() -> int:
 
     if not args.skip_preset:
         apply_winner_to_presets(preset_overrides, preset_name=args.preset_name)
-        print(f"Added preset {args.preset_name!r} to presets.py and models.py")
+        print(f"Added preset {args.preset_name!r} to strategies/ presets.yaml")
 
     return 0
 

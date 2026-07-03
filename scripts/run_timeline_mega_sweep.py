@@ -160,7 +160,7 @@ def _parse_args() -> argparse.Namespace:
     validate.add_argument("--frequency-sec", type=int, default=DEFAULT_FREQUENCY_SEC)
     validate.add_argument("--time-window-min", type=int, default=DEFAULT_TIME_WINDOW_MIN)
 
-    apply = sub.add_parser("apply-winner", help="Write rank #1 to agent.md and presets.py")
+    apply = sub.add_parser("apply-winner", help="Write rank #1 to strategies/{slug}/agent.md and presets.yaml")
     apply.add_argument(
         "--csv",
         type=Path,
@@ -395,7 +395,7 @@ def _apply_winner(args: argparse.Namespace) -> None:
         print(f"Updated agent.md strategy_params ({len(params)} keys)")
     if not args.skip_preset:
         apply_winner_to_presets(preset_overrides)
-        print(f"Added preset {TIMELINE_PRESET_NAME} to presets.py and models.py")
+        print(f"Added preset {TIMELINE_PRESET_NAME} to strategies/ presets.yaml")
     print(f"Winner: {winner_row['name']}")
 
 

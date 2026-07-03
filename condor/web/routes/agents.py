@@ -769,9 +769,11 @@ async def get_agent(slug: str, user: WebUser = Depends(get_current_user)):
     strategy = _get_strategy_by_slug(slug)
     agent_dir = strategy.agent_dir
 
-    # Read agent.md raw content
-    agent_md_path = agent_dir / "agent.md"
-    agent_md = agent_md_path.read_text() if agent_md_path.exists() else ""
+    # Read agent.md raw content (private submodule, local override, or example template)
+    from condor.trading_agent.strategy_paths import resolve_agent_md_for_read
+
+    agent_md_path = resolve_agent_md_for_read(slug)
+    agent_md = agent_md_path.read_text() if agent_md_path else ""
 
     defaults_payload = _build_agent_defaults(strategy)
     config_dict = defaults_payload["default_config"]
@@ -900,8 +902,11 @@ async def update_agent_md(
     slug: str, req: UpdateAgentMdRequest, user: WebUser = Depends(get_current_user)
 ):
     """Update agent.md content."""
+    from condor.trading_agent.strategy_paths import agent_md_write_path
+
     strategy = _get_strategy_by_slug(slug)
-    agent_md_path = strategy.agent_dir / "agent.md"
+    agent_md_path = agent_md_write_path(slug)
+    agent_md_path.parent.mkdir(parents=True, exist_ok=True)
     agent_md_path.write_text(req.content)
     return {"updated": True}
 

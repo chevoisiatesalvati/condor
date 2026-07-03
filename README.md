@@ -446,6 +446,16 @@ See `flows/` directory for detailed command flow documentation:
 3. Follow patterns in `flows/common_patterns.txt`
 4. Document flow in `flows/`
 
+## Private trading strategies
+
+Tuned agent configs and sweep presets are **not** committed to the public repo. They live in the `strategies/` git submodule (private `condor-strategies` repository):
+
+```bash
+./scripts/init_strategies.sh
+```
+
+See [`strategies/README.md`](strategies/README.md) and [`trading_agents/AGENTS.md`](trading_agents/AGENTS.md) for layout and workflow.
+
 ## Support
 
 - **Docs**: https://condor.hummingbot.org

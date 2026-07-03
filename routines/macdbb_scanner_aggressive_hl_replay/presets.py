@@ -7,6 +7,7 @@ from trading_agents.macdbb_scanner_aggressive_hl.presets import (
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL as FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
     PRESET_LABELS as PRESET_LABELS,
     PRESET_OVERRIDES as PRESET_OVERRIDES,
+    PUBLIC_DYNAMIC_PRESET_OVERRIDES as PUBLIC_DYNAMIC_PRESET_OVERRIDES,
     USER_WINS_AFTER_PRESET_KEYS as USER_WINS_AFTER_PRESET_KEYS,
     _DRIVER_SESSION as _DRIVER_SESSION,
     _DRIVER_TIMELINE as _DRIVER_TIMELINE,
@@ -16,6 +17,9 @@ from trading_agents.macdbb_scanner_aggressive_hl.presets import (
     _build_timeline_driver as _build_timeline_driver,
     _merge_preset_layers as _merge_preset_layers,
     capital_normalized_pnl as capital_normalized_pnl,
+    current_winner_preset_name as current_winner_preset_name,
+    get_private_preset_bundle as get_private_preset_bundle,
+    known_preset_names as known_preset_names,
     resolve_config_with_preset as resolve_config_with_preset,
     resolve_timeline_range as resolve_timeline_range,
 )

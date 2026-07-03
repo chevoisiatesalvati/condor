@@ -86,7 +86,7 @@ Library: `routines/macdbb_scanner_aggressive_hl_replay/` (re-exports presets fro
 |--------|------|
 | `simulator.py` | Session/timeline simulation engine |
 | `models.py` | `DynamicStrategyReplayConfig`, tick/trade models |
-| `trading_agents/.../presets.py` | Shared preset catalog (backtest + live agent start) |
+| `trading_agents/.../presets.py` | Public preset framework + yaml loader (winners in private `strategies/`) |
 | `config_sweep.py` | Grid/random sweeps over sessions |
 | `timeline_sweep.py` | Timeline mega-sweeps on snapshot data |
 
@@ -108,10 +108,29 @@ Historical sweep CSVs under `data/strategy_replay_sweeps/` may use old filename 
 
 ---
 
+## Private strategies (`strategies/` submodule)
+
+Proprietary agent definitions and tuned presets live in a **private repo**, checked out at `strategies/`:
+
+| Private file | Purpose |
+|--------------|---------|
+| `strategies/{slug}/agent.md` | Live strategy frontmatter + LLM instructions |
+| `strategies/{slug}/presets.yaml` | Sweep winners, preset labels, `current_winner_preset` |
+
+Public repo ships `agent.example.md`, `presets.private.example.yaml`, and framework code in `presets.py`. Init:
+
+```bash
+./scripts/init_strategies.sh
+```
+
+After a sweep win, apply scripts write to `strategies/{slug}/`; commit and push in that repo, then bump the submodule pointer in Condor.
+
+---
+
 ## Adding a new agent
 
 1. Follow `.claude/skills/trading-agent-builder/SKILL.md` (user must approve design before coding)
-2. Create `trading_agents/{slug}/agent.md` with frontmatter + instructions
+2. Create `trading_agents/{slug}/agent.example.md` (public template) and private `strategies/{slug}/agent.md`
 3. Add agent-local routines under `trading_agents/{slug}/routines/` if needed
 4. If backtesting is required: `{slug}_backtest.py` + `{slug}_replay/` (copy/adapt from macdbb stack)
 5. Dry-run → run-once → loop; inspect `sessions/` and `journal.md` before live

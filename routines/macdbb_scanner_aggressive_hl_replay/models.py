@@ -4,7 +4,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 @dataclass
@@ -197,20 +197,20 @@ class SimTrade:
 class ReplayConfigBase(BaseModel):
     """Shared threshold and simulation settings for MACD+BB replay."""
 
-    preset: Literal[
-        "custom",
-        "hl_dynamic_session_parity",
-        "hl_dynamic_timeline_refine_v6_sltp_winner_binance_1y",
-        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_sweep_winner_binance_1y",
-        "hl_dynamic_timeline_refine_v5_winner_binance_1y",
-        "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
-        "hl_dynamic_timeline_v6_entry_sltp_sl20_tpmin10_patient_thesis_binance_1y",
-        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_fast_thesis_binance_1y",
-        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_mid_thesis_binance_1y",
-    ] = Field(
+    preset: str = Field(
         default="custom",
         description="Named parameter profile",
     )
+
+    @field_validator("preset")
+    @classmethod
+    def _validate_preset(cls, value: str) -> str:
+        from trading_agents.macdbb_scanner_aggressive_hl.presets import known_preset_names
+
+        allowed = known_preset_names()
+        if value not in allowed:
+            raise ValueError(f"Unknown preset {value!r}")
+        return value
     strategy_slug: str = Field(
         default="macdbb_scanner_aggressive_hl",
         description="Agent folder under trading_agents",
@@ -380,18 +380,8 @@ class StrategyReplayConfig(ReplayConfigBase):
 class DynamicStrategyReplayConfig(StrategyReplayConfig):
     """Backtest macdbb_scanner_aggressive_hl with dynamic sizing and volatility-aware barriers."""
 
-    preset: Literal[
-        "custom",
-        "hl_dynamic_session_parity",
-        "hl_dynamic_timeline_refine_v6_sltp_winner_binance_1y",
-        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_sweep_winner_binance_1y",
-        "hl_dynamic_timeline_refine_v5_winner_binance_1y",
-        "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
-        "hl_dynamic_timeline_v6_entry_sltp_sl20_tpmin10_patient_thesis_binance_1y",
-        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_fast_thesis_binance_1y",
-        "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_mid_thesis_binance_1y",
-    ] = Field(
-        default="hl_dynamic_timeline_refine_v5_winner_binance_1y",
+    preset: str = Field(
+        default="hl_dynamic_session_parity",
         description="Named parameter profile",
     )
 

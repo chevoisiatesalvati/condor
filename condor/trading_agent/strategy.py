@@ -185,8 +185,14 @@ class StrategyStore:
             pass
 
     def _agent_md_path(self, strategy: Strategy) -> Path:
-        """Primary path: trading_agents/{slug}/agent.md."""
-        return strategy.agent_dir / "agent.md"
+        from condor.trading_agent.strategy_paths import agent_md_write_path
+
+        return agent_md_write_path(strategy.slug)
+
+    def _resolve_agent_md(self, slug: str) -> Path | None:
+        from condor.trading_agent.strategy_paths import resolve_agent_md_for_read
+
+        return resolve_agent_md_for_read(slug)
 
     def create(
         self,
@@ -216,30 +222,33 @@ class StrategyStore:
 
     def get(self, strategy_id: str) -> Strategy | None:
         """Look up a strategy by ID — scans all agent folders."""
-        for agent_dir in self._iter_agent_dirs():
-            agent_md = agent_dir / "agent.md"
-            if not agent_md.exists():
+        from condor.trading_agent.strategy_paths import iter_strategy_slugs
+
+        for slug in iter_strategy_slugs():
+            agent_md = self._resolve_agent_md(slug)
+            if agent_md is None:
                 continue
-            s = _load_strategy_from_file(agent_md, fallback_id=agent_dir.name)
+            s = _load_strategy_from_file(agent_md, fallback_id=slug)
             if s and s.id == strategy_id:
                 return s
         return None
 
     def get_by_slug(self, slug: str) -> Strategy | None:
         """Look up a strategy by its directory slug."""
-        agent_dir = _DATA_ROOT / slug
-        agent_md = agent_dir / "agent.md"
-        if not agent_md.exists():
+        agent_md = self._resolve_agent_md(slug)
+        if agent_md is None:
             return None
         return _load_strategy_from_file(agent_md, fallback_id=slug)
 
     def list_all(self, user_id: int | None = None) -> list[Strategy]:
+        from condor.trading_agent.strategy_paths import iter_strategy_slugs
+
         strategies = []
-        for agent_dir in sorted(self._iter_agent_dirs()):
-            agent_md = agent_dir / "agent.md"
-            if not agent_md.exists():
+        for slug in iter_strategy_slugs():
+            agent_md = self._resolve_agent_md(slug)
+            if agent_md is None:
                 continue
-            s = _load_strategy_from_file(agent_md, fallback_id=agent_dir.name)
+            s = _load_strategy_from_file(agent_md, fallback_id=slug)
             if s is None:
                 continue
             if user_id is None or s.created_by == user_id:
@@ -318,9 +327,9 @@ class StrategyStore:
         }
         content = _render_frontmatter(meta, strategy.instructions)
 
-        agent_dir = strategy.agent_dir
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        (agent_dir / "agent.md").write_text(content)
+        write_path = self._agent_md_path(strategy)
+        write_path.parent.mkdir(parents=True, exist_ok=True)
+        write_path.write_text(content)
 
     def _iter_agent_dirs(self):
         """Yield directories under trading_agents/ that could contain an agent.md."""
