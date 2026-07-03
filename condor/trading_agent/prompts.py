@@ -51,7 +51,7 @@ JOURNAL:
   trading_agent_journal_write(entry_type="learning", category="execution", text="...")
   Write ONLY durable platform/executor quirks, e.g.:
   - manage_executors create/stop failures or schema fixes that worked on retry
-  - create succeeded but executor missing from RUNNING next tick — re-create and verify
+  - create succeeded but executor missing from RUNNING next tick — if position_reconcile shows NO connector orphan, re-create and verify; if connector orphan exists, do NOT market-create (doubles position)
   - retry patterns (e.g. base amount required instead of notional_usd-only)
   Do NOT write learnings for:
   - Expected strategy outcomes (4h filter blocks, thesis_decay increments, formal/adaptive flags)

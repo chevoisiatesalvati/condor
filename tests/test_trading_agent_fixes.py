@@ -209,11 +209,15 @@ class TestOpenPositionAudit:
             "status": "RUNNING",
             "trading_pair": "DYDX-USD",
             "connector_name": "hyperliquid_perpetual",
-            "custom_info": {"side": 1},
+            "entry_price": 0.098085,
+            "filled_amount_quote": 0.0,
+            "custom_info": {"side": 1, "current_retries": 3, "max_retries": 10},
         }
         snap = summarize_executor_open_state(detail)
         assert snap["status"] == "RUNNING"
+        assert snap["is_filled"] is False
         assert snap["has_position"] is False
+        assert snap["current_retries"] == 3
 
     def test_summarize_detects_filled_position(self):
         detail = {
@@ -223,4 +227,108 @@ class TestOpenPositionAudit:
             "entry_price": 0.19,
         }
         snap = summarize_executor_open_state(detail)
+        assert snap["is_filled"] is True
         assert snap["has_position"] is True
+
+
+class TestPositionReconcile:
+    def test_detects_orphan_from_live_connector(self):
+        from condor.position_reconcile import reconcile_executor_positions
+
+        running = [{"pair": "BTC-USD"}, {"pair": "SOL-USD"}]
+        connector = [
+            {"trading_pair": "BTC-USD", "amount": 0.01, "connector_name": "hyperliquid_perpetual"},
+            {"trading_pair": "XPL-USD", "amount": 2501, "connector_name": "hyperliquid_perpetual"},
+        ]
+        report = reconcile_executor_positions(
+            running,
+            connector,
+            agent_id="macdbb_scanner_aggressive_hl_78",
+        )
+        assert report["orphan_position_count"] == 1
+        assert report["orphan_positions"][0]["trading_pair"] == "XPL-USD"
+        assert report["orphan_positions"][0]["source"] == "connector"
+        assert report["effective_open_slots"] == 3
+
+    def test_ignores_stale_hb_summary_from_other_controller(self):
+        from condor.position_reconcile import reconcile_executor_positions
+
+        running = [{"pair": f"P{i}-USD"} for i in range(9)]
+        connector = [
+            {"trading_pair": f"P{i}-USD", "amount": 1.0, "connector_name": "hyperliquid_perpetual"}
+            for i in range(9)
+        ] + [
+            {"trading_pair": "XPL-USD", "amount": 2501, "connector_name": "hyperliquid_perpetual"},
+        ]
+        hb_stale = [
+            {
+                "trading_pair": "JTO-USD",
+                "net_amount_base": 284.0,
+                "controller_id": "macdbb_scanner_aggressive_hl_62",
+            }
+        ]
+        report = reconcile_executor_positions(
+            running,
+            connector,
+            agent_id="macdbb_scanner_aggressive_hl_78",
+            hb_summary_positions=hb_stale,
+        )
+        assert report["orphan_position_count"] == 1
+        assert report["orphan_positions"][0]["trading_pair"] == "XPL-USD"
+        assert len(report["hb_stale_other_controller"]) == 1
+        assert report["hb_stale_other_controller"][0]["trading_pair"] == "JTO-USD"
+
+    def test_ghost_history_does_not_inflate_effective_slots(self):
+        from condor.position_reconcile import reconcile_executor_positions
+
+        running = [{"pair": f"P{i}-USD"} for i in range(9)]
+        connector = [
+            {"trading_pair": f"P{i}-USD", "amount": 1.0, "connector_name": "hyperliquid_perpetual"}
+            for i in range(9)
+        ] + [
+            {"trading_pair": "XPL-USD", "amount": 2501, "connector_name": "hyperliquid_perpetual"},
+        ]
+        all_executors = [
+            {
+                "pair": "PUMP-USD",
+                "controller_id": "macdbb_scanner_aggressive_hl_78",
+                "status": "terminated",
+            },
+            {
+                "pair": "ADA-USD",
+                "controller_id": "macdbb_scanner_aggressive_hl_78",
+                "status": "terminated",
+            },
+        ]
+        report = reconcile_executor_positions(
+            running,
+            connector,
+            agent_id="macdbb_scanner_aggressive_hl_78",
+            all_executors=all_executors,
+        )
+        assert report["orphan_position_count"] == 1
+        assert report["orphan_positions"][0]["trading_pair"] == "XPL-USD"
+        assert report["effective_open_slots"] == 10
+        assert "PUMP-USD" in report["ghost_without_position"]
+        assert "ADA-USD" in report["ghost_without_position"]
+
+    def test_format_summary_warns_against_market_create(self):
+        from condor.position_reconcile import format_reconcile_summary
+
+        report = {
+            "running_executor_count": 9,
+            "connector_open_position_count": 10,
+            "effective_open_slots": 10,
+            "orphan_positions": [
+                {
+                    "trading_pair": "XPL-USD",
+                    "connector_name": "hyperliquid_perpetual",
+                    "position_side": "LONG",
+                    "amount": 2501,
+                    "source": "connector",
+                }
+            ],
+        }
+        text = format_reconcile_summary(report, max_open=10)
+        assert "Do NOT market-create" in text
+        assert "doubles" in text.lower()

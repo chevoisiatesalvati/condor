@@ -37,7 +37,7 @@ from condor.trading_agent.performance import is_running_status
 
 from .journal import JournalManager, next_experiment_number, next_session_number
 from .prompts import build_tick_prompt
-from .risk import RiskEngine, auto_approve_with_risk_check, resolve_risk_limits
+from .risk import RiskEngine, RiskState, auto_approve_with_risk_check, resolve_risk_limits
 from .strategy import Strategy
 from .providers import ProviderRegistry
 
@@ -394,6 +394,7 @@ class TickEngine:
     _pending_directives: list[str] = field(default_factory=list, init=False)
     _cached_routines_section: str | None = field(default=None, init=False, repr=False)
     _last_running_executor_ids: set[str] = field(default_factory=set, init=False)
+    _live_risk_state: RiskState | None = field(default=None, init=False)
     _notified_barrier_close_ids: set[str] = field(default_factory=set, init=False)
     _agent_closed_executor_ids: set[str] = field(default_factory=set, init=False)
     _sl_cooldown_until_tick: dict[str, int] = field(default_factory=dict, init=False)
@@ -577,6 +578,36 @@ class TickEngine:
             name: result.summary for name, result in skill_results.items()
         }
 
+        running_executors: list[dict[str, Any]] = []
+        if executors_result:
+            running_executors = executors_result.data.get("executors") or []
+
+        if executors_result and not self.is_experiment:
+            from condor.position_reconcile import audit_position_reconcile
+
+            max_open = int(
+                self.config.get("risk_limits", {}).get("max_open_executors")
+                or self.risk.limits.max_open_executors
+            )
+            try:
+                reconcile_report = await audit_position_reconcile(
+                    client,
+                    agent_id=self.agent_id,
+                    running_executors=running_executors,
+                    all_executors=executors_result.data.get("all_executors") or [],
+                    tick_num=self.journal.tick_count + 1 if self.journal else 0,
+                    max_open_executors=max_open,
+                )
+                core_data_summaries["position_reconcile"] = reconcile_report.get(
+                    "summary", ""
+                )
+            except Exception:
+                log.warning(
+                    "TickEngine %s: position reconcile failed",
+                    self.agent_id,
+                    exc_info=True,
+                )
+
         barrier_closes_section = ""
         barrier_closes: list[dict[str, Any]] = []
         if executors_result and not self.is_experiment:
@@ -619,6 +650,12 @@ class TickEngine:
 
         # 4. Get risk state (experiments pass None — returns clean state)
         risk_state = self.risk.get_state(self.journal or _NullTracker())
+        if executors_result:
+            risk_state.executor_count = len(running_executors)
+            risk_state.total_exposure = float(
+                executors_result.data.get("total_exposure") or 0
+            )
+        self._live_risk_state = risk_state
 
         if risk_state.is_blocked and not self.is_experiment:
             self.journal.append_action(
@@ -838,7 +875,9 @@ class TickEngine:
         )
 
         mode = self.config.get("execution_mode", "loop")
-        risk_state = self.risk.get_state(self.journal or _NullTracker())
+        risk_state = self._live_risk_state or self.risk.get_state(
+            self.journal or _NullTracker()
+        )
 
         server_name = self.config.get("server_name")
         if server_name:

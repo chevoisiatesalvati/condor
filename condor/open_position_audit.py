@@ -90,12 +90,17 @@ def summarize_executor_open_state(detail: Any) -> dict[str, Any]:
     if filled is None:
         filled = ci.get("realized_buy_size_quote") or ci.get("realized_sell_size_quote")
     position_size = ci.get("position_size_quote")
+    filled_f = float(filled or 0)
+    position_f = float(position_size or 0)
+    is_filled = filled_f > 0 or position_f > 0
 
     error_fields = {
         k: ci[k]
         for k in ci
         if any(token in k.lower() for token in ("error", "fail", "reject", "reason"))
     }
+    order_ids = ci.get("order_ids")
+    order_id_count = len(order_ids) if isinstance(order_ids, list) else None
 
     return {
         "status": detail.get("status"),
@@ -105,11 +110,11 @@ def summarize_executor_open_state(detail: Any) -> dict[str, Any]:
         "entry_price": entry_price,
         "filled_amount_quote": filled,
         "position_size_quote": position_size,
-        "has_position": bool(
-            (filled and float(filled or 0) > 0)
-            or (position_size and float(position_size or 0) > 0)
-            or (entry_price and float(entry_price or 0) > 0)
-        ),
+        "is_filled": is_filled,
+        "has_position": is_filled,
+        "current_retries": ci.get("current_retries"),
+        "max_retries": ci.get("max_retries"),
+        "order_id_count": order_id_count,
         "custom_info_keys": sorted(ci.keys()) if ci else [],
         "error_fields": error_fields or None,
     }

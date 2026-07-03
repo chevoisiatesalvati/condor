@@ -442,8 +442,9 @@ async def _poll_executor_open_outcome(
         snap["executor_id"] = executor_id
         snap_key = (
             snap.get("status"),
-            snap.get("has_position"),
+            snap.get("is_filled"),
             snap.get("close_type"),
+            snap.get("current_retries"),
             tuple(sorted((snap.get("error_fields") or {}).items())),
         )
         if snap_key != prev_key:
@@ -457,7 +458,7 @@ async def _poll_executor_open_outcome(
                 },
             )
             prev_key = snap_key
-        if snap.get("has_position") or snap.get("status") == "TERMINATED":
+        if snap.get("is_filled") or snap.get("status") == "TERMINATED":
             break
 
 
