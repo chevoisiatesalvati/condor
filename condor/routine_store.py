@@ -190,8 +190,9 @@ class RoutineStore:
             }
             if callable(groups_fn):
                 entry["groups"] = groups_fn()
-            if info.preset_overrides:
-                entry["preset_overrides"] = info.preset_overrides
+            overrides = info.resolved_preset_overrides()
+            if overrides:
+                entry["preset_overrides"] = overrides
             out.append(entry)
         return out
 

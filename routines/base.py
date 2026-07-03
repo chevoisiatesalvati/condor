@@ -65,6 +65,7 @@ class RoutineInfo:
         category: str = "Uncategorized",
         source: str = "global",
         preset_overrides: dict[str, dict[str, Any]] | None = None,
+        preset_overrides_provider: Callable[[], dict[str, dict[str, Any]]] | None = None,
         run_in_subprocess: bool = False,
     ):
         self.name = name
@@ -79,6 +80,7 @@ class RoutineInfo:
         self.category = category
         self.source = source
         self.preset_overrides = preset_overrides
+        self._preset_overrides_provider = preset_overrides_provider
 
         # Extract description from Config docstring
         doc = config_class.__doc__ or name
@@ -132,6 +134,11 @@ class RoutineInfo:
         if callable(cls_get_fields):
             return cls_get_fields()
         return self.get_fields()
+
+    def resolved_preset_overrides(self) -> dict[str, dict[str, Any]] | None:
+        if self._preset_overrides_provider is not None:
+            return self._preset_overrides_provider()
+        return self.preset_overrides
 
 
 def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:
@@ -187,6 +194,14 @@ def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:
             message_states = getattr(module, "MESSAGE_STATES", None)
             cleanup_fn = getattr(module, "cleanup", None)
 
+            get_overrides = getattr(module, "get_preset_overrides", None)
+            if callable(get_overrides):
+                preset_overrides = None
+                preset_overrides_provider = get_overrides
+            else:
+                preset_overrides = getattr(module, "PRESET_OVERRIDES", None)
+                preset_overrides_provider = None
+
             routines[file_path.stem] = RoutineInfo(
                 name=file_path.stem,
                 config_class=module.Config,
@@ -198,7 +213,8 @@ def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:
                 cleanup_fn=cleanup_fn,
                 category=category,
                 source="global",
-                preset_overrides=getattr(module, "PRESET_OVERRIDES", None),
+                preset_overrides=preset_overrides,
+                preset_overrides_provider=preset_overrides_provider,
                 run_in_subprocess=run_in_subprocess and not is_continuous,
             )
             logger.debug(
@@ -322,6 +338,14 @@ def discover_routines_from_path(
             message_states = getattr(module, "MESSAGE_STATES", None)
             cleanup_fn = getattr(module, "cleanup", None)
 
+            get_overrides = getattr(module, "get_preset_overrides", None)
+            if callable(get_overrides):
+                preset_overrides = None
+                preset_overrides_provider = get_overrides
+            else:
+                preset_overrides = getattr(module, "PRESET_OVERRIDES", None)
+                preset_overrides_provider = None
+
             routines[file_path.stem] = RoutineInfo(
                 name=file_path.stem,
                 config_class=module.Config,
@@ -333,7 +357,8 @@ def discover_routines_from_path(
                 cleanup_fn=cleanup_fn,
                 category=category,
                 source=source,
-                preset_overrides=getattr(module, "PRESET_OVERRIDES", None),
+                preset_overrides=preset_overrides,
+                preset_overrides_provider=preset_overrides_provider,
                 run_in_subprocess=run_in_subprocess and not is_continuous,
             )
             logger.debug(f"Discovered agent routine: {file_path.stem}")

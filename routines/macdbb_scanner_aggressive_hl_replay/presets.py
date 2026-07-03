@@ -16,10 +16,13 @@ from trading_agents.macdbb_scanner_aggressive_hl.presets import (
     _STRATEGY_TIMELINE_MEGA_BEST as _STRATEGY_TIMELINE_MEGA_BEST,
     _build_timeline_driver as _build_timeline_driver,
     _merge_preset_layers as _merge_preset_layers,
+    backtest_preset_names as backtest_preset_names,
     capital_normalized_pnl as capital_normalized_pnl,
     current_winner_preset_name as current_winner_preset_name,
+    get_dynamic_preset_overrides as get_dynamic_preset_overrides,
     get_private_preset_bundle as get_private_preset_bundle,
     known_preset_names as known_preset_names,
+    preset_labels as preset_labels,
     resolve_config_with_preset as resolve_config_with_preset,
     resolve_timeline_range as resolve_timeline_range,
 )

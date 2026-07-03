@@ -157,13 +157,19 @@ def build_dynamic_replay_field_metadata(config_class: type) -> dict[str, dict[st
             "description": field_info.description or name,
         }
         if name == "preset":
-            from trading_agents.macdbb_scanner_aggressive_hl.presets import PRESET_LABELS, known_preset_names
+            from trading_agents.macdbb_scanner_aggressive_hl.presets import (
+                backtest_preset_names,
+                preset_labels,
+            )
 
-            preset_options = sorted(known_preset_names(), key=lambda opt: (opt != "custom", opt))
+            preset_options = sorted(
+                backtest_preset_names(), key=lambda opt: (opt != "custom", opt)
+            )
+            labels = preset_labels()
             entry["widget"] = "select"
             entry["options"] = preset_options
             entry["option_labels"] = {
-                opt: PRESET_LABELS.get(opt, opt) for opt in preset_options
+                opt: labels.get(opt, opt) for opt in preset_options
             }
         else:
             literal_options = _literal_field_options(annotation)

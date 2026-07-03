@@ -44,10 +44,14 @@ logger = logging.getLogger(__name__)
 Config = DynamicStrategyReplayConfig
 
 # Re-exported for routine discovery — UI reads this to sync form fields on preset change.
-PRESET_OVERRIDES = {
-    **presets.PRESET_OVERRIDES,
-    **presets.DYNAMIC_PRESET_OVERRIDES,
-}
+def get_preset_overrides() -> dict[str, dict[str, Any]]:
+    return {
+        **presets.PRESET_OVERRIDES,
+        **presets.get_dynamic_preset_overrides(),
+    }
+
+
+PRESET_OVERRIDES = get_preset_overrides()
 
 
 PER_PAIR_COLUMNS = [
