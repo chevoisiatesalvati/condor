@@ -2,44 +2,92 @@ from __future__ import annotations
 
 from typing import Any, TypeVar
 
+import yaml
 from pydantic import BaseModel
+
+from condor.trading_agent.strategy_paths import resolve_presets_yaml
 
 PresetValue = float | int | bool | str | None
 
-PRESET_LABELS: dict[str, str] = {
+AGENT_SLUG = "macdbb_scanner_aggressive_hl"
+
+PUBLIC_PRESET_LABELS: dict[str, str] = {
     "custom": "Custom",
     "hl_dynamic_session_parity": "Session parity",
-    "hl_dynamic_timeline_refine_v5_winner_binance_1y": "V5 refine winner",
-    "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y": "V5 staged ABC winner",
-    "hl_dynamic_timeline_v6_entry_sltp_sl20_tpmin10_patient_thesis_binance_1y": (
-        "V6 entry/SLTP — SL2.0 patient thesis (td72)"
-    ),
-    "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_fast_thesis_binance_1y": (
-        "V6 entry/SLTP — SL3.8 fast thesis (td16)"
-    ),
-    "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_mid_thesis_binance_1y": (
-        "V6 entry/SLTP — SL3.8 mid thesis (td44)"
-    ),
-    "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_sweep_winner_binance_1y": (
-        "V6 entry/SLTP sweep winner (td44, cap-norm $5831)"
-    ),
-    "hl_dynamic_timeline_refine_v6_sltp_winner_binance_1y": (
-        "V6 refine SLTP winner (CapNorm $7370)"
-    ),
+    "hl_dynamic_timeline_public_fixture": "Public timeline test fixture",
 }
 
-# Presets available when starting a live agent (excludes backtest-only).
-AGENT_STRATEGY_PRESET_NAMES: tuple[str, ...] = (
-    "hl_dynamic_timeline_refine_v6_sltp_winner_binance_1y",
-    "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_sweep_winner_binance_1y",
-    "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_mid_thesis_binance_1y",
-    "hl_dynamic_timeline_v6_entry_sltp_sl20_tpmin10_patient_thesis_binance_1y",
-    "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_fast_thesis_binance_1y",
-    "hl_dynamic_timeline_refine_v5_winner_binance_1y",
-    "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y",
-)
 
-DEFAULT_AGENT_STRATEGY_PRESET = "hl_dynamic_timeline_refine_v5_winner_binance_1y"
+def _load_private_preset_bundle() -> dict[str, Any]:
+    path = resolve_presets_yaml(AGENT_SLUG)
+    if path is None:
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+_bundle_cache: dict[str, Any] | None = None
+_bundle_mtime: float | None = None
+
+
+def _private_preset_bundle() -> dict[str, Any]:
+    """Load private presets.yaml, refreshing when the file changes."""
+    global _bundle_cache, _bundle_mtime
+    path = resolve_presets_yaml(AGENT_SLUG)
+    if path is None:
+        _bundle_cache = {}
+        _bundle_mtime = None
+        return {}
+    mtime = path.stat().st_mtime
+    if _bundle_cache is not None and _bundle_mtime == mtime:
+        return _bundle_cache
+    _bundle_cache = _load_private_preset_bundle()
+    _bundle_mtime = mtime
+    return _bundle_cache
+
+
+def preset_labels() -> dict[str, str]:
+    bundle = _private_preset_bundle()
+    return {**PUBLIC_PRESET_LABELS, **(bundle.get("labels") or {})}
+
+
+def agent_strategy_preset_names() -> tuple[str, ...]:
+    bundle = _private_preset_bundle()
+    return tuple(bundle.get("agent_strategy_preset_names") or ())
+
+
+def default_agent_strategy_preset() -> str:
+    bundle = _private_preset_bundle()
+    return str(bundle.get("default_agent_strategy_preset") or "hl_dynamic_session_parity")
+
+
+def private_presets_available() -> bool:
+    """True when private presets.yaml (submodule or local override) is loaded."""
+    return bool(_private_preset_bundle().get("dynamic_preset_overrides"))
+
+
+def get_private_preset_bundle() -> dict[str, Any]:
+    """Return parsed private presets.yaml bundle (empty when unavailable)."""
+    return dict(_private_preset_bundle())
+
+
+def current_winner_preset_name() -> str:
+    """Named anchor preset for sweeps (private yaml or public session parity)."""
+    bundle = _private_preset_bundle()
+    return str(
+        bundle.get("current_winner_preset")
+        or bundle.get("default_agent_strategy_preset")
+        or "hl_dynamic_session_parity"
+    )
+
+
+# Backward-compatible module attributes (prefer the functions above in new code).
+PRESET_LABELS = preset_labels()
+AGENT_STRATEGY_PRESET_NAMES = agent_strategy_preset_names()
+DEFAULT_AGENT_STRATEGY_PRESET = default_agent_strategy_preset()
 
 # Standard capital-at-risk reference for cap-norm PnL (sweep + routine).
 # HL_SWEEP_BEST fixed replay, sessions 37-58: avg $ notional per trade.
@@ -219,540 +267,8 @@ def _merge_preset_layers(*layers: dict[str, PresetValue]) -> dict[str, PresetVal
     return merged
 
 
-# Dynamic replay presets (timeline winners + session parity).
-DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
-    "hl_dynamic_timeline_v5_staged_abc_winner_binance_1y": {
-        "formal_notional_quote": 500.0,
-        "price_source": 'reports',
-        "hl_use_cache": True,
-        "require_price_data": True,
-        "replay_mode": 'timeline_backtest',
-        "data_source": 'snapshots',
-        "config_source": 'preset',
-        "frequency_sec": 1800,
-        "time_window_min": 15,
-        "use_journal_barriers": False,
-        "write_csv": False,
-        "candle_source": 'binance_perpetual',
-        "snapshot_dir": 'data/replay_snapshots_binance_1y',
-        "enable_dynamic_sizing": True,
-        "enable_dynamic_barriers": True,
-        "ignore_journal_barriers_when_dynamic": True,
-        "activation_ticks": 0,
-        "sl_pct": 3.8,
-        "tp_pct": 5.5,
-        "thesis_decay_exit_ticks": 64,
-        "thesis_bb_drift_pts": 28.0,
-        "adaptive_long_bb_pos_max": 76.0,
-        "adaptive_short_bb_pos_min": 80.0,
-        "adaptive_strong_long_bb_pos_max": 38.0,
-        "adaptive_strong_short_bb_pos_min": 82.0,
-        "adaptive_min_macd_gap_ratio": 0.03,
-        "adaptive_min_hist_ratio": 0.17,
-        "adaptive_score_open_min": 1.8,
-        "adaptive_score_open_min_extreme": 0.6,
-        "adaptive_hist_sign_bonus": 0.48,
-        "adaptive_hist_sign_penalty": 0.28,
-        "adaptive_momentum_bonus": 0.38,
-        "adaptive_momentum_penalty": 0.06,
-        "bb_proximity_epsilon_pct": 0.06,
-        "ignore_adaptive_4h_filter": True,
-        "adaptive_requires_flat": False,
-        "max_open_executors": 10,
-        "min_tradeable_count": 1,
-        "sl_cooldown_ticks": 2,
-        "flip_cooldown_ticks": 8,
-        "min_notional_quote": 150.0,
-        "max_notional_quote": 1100.0,
-        "min_conviction_mult": 0.92,
-        "max_conviction_mult": 2.15,
-        "strength_mult_per_unit": 0.32,
-        "extreme_displacement_mult": 1.55,
-        "activation_streak_mult_per_tick": 0.0,
-        "thin_universe_mult": 0.88,
-        "mature_tape_low_vol_mult": 0.92,
-        "vol_inverse_sizing": True,
-        "min_vol_mult": 0.42,
-        "max_vol_mult": 1.05,
-        "ref_volatility_pct": 3.5,
-        "sl_vol_exponent": 1.05,
-        "tp_vol_exponent": 1.35,
-        "sl_min_pct": 1.4,
-        "sl_max_pct": 6.5,
-        "tp_min_pct": 7.5,
-        "tp_max_pct": 22.0,
-        "volatility_source": 'auto',
-        "strategy_slug": 'macdbb_scanner_aggressive_hl',
-        "tick_schedule": None,
-        "compare_journal_flags": False,
-        "hl_price_interval": '5m',
-        "hl_barrier_interval": '1m',
-        "hl_max_concurrent": 1,
-        "hl_request_interval_ms": 400,
-        "hl_max_retries": 6,
-        "hl_refresh_cache": False,
-        "hl_cache_dir": None,
-        "scanner_lookback_hours": 6,
-        "entry_modes": 'all',
-        "ignore_risk_blocks": True,
-        "report_label": '',
-    },
-    "hl_dynamic_timeline_refine_v5_winner_binance_1y": {
-        "formal_notional_quote": 500.0,
-        "price_source": 'reports',
-        "hl_use_cache": True,
-        "require_price_data": True,
-        "replay_mode": 'timeline_backtest',
-        "data_source": 'snapshots',
-        "config_source": 'preset',
-        "frequency_sec": 1800,
-        "time_window_min": 15,
-        "use_journal_barriers": False,
-        "write_csv": False,
-        "candle_source": 'binance_perpetual',
-        "snapshot_dir": 'data/replay_snapshots_binance_1y',
-        "enable_dynamic_sizing": True,
-        "enable_dynamic_barriers": True,
-        "ignore_journal_barriers_when_dynamic": True,
-        "activation_ticks": 0,
-        "sl_pct": 3.8,
-        "tp_pct": 5.0,
-        "thesis_decay_exit_ticks": 64,
-        "thesis_bb_drift_pts": 28.0,
-        "adaptive_long_bb_pos_max": 76.0,
-        "adaptive_short_bb_pos_min": 80.0,
-        "adaptive_strong_long_bb_pos_max": 38.0,
-        "adaptive_strong_short_bb_pos_min": 82.0,
-        "adaptive_min_macd_gap_ratio": 0.03,
-        "adaptive_min_hist_ratio": 0.17,
-        "adaptive_score_open_min": 1.8,
-        "adaptive_score_open_min_extreme": 0.6,
-        "adaptive_hist_sign_bonus": 0.48,
-        "adaptive_hist_sign_penalty": 0.28,
-        "adaptive_momentum_bonus": 0.38,
-        "adaptive_momentum_penalty": 0.06,
-        "bb_proximity_epsilon_pct": 0.06,
-        "ignore_adaptive_4h_filter": True,
-        "adaptive_requires_flat": False,
-        "max_open_executors": 10,
-        "min_tradeable_count": 1,
-        "sl_cooldown_ticks": 2,
-        "flip_cooldown_ticks": 8,
-        "min_notional_quote": 125.0,
-        "max_notional_quote": 950.0,
-        "min_conviction_mult": 0.85,
-        "max_conviction_mult": 2.15,
-        "strength_mult_per_unit": 0.26,
-        "extreme_displacement_mult": 1.65,
-        "activation_streak_mult_per_tick": 0.0,
-        "thin_universe_mult": 0.88,
-        "mature_tape_low_vol_mult": 0.92,
-        "vol_inverse_sizing": True,
-        "min_vol_mult": 0.42,
-        "max_vol_mult": 1.05,
-        "ref_volatility_pct": 3.5,
-        "sl_vol_exponent": 1.25,
-        "tp_vol_exponent": 1.6,
-        "sl_min_pct": 1.4,
-        "sl_max_pct": 6.5,
-        "tp_min_pct": 7.5,
-        "tp_max_pct": 22.0,
-        "volatility_source": 'auto',
-        "strategy_slug": 'macdbb_scanner_aggressive_hl',
-        "tick_schedule": None,
-        "compare_journal_flags": False,
-        "hl_price_interval": '5m',
-        "hl_barrier_interval": '1m',
-        "hl_max_concurrent": 1,
-        "hl_request_interval_ms": 400,
-        "hl_max_retries": 6,
-        "hl_refresh_cache": False,
-        "hl_cache_dir": None,
-        "scanner_lookback_hours": 6,
-        "entry_modes": 'all',
-        "ignore_risk_blocks": True,
-        "report_label": '',
-    },
-    "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_fast_thesis_binance_1y": {
-        "activation_streak_mult_per_tick": 0.0,
-        "activation_ticks": 0,
-        "adaptive_hist_sign_bonus": 0.38,
-        "adaptive_hist_sign_penalty": 0.15,
-        "adaptive_long_bb_pos_max": 86.0,
-        "adaptive_min_hist_ratio": 0.07,
-        "adaptive_min_macd_gap_ratio": 0.08,
-        "adaptive_momentum_bonus": 0.15,
-        "adaptive_momentum_penalty": 0.04,
-        "adaptive_requires_flat": False,
-        "adaptive_score_open_min": 1.0,
-        "adaptive_score_open_min_extreme": 0.6,
-        "adaptive_short_bb_pos_min": 78.0,
-        "adaptive_strong_long_bb_pos_max": 40.0,
-        "adaptive_strong_short_bb_pos_min": 86.0,
-        "bb_proximity_epsilon_pct": 0.22,
-        "candle_source": 'binance_perpetual',
-        "compare_journal_flags": False,
-        "config_source": 'preset',
-        "data_source": 'snapshots',
-        "enable_dynamic_barriers": True,
-        "enable_dynamic_sizing": True,
-        "entry_modes": 'all',
-        "extreme_displacement_mult": 1.65,
-        "flip_cooldown_ticks": 8,
-        "formal_notional_quote": 500.0,
-        "frequency_sec": 1800,
-        "hl_barrier_interval": '1m',
-        "hl_cache_dir": None,
-        "hl_max_concurrent": 1,
-        "hl_max_retries": 6,
-        "hl_price_interval": '5m',
-        "hl_refresh_cache": False,
-        "hl_request_interval_ms": 400,
-        "hl_use_cache": True,
-        "ignore_adaptive_4h_filter": True,
-        "ignore_journal_barriers_when_dynamic": True,
-        "ignore_risk_blocks": True,
-        "mature_tape_low_vol_mult": 0.92,
-        "max_conviction_mult": 2.15,
-        "max_notional_quote": 950.0,
-        "max_open_executors": 10,
-        "max_vol_mult": 1.05,
-        "min_conviction_mult": 0.85,
-        "min_notional_quote": 125.0,
-        "min_tradeable_count": 1,
-        "min_vol_mult": 0.42,
-        "price_source": 'reports',
-        "ref_volatility_pct": 3.5,
-        "replay_mode": 'timeline_backtest',
-        "report_label": '',
-        "require_price_data": True,
-        "scanner_lookback_hours": 6,
-        "sl_cooldown_ticks": 2,
-        "sl_max_pct": 6.5,
-        "sl_min_pct": 1.0,
-        "sl_pct": 3.8,
-        "sl_vol_exponent": 1.25,
-        "snapshot_dir": 'data/replay_snapshots_binance_1y',
-        "strategy_slug": 'macdbb_scanner_aggressive_hl',
-        "strength_mult_per_unit": 0.26,
-        "thesis_bb_drift_pts": 28.0,
-        "thesis_decay_exit_ticks": 16,
-        "thin_universe_mult": 0.88,
-        "tick_schedule": None,
-        "time_window_min": 15,
-        "tp_max_pct": 22.0,
-        "tp_min_pct": 10.0,
-        "tp_pct": 5.0,
-        "tp_vol_exponent": 1.6,
-        "use_journal_barriers": False,
-        "vol_inverse_sizing": True,
-        "volatility_source": 'auto',
-        "write_csv": False,
-    },
-    "hl_dynamic_timeline_v6_entry_sltp_sl20_tpmin10_patient_thesis_binance_1y": {
-        "activation_streak_mult_per_tick": 0.0,
-        "activation_ticks": 0,
-        "adaptive_hist_sign_bonus": 0.38,
-        "adaptive_hist_sign_penalty": 0.28,
-        "adaptive_long_bb_pos_max": 86.0,
-        "adaptive_min_hist_ratio": 0.07,
-        "adaptive_min_macd_gap_ratio": 0.02,
-        "adaptive_momentum_bonus": 0.45,
-        "adaptive_momentum_penalty": 0.06,
-        "adaptive_requires_flat": False,
-        "adaptive_score_open_min": 1.0,
-        "adaptive_score_open_min_extreme": 1.5,
-        "adaptive_short_bb_pos_min": 85.0,
-        "adaptive_strong_long_bb_pos_max": 40.0,
-        "adaptive_strong_short_bb_pos_min": 78.0,
-        "bb_proximity_epsilon_pct": 0.04,
-        "candle_source": 'binance_perpetual',
-        "compare_journal_flags": False,
-        "config_source": 'preset',
-        "data_source": 'snapshots',
-        "enable_dynamic_barriers": True,
-        "enable_dynamic_sizing": True,
-        "entry_modes": 'all',
-        "extreme_displacement_mult": 1.65,
-        "flip_cooldown_ticks": 8,
-        "formal_notional_quote": 500.0,
-        "frequency_sec": 1800,
-        "hl_barrier_interval": '1m',
-        "hl_cache_dir": None,
-        "hl_max_concurrent": 1,
-        "hl_max_retries": 6,
-        "hl_price_interval": '5m',
-        "hl_refresh_cache": False,
-        "hl_request_interval_ms": 400,
-        "hl_use_cache": True,
-        "ignore_adaptive_4h_filter": True,
-        "ignore_journal_barriers_when_dynamic": True,
-        "ignore_risk_blocks": True,
-        "mature_tape_low_vol_mult": 0.92,
-        "max_conviction_mult": 2.15,
-        "max_notional_quote": 950.0,
-        "max_open_executors": 10,
-        "max_vol_mult": 1.05,
-        "min_conviction_mult": 0.85,
-        "min_notional_quote": 125.0,
-        "min_tradeable_count": 1,
-        "min_vol_mult": 0.42,
-        "price_source": 'reports',
-        "ref_volatility_pct": 3.5,
-        "replay_mode": 'timeline_backtest',
-        "report_label": '',
-        "require_price_data": True,
-        "scanner_lookback_hours": 6,
-        "sl_cooldown_ticks": 2,
-        "sl_max_pct": 6.5,
-        "sl_min_pct": 1.0,
-        "sl_pct": 2.0,
-        "sl_vol_exponent": 1.25,
-        "snapshot_dir": 'data/replay_snapshots_binance_1y',
-        "strategy_slug": 'macdbb_scanner_aggressive_hl',
-        "strength_mult_per_unit": 0.26,
-        "thesis_bb_drift_pts": 28.0,
-        "thesis_decay_exit_ticks": 72,
-        "thin_universe_mult": 0.88,
-        "tick_schedule": None,
-        "time_window_min": 15,
-        "tp_max_pct": 22.0,
-        "tp_min_pct": 10.0,
-        "tp_pct": 5.0,
-        "tp_vol_exponent": 1.6,
-        "use_journal_barriers": False,
-        "vol_inverse_sizing": True,
-        "volatility_source": 'auto',
-        "write_csv": False,
-    },
-    "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_mid_thesis_binance_1y": {
-        "activation_streak_mult_per_tick": 0.0,
-        "activation_ticks": 0,
-        "adaptive_hist_sign_bonus": 0.25,
-        "adaptive_hist_sign_penalty": 0.28,
-        "adaptive_long_bb_pos_max": 86.0,
-        "adaptive_min_hist_ratio": 0.07,
-        "adaptive_min_macd_gap_ratio": 0.08,
-        "adaptive_momentum_bonus": 0.15,
-        "adaptive_momentum_penalty": 0.06,
-        "adaptive_requires_flat": False,
-        "adaptive_score_open_min": 1.0,
-        "adaptive_score_open_min_extreme": 0.6,
-        "adaptive_short_bb_pos_min": 78.0,
-        "adaptive_strong_long_bb_pos_max": 30.0,
-        "adaptive_strong_short_bb_pos_min": 78.0,
-        "bb_proximity_epsilon_pct": 0.04,
-        "candle_source": 'binance_perpetual',
-        "compare_journal_flags": False,
-        "config_source": 'preset',
-        "data_source": 'snapshots',
-        "enable_dynamic_barriers": True,
-        "enable_dynamic_sizing": True,
-        "entry_modes": 'all',
-        "extreme_displacement_mult": 1.65,
-        "flip_cooldown_ticks": 8,
-        "formal_notional_quote": 500.0,
-        "frequency_sec": 1800,
-        "hl_barrier_interval": '1m',
-        "hl_cache_dir": None,
-        "hl_max_concurrent": 1,
-        "hl_max_retries": 6,
-        "hl_price_interval": '5m',
-        "hl_refresh_cache": False,
-        "hl_request_interval_ms": 400,
-        "hl_use_cache": True,
-        "ignore_adaptive_4h_filter": True,
-        "ignore_journal_barriers_when_dynamic": True,
-        "ignore_risk_blocks": True,
-        "mature_tape_low_vol_mult": 0.92,
-        "max_conviction_mult": 2.15,
-        "max_notional_quote": 950.0,
-        "max_open_executors": 10,
-        "max_vol_mult": 1.05,
-        "min_conviction_mult": 0.85,
-        "min_notional_quote": 125.0,
-        "min_tradeable_count": 1,
-        "min_vol_mult": 0.42,
-        "price_source": 'reports',
-        "ref_volatility_pct": 3.5,
-        "replay_mode": 'timeline_backtest',
-        "report_label": '',
-        "require_price_data": True,
-        "scanner_lookback_hours": 6,
-        "sl_cooldown_ticks": 2,
-        "sl_max_pct": 6.5,
-        "sl_min_pct": 1.0,
-        "sl_pct": 3.8,
-        "sl_vol_exponent": 1.25,
-        "snapshot_dir": 'data/replay_snapshots_binance_1y',
-        "strategy_slug": 'macdbb_scanner_aggressive_hl',
-        "strength_mult_per_unit": 0.26,
-        "thesis_bb_drift_pts": 28.0,
-        "thesis_decay_exit_ticks": 44,
-        "thin_universe_mult": 0.88,
-        "tick_schedule": None,
-        "time_window_min": 15,
-        "tp_max_pct": 22.0,
-        "tp_min_pct": 10.0,
-        "tp_pct": 5.0,
-        "tp_vol_exponent": 1.6,
-        "use_journal_barriers": False,
-        "vol_inverse_sizing": True,
-        "volatility_source": 'auto',
-        "write_csv": False,
-    },
-    "hl_dynamic_timeline_v6_entry_sltp_sl38_tpmin10_sweep_winner_binance_1y": {
-        "formal_notional_quote": 500.0,
-        "price_source": 'reports',
-        "hl_use_cache": True,
-        "require_price_data": True,
-        "replay_mode": 'timeline_backtest',
-        "data_source": 'snapshots',
-        "config_source": 'preset',
-        "frequency_sec": 1800,
-        "time_window_min": 15,
-        "use_journal_barriers": False,
-        "write_csv": False,
-        "candle_source": 'binance_perpetual',
-        "snapshot_dir": 'data/replay_snapshots_binance_1y',
-        "enable_dynamic_sizing": True,
-        "enable_dynamic_barriers": True,
-        "ignore_journal_barriers_when_dynamic": True,
-        "activation_ticks": 0,
-        "sl_pct": 3.8,
-        "tp_pct": 5.0,
-        "thesis_decay_exit_ticks": 44,
-        "thesis_bb_drift_pts": 28.0,
-        "adaptive_long_bb_pos_max": 86.0,
-        "adaptive_short_bb_pos_min": 78.0,
-        "adaptive_strong_long_bb_pos_max": 20.0,
-        "adaptive_strong_short_bb_pos_min": 86.0,
-        "adaptive_min_macd_gap_ratio": 0.14,
-        "adaptive_min_hist_ratio": 0.3,
-        "adaptive_score_open_min": 1.0,
-        "adaptive_score_open_min_extreme": 1.5,
-        "adaptive_hist_sign_bonus": 0.38,
-        "adaptive_hist_sign_penalty": 0.15,
-        "adaptive_momentum_bonus": 0.15,
-        "adaptive_momentum_penalty": 0.04,
-        "bb_proximity_epsilon_pct": 0.04,
-        "ignore_adaptive_4h_filter": True,
-        "adaptive_requires_flat": False,
-        "max_open_executors": 10,
-        "min_tradeable_count": 1,
-        "sl_cooldown_ticks": 2,
-        "flip_cooldown_ticks": 8,
-        "min_notional_quote": 125.0,
-        "max_notional_quote": 950.0,
-        "min_conviction_mult": 0.85,
-        "max_conviction_mult": 2.15,
-        "strength_mult_per_unit": 0.26,
-        "extreme_displacement_mult": 1.65,
-        "activation_streak_mult_per_tick": 0.0,
-        "thin_universe_mult": 0.88,
-        "mature_tape_low_vol_mult": 0.92,
-        "vol_inverse_sizing": True,
-        "min_vol_mult": 0.42,
-        "max_vol_mult": 1.05,
-        "ref_volatility_pct": 3.5,
-        "sl_vol_exponent": 1.25,
-        "tp_vol_exponent": 1.6,
-        "sl_min_pct": 1.0,
-        "sl_max_pct": 6.5,
-        "tp_min_pct": 10.0,
-        "tp_max_pct": 22.0,
-        "volatility_source": 'auto',
-        "strategy_slug": 'macdbb_scanner_aggressive_hl',
-        "tick_schedule": None,
-        "compare_journal_flags": False,
-        "hl_price_interval": '5m',
-        "hl_barrier_interval": '1m',
-        "hl_max_concurrent": 1,
-        "hl_request_interval_ms": 400,
-        "hl_max_retries": 6,
-        "hl_refresh_cache": False,
-        "hl_cache_dir": None,
-        "scanner_lookback_hours": 6,
-        "entry_modes": 'all',
-        "ignore_risk_blocks": True,
-        "report_label": '',
-    },
-    "hl_dynamic_timeline_refine_v6_sltp_winner_binance_1y": {
-        "formal_notional_quote": 500.0,
-        "price_source": 'reports',
-        "hl_use_cache": True,
-        "require_price_data": True,
-        "replay_mode": 'timeline_backtest',
-        "data_source": 'snapshots',
-        "config_source": 'preset',
-        "frequency_sec": 1800,
-        "time_window_min": 15,
-        "use_journal_barriers": False,
-        "write_csv": False,
-        "candle_source": 'binance_perpetual',
-        "snapshot_dir": 'data/replay_snapshots_binance_1y',
-        "enable_dynamic_sizing": True,
-        "enable_dynamic_barriers": True,
-        "ignore_journal_barriers_when_dynamic": True,
-        "activation_ticks": 0,
-        "sl_pct": 3.4,
-        "tp_pct": 5.0,
-        "thesis_decay_exit_ticks": 44,
-        "thesis_bb_drift_pts": 28.0,
-        "adaptive_long_bb_pos_max": 98.0,
-        "adaptive_short_bb_pos_min": 78.0,
-        "adaptive_strong_long_bb_pos_max": 20.0,
-        "adaptive_strong_short_bb_pos_min": 86.0,
-        "adaptive_min_macd_gap_ratio": 0.17,
-        "adaptive_min_hist_ratio": 0.33,
-        "adaptive_score_open_min": 0.5,
-        "adaptive_score_open_min_extreme": 1.1,
-        "adaptive_hist_sign_bonus": 0.38,
-        "adaptive_hist_sign_penalty": 0.15,
-        "adaptive_momentum_bonus": 0.15,
-        "adaptive_momentum_penalty": 0.1,
-        "bb_proximity_epsilon_pct": 0.04,
-        "ignore_adaptive_4h_filter": True,
-        "adaptive_requires_flat": False,
-        "max_open_executors": 10,
-        "min_tradeable_count": 1,
-        "sl_cooldown_ticks": 2,
-        "flip_cooldown_ticks": 1,
-        "min_notional_quote": 138.0,
-        "max_notional_quote": 760.0,
-        "min_conviction_mult": 0.72,
-        "max_conviction_mult": 2.31,
-        "strength_mult_per_unit": 0.14,
-        "extreme_displacement_mult": 1.9,
-        "activation_streak_mult_per_tick": 0.0,
-        "thin_universe_mult": 0.84,
-        "mature_tape_low_vol_mult": 0.92,
-        "vol_inverse_sizing": True,
-        "min_vol_mult": 0.42,
-        "max_vol_mult": 1.05,
-        "ref_volatility_pct": 3.68,
-        "sl_vol_exponent": 1.3,
-        "tp_vol_exponent": 1.65,
-        "sl_min_pct": 0.8,
-        "sl_max_pct": 6.5,
-        "tp_min_pct": 11.7,
-        "tp_max_pct": 22.0,
-        "volatility_source": 'auto',
-        "strategy_slug": 'macdbb_scanner_aggressive_hl',
-        "tick_schedule": None,
-        "compare_journal_flags": False,
-        "hl_price_interval": '5m',
-        "hl_barrier_interval": '1m',
-        "hl_max_concurrent": 1,
-        "hl_request_interval_ms": 400,
-        "hl_max_retries": 6,
-        "hl_refresh_cache": False,
-        "hl_cache_dir": None,
-        "scanner_lookback_hours": 6,
-        "entry_modes": 'all',
-        "ignore_risk_blocks": True,
-        "report_label": '',
-    },
+# Dynamic replay presets: public session parity + private yaml winners.
+PUBLIC_DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
     "hl_dynamic_session_parity": _merge_preset_layers(
         _DYNAMIC_PRESET_INFRA,
         _DRIVER_SESSION,
@@ -762,7 +278,43 @@ DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
             "compare_journal_flags": False,
         },
     ),
+    "hl_dynamic_timeline_public_fixture": _merge_preset_layers(
+        _DYNAMIC_PRESET_INFRA,
+        _build_timeline_driver(),
+        _STRATEGY_TIMELINE_MEGA_BEST,
+    ),
 }
+
+
+def _private_dynamic_overrides() -> dict[str, dict[str, PresetValue]]:
+    raw = _private_preset_bundle().get("dynamic_preset_overrides") or {}
+    return {
+        str(name): {str(k): v for k, v in overrides.items()}
+        for name, overrides in raw.items()
+        if isinstance(overrides, dict)
+    }
+
+
+def get_dynamic_preset_overrides() -> dict[str, dict[str, PresetValue]]:
+    return {
+        **PUBLIC_DYNAMIC_PRESET_OVERRIDES,
+        **_private_dynamic_overrides(),
+    }
+
+
+DYNAMIC_PRESET_OVERRIDES = get_dynamic_preset_overrides()
+
+
+def known_preset_names() -> frozenset[str]:
+    return frozenset({"custom", *get_dynamic_preset_overrides().keys()})
+
+
+def backtest_preset_names() -> frozenset[str]:
+    """Preset ids for replay/backtest UI when private yaml is present."""
+    private = _private_preset_bundle().get("dynamic_preset_overrides") or {}
+    if private:
+        return frozenset({"custom", *private.keys()})
+    return frozenset({"custom", *PUBLIC_DYNAMIC_PRESET_OVERRIDES.keys()})
 
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
 
@@ -848,7 +400,7 @@ def resolve_config_with_preset(config: ConfigT) -> ConfigT:
     preset = getattr(config, "preset", "custom")
     if preset == "custom":
         return resolve_timeline_range(config)
-    overrides = PRESET_OVERRIDES.get(preset) or DYNAMIC_PRESET_OVERRIDES.get(preset)
+    overrides = PRESET_OVERRIDES.get(preset) or get_dynamic_preset_overrides().get(preset)
     if not overrides:
         return resolve_timeline_range(config)
     config_type = type(config)
@@ -880,10 +432,20 @@ def strategy_params_from_preset(
 
 def agent_preset_catalog() -> list[dict[str, str]]:
     """Preset options for live agent start / defaults UI."""
+    labels = preset_labels()
+    names = agent_strategy_preset_names()
+    if names:
+        catalog_names = names
+    else:
+        catalog_names = tuple(
+            name
+            for name in PUBLIC_DYNAMIC_PRESET_OVERRIDES
+            if name != "hl_dynamic_timeline_public_fixture"
+        )
     return [
-        {"id": "custom", "label": PRESET_LABELS["custom"]},
+        {"id": "custom", "label": labels["custom"]},
         *[
-            {"id": name, "label": PRESET_LABELS[name]}
-            for name in AGENT_STRATEGY_PRESET_NAMES
+            {"id": name, "label": labels[name]}
+            for name in catalog_names
         ],
     ]
