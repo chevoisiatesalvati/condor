@@ -153,14 +153,30 @@ async def run_routine(name: str, config: dict | None, strategy_id: str | None = 
     except Exception as e:
         return {"error": f"Invalid config: {e}"}
 
-    context = MCPContext()
+    config_dict = config_obj.model_dump(mode="json")
+    timeout_sec = 3600 if routine.run_in_subprocess else 120
 
     try:
-        result = await asyncio.wait_for(
-            routine.run_fn(config_obj, context), timeout=120
-        )
-        from routines.base import normalize_result
-        nr = normalize_result(result)
+        if routine.run_in_subprocess:
+            from condor.routine_store import get_routine_store
+
+            outcome = await asyncio.wait_for(
+                get_routine_store().run_subprocess_and_wait(
+                    name,
+                    config_dict,
+                    settings.active_server,
+                    user_id=settings.chat_id,
+                ),
+                timeout=timeout_sec,
+            )
+            nr = outcome.result
+        else:
+            context = MCPContext()
+            result = await asyncio.wait_for(
+                routine.run_fn(config_obj, context), timeout=timeout_sec
+            )
+            from routines.base import normalize_result
+            nr = normalize_result(result)
         return {"name": name, "result": {
             "text": nr.text,
             "table_data": nr.table_data,
@@ -169,7 +185,7 @@ async def run_routine(name: str, config: dict | None, strategy_id: str | None = 
             "sections": nr.sections,
         }}
     except asyncio.TimeoutError:
-        return {"error": f"Routine '{name}' timed out after 120s"}
+        return {"error": f"Routine '{name}' timed out after {timeout_sec}s"}
     except Exception as e:
         return {"error": f"Routine '{name}' failed: {e}"}
 
@@ -196,11 +212,11 @@ async def start_routine(name: str, config: dict | None) -> dict:
         return {"error": f"Failed to start: {e}"}
 
 
-def stop_routine(instance_id: str) -> dict:
+async def stop_routine(instance_id: str) -> dict:
     """Stop a running routine instance."""
     from condor.routine_store import get_routine_store
     store = get_routine_store()
-    stopped = store.stop(instance_id)
+    stopped = await store.stop(instance_id)
     if stopped:
         return {"stopped": True, "instance_id": instance_id}
     return {"error": f"Instance '{instance_id}' not found or already stopped"}
@@ -353,7 +369,7 @@ async def manage_routines(
     if action == "stop":
         if not name:
             return {"error": "instance_id is required (pass as name)"}
-        return stop_routine(name)
+        return await stop_routine(name)
     if action == "list_instances":
         return list_instances()
     return {"error": f"Unknown action: {action}"}

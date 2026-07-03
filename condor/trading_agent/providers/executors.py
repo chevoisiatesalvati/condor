@@ -37,7 +37,9 @@ class ExecutorsProvider(BaseProvider):
                 summary=f"Active Executors: failed to fetch ({e})",
             )
 
-        running = [e for e in perf.executors if e["status"] == "RUNNING"]
+        from condor.trading_agent.performance import is_running_status
+
+        running = [e for e in perf.executors if is_running_status(e["status"])]
         lines = [
             (
                 f"Active Executors ({len(running)}) [agent: {agent_id}]:"

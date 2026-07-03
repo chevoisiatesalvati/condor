@@ -117,10 +117,20 @@ class RiskEngine:
         return True, ""
 
 
+def _extract_create_trading_pair(input_data: dict) -> str:
+    pair = input_data.get("trading_pair") or ""
+    if not pair:
+        cfg = input_data.get("executor_config")
+        if isinstance(cfg, dict):
+            pair = cfg.get("trading_pair") or ""
+    return str(pair).strip()
+
+
 def auto_approve_with_risk_check(
     risk_engine: RiskEngine,
     risk_state: RiskState,
     execution_mode: str = "loop",
+    sl_cooldown_pairs: frozenset[str] | None = None,
 ):
     """Build a permission callback that auto-approves safe tools and risk-checks dangerous ones."""
     from handlers.agents._shared import is_dangerous_tool_call
@@ -153,6 +163,15 @@ def auto_approve_with_risk_check(
                     if not executor_config.get("controller_id"):
                         log.warning("Blocked executor create: missing controller_id")
                         return {"outcome": {"outcome": "cancelled"}}
+
+                    if sl_cooldown_pairs:
+                        pair = _extract_create_trading_pair(input_data)
+                        if pair and pair in sl_cooldown_pairs:
+                            log.warning(
+                                "Blocked executor create: %s on SL symbol cooldown",
+                                pair,
+                            )
+                            return {"outcome": {"outcome": "cancelled"}}
 
                 allowed, reason = risk_engine.check_executor_action(tool_call, risk_state)
                 if not allowed:

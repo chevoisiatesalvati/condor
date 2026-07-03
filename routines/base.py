@@ -65,11 +65,13 @@ class RoutineInfo:
         category: str = "Uncategorized",
         source: str = "global",
         preset_overrides: dict[str, dict[str, Any]] | None = None,
+        run_in_subprocess: bool = False,
     ):
         self.name = name
         self.config_class = config_class
         self.run_fn = run_fn
         self._is_continuous = is_continuous
+        self.run_in_subprocess = run_in_subprocess
         self.callback_handler = callback_handler
         self.message_handler = message_handler
         self.message_states = message_states or []
@@ -140,6 +142,7 @@ def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:
     - Config: Pydantic BaseModel with optional docstring description
     - run(config, context) -> str: Async function that executes the routine
     - CONTINUOUS = True (optional): Mark as continuous routine with internal loop
+    - RUN_IN_SUBPROCESS = True (optional): Run in isolated worker subprocess
 
     Args:
         force_reload: Force reimport of all modules
@@ -175,6 +178,7 @@ def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:
 
             # Check for CONTINUOUS flag
             is_continuous = getattr(module, "CONTINUOUS", False)
+            run_in_subprocess = getattr(module, "RUN_IN_SUBPROCESS", False)
             category = getattr(module, "CATEGORY", "Uncategorized")
 
             # Detect optional handlers
@@ -195,9 +199,11 @@ def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:
                 category=category,
                 source="global",
                 preset_overrides=getattr(module, "PRESET_OVERRIDES", None),
+                run_in_subprocess=run_in_subprocess and not is_continuous,
             )
             logger.debug(
-                f"Discovered routine: {file_path.stem} (continuous={is_continuous})"
+                f"Discovered routine: {file_path.stem} "
+                f"(continuous={is_continuous}, subprocess={run_in_subprocess})"
             )
 
         except Exception as e:
@@ -309,6 +315,7 @@ def discover_routines_from_path(
                 continue
 
             is_continuous = getattr(module, "CONTINUOUS", False)
+            run_in_subprocess = getattr(module, "RUN_IN_SUBPROCESS", False)
             category = getattr(module, "CATEGORY", default_category)
             callback_handler = getattr(module, "handle_callback", None)
             message_handler = getattr(module, "handle_message", None)
@@ -327,6 +334,7 @@ def discover_routines_from_path(
                 category=category,
                 source=source,
                 preset_overrides=getattr(module, "PRESET_OVERRIDES", None),
+                run_in_subprocess=run_in_subprocess and not is_continuous,
             )
             logger.debug(f"Discovered agent routine: {file_path.stem}")
 

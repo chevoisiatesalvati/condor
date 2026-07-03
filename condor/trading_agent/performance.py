@@ -53,8 +53,11 @@ def _executor_notional_quote(cfg: dict, entry_price: float) -> float:
     return base_amount
 
 
-def _is_running_status(status: str) -> bool:
+def is_running_status(status: str) -> bool:
     return (status or "").lower() in {"running", "active", "active_position"}
+
+
+_is_running_status = is_running_status
 
 
 def _executor_row(ex: dict) -> dict[str, Any]:
@@ -127,8 +130,8 @@ def _build_perf_from_rows(
     # performance_report endpoint returns net_pnl_quote which already includes
     # open-position PnL; using it as "realized" and then adding unrealized on
     # top double-counts open positions.
-    running = [r for r in rows if _is_running_status(r["status"])]
-    closed = [r for r in rows if not _is_running_status(r["status"])]
+    running = [r for r in rows if is_running_status(r["status"])]
+    closed = [r for r in rows if not is_running_status(r["status"])]
 
     unrealized = sum(r["pnl"] for r in running)
     realized_pnl = sum(r["pnl"] for r in closed)

@@ -195,7 +195,7 @@ export function SessionExecutors({
   }, [executorInfos]);
 
   // Table state
-  const [sortKey, setSortKey] = useState<SortKey>("timestamp");
+  const [sortKey, setSortKey] = useState<SortKey>("status");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [stoppingIds, setStoppingIds] = useState<Set<string>>(new Set());

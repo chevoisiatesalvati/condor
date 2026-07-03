@@ -3,6 +3,9 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from condor.hyperliquid_leverage import apply_hyperliquid_leverage_cap
+from condor.open_position_audit import config_audit_slice, log_open_position_event
+
 logger = logging.getLogger(__name__)
 
 # Safety cap to avoid runaway pagination loops
@@ -163,6 +166,13 @@ async def create_executor(
     client, config: Dict[str, Any], account_name: str = "master_account"
 ) -> Dict[str, Any]:
     """Create a new executor."""
+    if config.get("type") == "position_executor" or config.get("executor_type") == "position_executor":
+        apply_hyperliquid_leverage_cap(config)
+        log_open_position_event(
+            phase="web_create_request",
+            message="direct API executor create",
+            data={"create_config": config_audit_slice(config)},
+        )
     try:
         return await client.executors.create_executor(
             executor_config=config, account_name=account_name

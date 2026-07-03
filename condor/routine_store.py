@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import time
 import traceback
 from typing import Any
@@ -23,6 +24,11 @@ from routines.base import (
     discover_routines_from_path,
     get_routine,
     normalize_result,
+)
+from condor.routine_runner import (
+    RoutineJob,
+    RoutineRunOutcome,
+    get_routine_worker_pool,
 )
 
 logger = logging.getLogger(__name__)
@@ -193,10 +199,15 @@ class RoutineStore:
 
     def list_instances(self) -> list[dict]:
         out = []
+        pool = get_routine_worker_pool()
         for iid, meta in self._instances.items():
             entry = {"instance_id": iid, **meta}
             if iid in self._results:
                 entry["has_result"] = True
+            if meta.get("execution_mode") == "subprocess":
+                entry["queue_position"] = pool.queue_position(iid)
+                if pool.is_active(iid):
+                    entry["worker_pid"] = pool.worker_pid(iid)
             out.append(entry)
         return out
 
@@ -205,6 +216,11 @@ class RoutineStore:
         if not meta:
             return None
         entry = {"instance_id": instance_id, **meta}
+        if meta.get("execution_mode") == "subprocess":
+            pool = get_routine_worker_pool()
+            entry["queue_position"] = pool.queue_position(instance_id)
+            if pool.is_active(instance_id):
+                entry["worker_pid"] = pool.worker_pid(instance_id)
         result = self._results.get(instance_id)
         if result:
             entry["has_result"] = True
@@ -290,10 +306,12 @@ class RoutineStore:
             raise ValueError(f"Routine '{routine_name}' not found")
 
         instance_id = self._gen_id()
+        execution_mode = "subprocess" if routine.run_in_subprocess else "inprocess"
+        initial_status = "queued" if routine.run_in_subprocess else "running"
         self._instances[instance_id] = {
             "routine_name": routine_name,
             "config": config,
-            "status": "running",
+            "status": initial_status,
             "source": "web",
             "server_name": server_name,
             "user_id": user_id,
@@ -302,13 +320,147 @@ class RoutineStore:
             "last_result": None,
             "last_duration": None,
             "run_count": 0,
+            "execution_mode": execution_mode,
+            "worker_pid": None,
+            "queue_position": 1 if routine.run_in_subprocess else None,
         }
 
-        task = asyncio.create_task(
-            self._run_oneshot(instance_id, routine, config, server_name, user_id)
-        )
+        if routine.run_in_subprocess:
+            task = asyncio.create_task(
+                self._run_subprocess_oneshot(
+                    instance_id, routine_name, config, server_name, user_id
+                )
+            )
+        else:
+            task = asyncio.create_task(
+                self._run_oneshot(instance_id, routine, config, server_name, user_id)
+            )
         self._tasks[instance_id] = task
         return instance_id
+
+    async def _apply_subprocess_outcome(
+        self,
+        instance_id: str,
+        routine_name: str,
+        outcome: RoutineRunOutcome,
+    ) -> None:
+        failed = not outcome.ok and not outcome.stopped
+        if outcome.stopped:
+            status = "stopped"
+        elif outcome.ok:
+            status = "completed"
+        else:
+            status = "failed"
+
+        self._results[instance_id] = outcome.result
+
+        if instance_id in self._instances:
+            self._instances[instance_id].update(
+                {
+                    "status": status,
+                    "last_run_at": time.time(),
+                    "last_result": outcome.result.text[:500],
+                    "last_duration": outcome.duration_sec,
+                    "run_count": self._instances[instance_id].get("run_count", 0) + 1,
+                    "error": outcome.error,
+                    "worker_pid": None,
+                    "queue_position": None,
+                }
+            )
+
+        if not outcome.stopped:
+            await self._fire_hooks(
+                instance_id, outcome.result, outcome.report_id, failed
+            )
+
+    async def _watch_subprocess_status(self, instance_id: str) -> None:
+        pool = get_routine_worker_pool()
+        try:
+            while instance_id in self._instances:
+                inst = self._instances[instance_id]
+                if inst.get("status") in ("completed", "failed", "stopped"):
+                    return
+                if pool.is_active(instance_id):
+                    inst["status"] = "running"
+                    inst["worker_pid"] = pool.worker_pid(instance_id)
+                    inst["queue_position"] = None
+                    return
+                pos = pool.queue_position(instance_id)
+                if pos is not None:
+                    inst["queue_position"] = pos
+                    inst["status"] = "queued"
+                await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            return
+
+    async def _run_subprocess_oneshot(
+        self,
+        instance_id: str,
+        routine_name: str,
+        config: dict,
+        server_name: str,
+        user_id: int = 0,
+    ) -> None:
+        pool = get_routine_worker_pool()
+        job = RoutineJob(
+            instance_id=instance_id,
+            routine_name=routine_name,
+            config=config,
+            server_name=server_name,
+            user_id=user_id,
+            extra_routines_dir=os.environ.get("CONDOR_EXTRA_ROUTINES_DIR"),
+        )
+        watch_task = asyncio.create_task(self._watch_subprocess_status(instance_id))
+        try:
+            future = await pool.submit(job)
+            outcome = await future
+        except Exception as e:
+            tb = traceback.format_exc()
+            logger.error(
+                "Subprocess routine %s[%s] failed: %s\n%s",
+                routine_name,
+                instance_id,
+                e,
+                tb,
+            )
+            outcome = RoutineRunOutcome(
+                instance_id=instance_id,
+                ok=False,
+                result=RoutineResult(text=f"Error: {e}\n\n{tb}"),
+                report_id=None,
+                duration_sec=0.0,
+                error=str(e),
+            )
+        finally:
+            watch_task.cancel()
+            try:
+                await watch_task
+            except asyncio.CancelledError:
+                pass
+
+        await self._apply_subprocess_outcome(instance_id, routine_name, outcome)
+
+    async def run_subprocess_and_wait(
+        self,
+        routine_name: str,
+        config: dict,
+        server_name: str,
+        user_id: int = 0,
+        *,
+        instance_id: str | None = None,
+    ) -> RoutineRunOutcome:
+        """Run a subprocess routine and await completion (Telegram/MCP)."""
+        iid = instance_id or self._gen_id()
+        pool = get_routine_worker_pool()
+        job = RoutineJob(
+            instance_id=iid,
+            routine_name=routine_name,
+            config=config,
+            server_name=server_name,
+            user_id=user_id,
+            extra_routines_dir=os.environ.get("CONDOR_EXTRA_ROUTINES_DIR"),
+        )
+        return await pool.run_job(job)
 
     async def _run_oneshot(
         self,
@@ -477,27 +629,45 @@ class RoutineStore:
     ) -> None:
         try:
             while instance_id in self._instances:
-                ctx = WebRoutineContext(server_name, bot=self._bot, chat_id=user_id)
-                start = time.time()
                 reports._last_report_id = None
-                try:
-                    cfg = routine.config_class(**config)
-                    raw = await routine.run_fn(cfg, ctx)
-                    result = normalize_result(raw)
-                except Exception as e:
-                    tb = traceback.format_exc()
-                    logger.error(
-                        f"Scheduled routine {routine.name}[{instance_id}] error: {type(e).__name__}: {e}\n{tb}"
+                if routine.run_in_subprocess:
+                    pool = get_routine_worker_pool()
+                    run_id = f"{instance_id}-{int(time.time() * 1000)}"
+                    job = RoutineJob(
+                        instance_id=run_id,
+                        routine_name=routine.name,
+                        config=config,
+                        server_name=server_name,
+                        user_id=user_id,
+                        extra_routines_dir=os.environ.get("CONDOR_EXTRA_ROUTINES_DIR"),
                     )
-                    error_msg = f"{type(e).__name__}: {e}"
-                    result = RoutineResult(text=f"Error: {error_msg}\n\n{tb}")
-                    run_failed = True
+                    outcome = await pool.run_job(job)
+                    result = outcome.result
+                    report_id = outcome.report_id
+                    error_msg = outcome.error
+                    run_failed = not outcome.ok
+                    duration = outcome.duration_sec
                 else:
-                    error_msg = None
-                    run_failed = False
+                    ctx = WebRoutineContext(server_name, bot=self._bot, chat_id=user_id)
+                    start = time.time()
+                    try:
+                        cfg = routine.config_class(**config)
+                        raw = await routine.run_fn(cfg, ctx)
+                        result = normalize_result(raw)
+                    except Exception as e:
+                        tb = traceback.format_exc()
+                        logger.error(
+                            f"Scheduled routine {routine.name}[{instance_id}] error: {type(e).__name__}: {e}\n{tb}"
+                        )
+                        error_msg = f"{type(e).__name__}: {e}"
+                        result = RoutineResult(text=f"Error: {error_msg}\n\n{tb}")
+                        run_failed = True
+                    else:
+                        error_msg = None
+                        run_failed = False
+                    duration = time.time() - start
+                    report_id = reports._last_report_id
 
-                duration = time.time() - start
-                report_id = reports._last_report_id
                 self._results[instance_id] = result
 
                 if instance_id in self._instances:
@@ -521,16 +691,23 @@ class RoutineStore:
         except asyncio.CancelledError:
             logger.info(f"Scheduled routine {instance_id} cancelled")
 
-    def stop(self, instance_id: str) -> bool:
+    async def stop(self, instance_id: str) -> bool:
+        if instance_id not in self._instances:
+            return False
+
+        meta = self._instances[instance_id]
+        if meta.get("execution_mode") == "subprocess":
+            pool = get_routine_worker_pool()
+            await pool.stop_instance(instance_id)
+
         task = self._tasks.pop(instance_id, None)
         if task and not task.done():
             task.cancel()
 
-        if instance_id in self._instances:
-            self._instances[instance_id]["status"] = "stopped"
-            del self._instances[instance_id]
-            return True
-        return False
+        meta["status"] = "stopped"
+        meta["worker_pid"] = None
+        meta["queue_position"] = None
+        return True
 
 
 # Singleton

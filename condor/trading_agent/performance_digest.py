@@ -455,8 +455,10 @@ def build_digest(
     running_tick: int | None = None,
     now: datetime | None = None,
 ) -> PerformanceDigest:
-    running = [r for r in perf_rows if r.get("status") == "RUNNING"]
-    closed = [r for r in perf_rows if r.get("status") != "RUNNING"]
+    from condor.trading_agent.performance import is_running_status
+
+    running = [r for r in perf_rows if is_running_status(str(r.get("status") or ""))]
+    closed = [r for r in perf_rows if not is_running_status(str(r.get("status") or ""))]
 
     realized = sum(float(r.get("pnl") or 0) for r in closed)
     unrealized = sum(float(r.get("pnl") or 0) for r in running)
