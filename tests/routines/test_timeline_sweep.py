@@ -207,10 +207,15 @@ def test_dynamic_replay_field_groups():
 
 
 def test_dynamic_replay_field_metadata_has_groups_and_visibility():
+    from trading_agents.macdbb_scanner_aggressive_hl.presets import backtest_preset_names
+
     fields = DynamicStrategyReplayConfig.get_routine_fields()
     assert fields["preset"]["widget"] == "select"
+    expected_options = sorted(
+        backtest_preset_names(), key=lambda opt: (opt != "custom", opt)
+    )
+    assert fields["preset"]["options"] == expected_options
     assert "custom" in fields["preset"]["options"]
-    assert "hl_dynamic_session_parity" in fields["preset"]["options"]
     assert fields["preset"]["option_labels"]["custom"] == "Custom"
     assert fields["range_start_utc"]["group"] == "Timeline"
     assert fields["range_start_utc"]["visible_when"]["replay_mode"] == "timeline_backtest"
