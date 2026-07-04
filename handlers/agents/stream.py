@@ -27,8 +27,14 @@ PARSE_MODE_MARKDOWN_V2 = "MarkdownV2"
 TOOL_RUNNING = "\u2699\ufe0f"
 TOOL_DONE = "\u2705"
 TOOL_FAILED = "\u274c"
+REASONING = "\U0001f4ad"  # \ud83d\udcad
 
 _THINKING_FRAMES = ["Thinking.", "Thinking..", "Thinking..."]
+_DOT_FRAMES = ["", ".", "..", "..."]
+
+# How much of the live reasoning to keep on screen (tail chars). Keeps the
+# streamed message small while still showing the agent's current train of thought.
+MAX_REASONING_LEN = 600
 
 
 def _split_text(text: str, max_len: int) -> list[str]:
@@ -56,6 +62,7 @@ class TelegramStreamer:
         self._message_id = message_id
         self._prefix = prefix
         self._buffer = ""
+        self._thoughts = ""
         self._active_tools: dict[str, str] = {}
         self._tool_start_times: dict[str, float] = {}
         self._finished_tools: list[str] = []
@@ -71,6 +78,9 @@ class TelegramStreamer:
     async def process_event(self, event: ACPEvent) -> None:
         if isinstance(event, TextChunk):
             self._buffer += event.text
+            self._needs_edit = True
+        elif isinstance(event, ThoughtChunk):
+            self._thoughts += event.text
             self._needs_edit = True
         elif isinstance(event, ToolCallEvent):
             self._active_tools[event.tool_call_id] = self._format_tool_title(event.title)
@@ -142,12 +152,21 @@ class TelegramStreamer:
             parts.append(escape_markdown_v2(self._prefix) if final else self._prefix)
             plain_parts.append(self._prefix)
 
+        buf = self._buffer.strip()
+
+        # While streaming, before the answer starts, surface the live reasoning
+        # so the user can tell the agent is thinking (and about what) rather than
+        # stalled. Dropped from the final message — the answer stands on its own.
+        if not final and not buf:
+            reasoning = self._build_reasoning_block()
+            if reasoning:
+                parts.append(reasoning)
+
         tool_block = self._build_tool_block()
         if tool_block:
             parts.append(escape_markdown_v2(tool_block) if final else tool_block)
             plain_parts.append(tool_block)
 
-        buf = self._buffer.strip()
         if buf:
             if final:
                 parts.append(markdown_to_telegram_v2(buf))
@@ -156,7 +175,11 @@ class TelegramStreamer:
                 parts.append(buf)
             plain_parts.append(buf)
         elif not final:
-            parts.append(_THINKING_FRAMES[self._tick % len(_THINKING_FRAMES)])
+            # Only fall back to the bare "Thinking…" pulse when nothing else is
+            # on screen yet (no reasoning, no active or finished tools).
+            base = 1 if self._prefix else 0
+            if len(parts) == base:
+                parts.append(_THINKING_FRAMES[self._tick % len(_THINKING_FRAMES)])
         elif self._finished_tools:
             parts.append("_done_")
             parse_mode = PARSE_MODE_MARKDOWN_V2
@@ -170,6 +193,23 @@ class TelegramStreamer:
             plain_fallback = plain_text_from_agent_markdown("\n\n".join(plain_parts))
 
         return "\n\n".join(parts), parse_mode, plain_fallback
+
+    def _build_reasoning_block(self) -> str:
+        """Live 💭 reasoning block: animated header + a tail of the thoughts.
+
+        Only the trailing slice is kept so the block reads as the agent's
+        *current* train of thought (and stays small) rather than a growing wall
+        of text. Rendered as a blockquote in plain text (no parse mode while
+        streaming), so raw ``> `` prefixes are fine.
+        """
+        text = self._thoughts.strip()
+        if not text:
+            return ""
+        if len(text) > MAX_REASONING_LEN:
+            text = "…" + text[-MAX_REASONING_LEN:]
+        quoted = "\n".join(f"> {ln}" for ln in text.splitlines() if ln.strip())
+        dots = _DOT_FRAMES[self._tick % len(_DOT_FRAMES)]
+        return f"{REASONING} Reasoning{dots}\n{quoted}"
 
     def _build_tool_block(self) -> str:
         now = time.monotonic()

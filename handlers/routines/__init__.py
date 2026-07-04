@@ -18,10 +18,10 @@ from datetime import time as dt_time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackContext, ContextTypes
 
-from handlers import clear_all_input_states
 import condor.reports
 from condor import routine_hooks
 from condor.routine_store import get_routine_store
+from handlers import clear_all_input_states
 from routines.base import (
     discover_routines,
     get_routine,
@@ -277,7 +277,7 @@ async def _execute_routine(
     context._user_data = user_data
 
     # Reset report capture before execution
-    condor.reports._last_report_id = None
+    condor.reports.reset_last_report_id()
     subprocess_outcome = None
 
     try:
@@ -319,7 +319,7 @@ async def _execute_routine(
     report_id = (
         subprocess_outcome.report_id
         if subprocess_outcome is not None
-        else condor.reports._last_report_id
+        else condor.reports.get_last_report_id()
     )
 
     # Bridge to shared store so web dashboard can see Telegram-triggered results

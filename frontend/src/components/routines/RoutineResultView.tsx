@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { RoutineInstance } from "@/lib/api";
-import { sentimentClass, shouldSkipSentimentColumn } from "@/lib/sentiment-color";
+import { authFetch } from "@/lib/auth-token";
 
 interface Props {
   instance: RoutineInstance;
@@ -16,28 +16,43 @@ interface KpiSection {
 }
 
 function AuthImage({ src, alt, className }: { src: string; alt: string; className?: string }) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  // Result is keyed by src so a src change derives back to "loading" without
+  // resetting state inside the effect. blobUrl === null means the fetch failed.
+  const [result, setResult] = useState<{ src: string; blobUrl: string | null } | null>(null);
 
   useEffect(() => {
     let revoke: string | null = null;
-    const token = localStorage.getItem("condor_token");
-    fetch(src, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    authFetch(src)
       .then((res) => (res.ok ? res.blob() : Promise.reject()))
       .then((blob) => {
         const url = URL.createObjectURL(blob);
         revoke = url;
-        setBlobUrl(url);
+        setResult({ src, blobUrl: url });
       })
-      .catch(() => setBlobUrl(null));
+      .catch(() => setResult({ src, blobUrl: null }));
     return () => {
       if (revoke) URL.revokeObjectURL(revoke);
     };
   }, [src]);
 
-  if (!blobUrl) return null;
-  return <img src={blobUrl} alt={alt} className={className} />;
+  const settled = result?.src === src ? result : null;
+  // Reserve the image box while loading so content below doesn't shift (CLS)
+  if (!settled) {
+    return (
+      <div
+        className={`aspect-[2/1] animate-pulse bg-[var(--color-border)]/30 ${className ?? ""}`}
+      />
+    );
+  }
+  // Failed fetch: collapse like before, only after the request settles
+  if (!settled.blobUrl) return null;
+  return (
+    <img
+      src={settled.blobUrl}
+      alt={alt}
+      className={`aspect-[2/1] object-contain ${className ?? ""}`}
+    />
+  );
 }
 
 function KpiBar({ kpis }: { kpis: KpiSection[] }) {
@@ -51,17 +66,17 @@ function KpiBar({ kpis }: { kpis: KpiSection[] }) {
           <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
             {k.label}
           </div>
-          <div
-            className={`text-lg font-bold mt-0.5 ${
-              sentimentClass(k.value, k.trend) || "text-[var(--color-text)]"
-            }`}
-          >
+          <div className="text-lg font-bold text-[var(--color-text)] mt-0.5">
             {k.value}
           </div>
           {k.delta && (
             <div
               className={`text-xs mt-0.5 ${
-                sentimentClass(k.delta, k.trend) || "text-[var(--color-text-muted)]"
+                k.trend === "up"
+                  ? "text-[var(--color-green)]"
+                  : k.trend === "down"
+                    ? "text-[var(--color-red)]"
+                    : "text-[var(--color-text-muted)]"
               }`}
             >
               {k.delta}
@@ -119,15 +134,14 @@ export function RoutineResultView({ instance }: Props) {
                   {(instance.table_columns || Object.keys(row)).map((col) => {
                     const val = row[col];
                     const isNum = typeof val === "number";
-                    const display = isNum
-                      ? (val as number).toFixed(val % 1 === 0 ? 0 : 2)
-                      : String(val ?? "");
-                    const colorClass = shouldSkipSentimentColumn(col)
-                      ? ""
-                      : sentimentClass(val);
+                    const numColor = isNum && val > 0
+                      ? "text-[var(--color-green)]"
+                      : isNum && val < 0
+                        ? "text-[var(--color-red)]"
+                        : "";
                     return (
-                      <td key={col} className={`px-3 py-1.5 font-mono ${colorClass}`}>
-                        {display}
+                      <td key={col} className={`px-3 py-1.5 font-mono ${numColor}`}>
+                        {isNum ? (val as number).toFixed(val % 1 === 0 ? 0 : 2) : String(val ?? "")}
                       </td>
                     );
                   })}

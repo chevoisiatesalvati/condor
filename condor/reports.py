@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import html
 import json
 import logging
@@ -10,15 +11,57 @@ import os
 import re
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Module-level variable to capture the last saved report ID.
-# Safe in asyncio (single-threaded); reset before each routine execution.
-_last_report_id: str | None = None
+# The ID of the last report saved by the current task. Runners reset it before
+# a routine's execution and read it back afterwards to attach the report to the
+# run. Task-local (ContextVar), so concurrent routine tasks don't steal each
+# other's report IDs.
+_last_report_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "last_report_id", default=None
+)
+
+
+def reset_last_report_id() -> None:
+    """Clear the last-saved report ID for the current task (call before a run)."""
+    _last_report_id.set(None)
+
+
+def get_last_report_id() -> str | None:
+    """Return the ID of the last report saved by the current task, if any."""
+    return _last_report_id.get()
+
+
+# The assistant/expert a report is attributed to (the producer). Reports stay in
+# one flat store; this stamps each entry so the dashboard can filter by who made
+# it. Runners set it around a routine's execution; save() reads it. Defaults to
+# "condor" (the chat) when nothing set it. Task-local, so concurrent runs don't
+# leak attribution into each other.
+_report_agent: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "report_agent", default=None
+)
+
+
+@contextmanager
+def attribute_to(agent: str | None):
+    """Attribute reports saved within this block to ``agent`` (an assistant slug).
+
+    Usage::
+
+        with attribute_to("executor_manager"):
+            await routine.run_fn(cfg, ctx)   # any report it saves is stamped
+    """
+    token = _report_agent.set(agent or None)
+    try:
+        yield
+    finally:
+        _report_agent.reset(token)
+
 
 CHARTS_DIR = Path(__file__).resolve().parent.parent / "reports"
 INDEX_FILE = CHARTS_DIR / "reports_index.json"
@@ -228,6 +271,7 @@ def list_reports(
     source_type: str | None = None,
     tag: str | None = None,
     search: str | None = None,
+    agent: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
@@ -239,6 +283,8 @@ def list_reports(
         entries = [e for e in entries if e.get("source_type") == source_type]
     if tag:
         entries = [e for e in entries if tag in e.get("tags", [])]
+    if agent:
+        entries = [e for e in entries if e.get("agent") == agent]
     if search:
         q = search.lower()
         entries = [
@@ -512,15 +558,20 @@ class ReportBuilder:
 
         sections_html = self._render_sections()
         meta_badges = _render_meta_badges(self)
+        if self._source_type:
+            meta_badges += (
+                f"<span>{html.escape(str(self._source_type))}: "
+                f"{html.escape(str(self._source_name))}</span>"
+            )
+        for tag in self._tags:
+            meta_badges += f"<span>#{html.escape(str(tag))}</span>"
 
         html_content = _HTML_TEMPLATE.format(
-            title=self._title,
+            title=html.escape(str(self._title)),
             created_at=now.strftime("%Y-%m-%d %H:%M UTC"),
             meta_badges=meta_badges,
             sections_html=sections_html,
         )
-
-        global _last_report_id
 
         async with _index_lock:
             if report_id is not None:
@@ -537,7 +588,7 @@ class ReportBuilder:
                 entry["tags"] = self._tags
                 _write_index(entries)
 
-                _last_report_id = report_id
+                _last_report_id.set(report_id)
                 logger.info(f"Report updated: {entry['filename']}")
                 return report_id
 
@@ -557,6 +608,7 @@ class ReportBuilder:
                 "source_type": self._source_type,
                 "source_name": self._source_name,
                 "tags": self._tags,
+                "agent": _report_agent.get() or "condor",
             }
 
             entries = _read_index()
@@ -564,7 +616,7 @@ class ReportBuilder:
             _write_index(entries)
             _cleanup_locked()
 
-        _last_report_id = new_id
+        _last_report_id.set(new_id)
         logger.info(f"Report saved: {filename}")
         return new_id
 
@@ -591,12 +643,12 @@ class ReportBuilder:
                     delta_html = ""
                     if k["delta"]:
                         delta_cls = _sentiment_class(k["delta"], k.get("trend"))
-                        delta_html = f'<div class="delta{(" " + delta_cls) if delta_cls else ""}">{k["delta"]}</div>'
+                        delta_html = f'<div class="delta{(" " + delta_cls) if delta_cls else ""}">{html.escape(str(k["delta"]))}</div>'
                     value_cls = _sentiment_class(k["value"], k.get("trend"))
                     cards.append(
                         f'<div class="kpi-card">'
-                        f'<div class="label">{k["label"]}</div>'
-                        f'<div class="value{(" " + value_cls) if value_cls else ""}">{k["value"]}</div>'
+                        f'<div class="label">{html.escape(str(k["label"]))}</div>'
+                        f'<div class="value{(" " + value_cls) if value_cls else ""}">{html.escape(str(k["value"]))}</div>'
                         f"{delta_html}</div>"
                     )
                 parts.append(f'<div class="kpi-bar">{"".join(cards)}</div>')
@@ -659,7 +711,7 @@ class ReportBuilder:
 
     @staticmethod
     def _render_table(columns: list[str], rows: list[dict]) -> str:
-        header = "".join(f"<th>{c}</th>" for c in columns)
+        header = "".join(f"<th>{html.escape(str(c))}</th>" for c in columns)
         body_rows = []
         for row in rows:
             cells = []
@@ -668,9 +720,9 @@ class ReportBuilder:
                 skip_sentiment = c.strip().lower() in _NO_SENTIMENT_COLUMNS
                 cls = "" if skip_sentiment else _sentiment_class(val)
                 if cls:
-                    cells.append(f'<td class="{cls}">{val}</td>')
+                    cells.append(f'<td class="{cls}">{html.escape(str(val))}</td>')
                 else:
-                    cells.append(f"<td>{val}</td>")
+                    cells.append(f"<td>{html.escape(str(val))}</td>")
             body_rows.append(f"<tr>{''.join(cells)}</tr>")
         body = "\n".join(body_rows)
         return f'<div class="section section-table"><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></div>'
