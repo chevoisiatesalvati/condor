@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from condor.web.routes import agents, archived, auth, backtesting, bots, chat_ws, controller_performance, executors, market, portfolio, positions, reports, routines, servers, settings, transcribe, ws
+from utils.config import is_dev_mode
 
 
 def _build_cors_origins() -> list[str]:
@@ -67,7 +68,7 @@ def create_app() -> FastAPI:
 
     # ── Serve built frontend (production only; dev uses Vite on :5173) ──
     dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-    if dist.is_dir() and not os.environ.get("CONDOR_DEV"):
+    if dist.is_dir() and not is_dev_mode():
         index_html = dist / "index.html"
         app.mount("/assets", StaticFiles(directory=str(dist / "assets")), name="static-assets")
 

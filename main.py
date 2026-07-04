@@ -20,8 +20,7 @@ from telegram.ext import (
 from condor.persistence import SafePicklePersistence
 from handlers import clear_all_input_states
 from utils.auth import restricted
-from utils.config import WEB_PORT, WEB_URL
-from utils.config import TELEGRAM_TOKEN
+from utils.config import TELEGRAM_TOKEN, WEB_PORT, WEB_URL, is_dev_mode
 
 # Enable logging
 logging.basicConfig(
@@ -63,7 +62,9 @@ async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     url = f"{WEB_URL}/login?token={token}"
     _hostname = urlparse(WEB_URL).hostname or ""
-    is_localhost = "localhost" in WEB_URL or "127.0.0.1" in WEB_URL or "." not in _hostname
+    is_localhost = (
+        "localhost" in WEB_URL or "127.0.0.1" in WEB_URL or "." not in _hostname
+    )
 
     if is_localhost:
         await update.message.reply_text(
@@ -275,7 +276,11 @@ def register_handlers(application: Application) -> None:
     # Import fresh versions after reload
     from handlers.admin import admin_command
     from handlers.admin.update import update_command
-    from handlers.agents import agent_callback_handler, agent_command, agent_voice_handler
+    from handlers.agents import (
+        agent_callback_handler,
+        agent_command,
+        agent_voice_handler,
+    )
     from handlers.agents.performance import (
         performance_callback_handler,
         performance_command,
@@ -419,14 +424,23 @@ async def post_init(application: Application) -> None:
 
     # Preload Whisper model in background so first voice message is fast
     import asyncio
-    from utils.transcribe import _get_model, DEFAULT_MODEL
+
+    from utils.transcribe import DEFAULT_MODEL, _get_model
 
     asyncio.get_event_loop().run_in_executor(None, _get_model, DEFAULT_MODEL)
 
     # Clear any previously set commands for all scopes to avoid stale overrides
-    from telegram import BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, BotCommandScopeDefault
+    from telegram import (
+        BotCommandScopeAllGroupChats,
+        BotCommandScopeAllPrivateChats,
+        BotCommandScopeDefault,
+    )
 
-    for scope in [BotCommandScopeDefault(), BotCommandScopeAllPrivateChats(), BotCommandScopeAllGroupChats()]:
+    for scope in [
+        BotCommandScopeDefault(),
+        BotCommandScopeAllPrivateChats(),
+        BotCommandScopeAllGroupChats(),
+    ]:
         try:
             await application.bot.delete_my_commands(scope=scope)
         except Exception:
@@ -434,7 +448,9 @@ async def post_init(application: Application) -> None:
 
     if ADMIN_USER_ID:
         try:
-            await application.bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=int(ADMIN_USER_ID)))
+            await application.bot.delete_my_commands(
+                scope=BotCommandScopeChat(chat_id=int(ADMIN_USER_ID))
+            )
         except Exception:
             pass
 
@@ -504,8 +520,11 @@ async def post_init(application: Application) -> None:
 
     schedule_update_checks(application)
 
-    # Start file watcher
-    asyncio.create_task(watch_and_reload(application))
+    # Start file watcher (dev only)
+    if is_dev_mode():
+        asyncio.create_task(watch_and_reload(application))
+    else:
+        logger.info("Auto-reload disabled (production mode)")
 
 
 # ── Web server hot-reload (dev) ──
@@ -724,7 +743,12 @@ async def watch_and_reload(application: Application) -> None:
     async for changes in awatch(*watch_paths):
         logger.info("📝 Detected changes: %s", changes)
         try:
-            reload_assistants_flag, needs_handler_reload, needs_web_reload, extra_modules = _classify_changes(
+            (
+                reload_assistants_flag,
+                needs_handler_reload,
+                needs_web_reload,
+                extra_modules,
+            ) = _classify_changes(
                 changes,
                 handlers_path=handlers_path,
                 routines_path=routines_path,
@@ -737,6 +761,7 @@ async def watch_and_reload(application: Application) -> None:
 
             if reload_assistants_flag:
                 from handlers.agents._shared import reload_assistants
+
                 reload_assistants()
                 logger.info("✅ Auto-reloaded assistants")
 
@@ -813,6 +838,7 @@ def main() -> None:
 
         # Stop all trading agents
         from condor.trading_agent.engine import get_all_engines
+
         for engine in list(get_all_engines().values()):
             try:
                 await engine.stop()
@@ -821,18 +847,22 @@ def main() -> None:
 
         # Stop WebSocket manager
         from condor.web.ws_manager import get_ws_manager
+
         get_ws_manager().stop()
 
         # Stop ServerDataService
         from condor.server_data_service import get_server_data_service
+
         get_server_data_service().stop()
 
         # Close cached Hummingbot API clients (ConfigManager)
         from config_manager import get_config_manager
+
         await get_config_manager().close_all_clients()
 
         # Close MCP hummingbot client
         from mcp_servers.hummingbot_api.hummingbot_client import hummingbot_client
+
         await hummingbot_client.close()
 
     # Create the Application with persistence enabled
@@ -869,11 +899,14 @@ async def _run_dual(application: Application) -> None:
     await application.initialize()
 
     global _web_reload_event
-    _web_reload_event = asyncio.Event()
+    reload_task: asyncio.Task | None = None
+    if is_dev_mode():
+        _web_reload_event = asyncio.Event()
 
     web_runner = WebServerRunner(host="0.0.0.0", port=WEB_PORT)
     await web_runner.start()
-    reload_task = asyncio.create_task(web_reload_loop(web_runner))
+    if is_dev_mode():
+        reload_task = asyncio.create_task(web_reload_loop(web_runner))
 
     if application.post_init:
         await application.post_init(application)
@@ -896,14 +929,16 @@ async def _run_dual(application: Application) -> None:
         except Exception as e:
             logger.warning(f"Failed to send startup notification to admin: {e}")
 
-    if os.environ.get("CONDOR_DEV"):
+    if is_dev_mode():
         logger.info(
             "Starting Condor (dev): Telegram bot + API on port %s — UI at %s",
             WEB_PORT,
             WEB_URL,
         )
     else:
-        logger.info("Starting Condor: Telegram bot + web dashboard on port %s", WEB_PORT)
+        logger.info(
+            "Starting Condor: Telegram bot + web dashboard on port %s", WEB_PORT
+        )
 
     # Handle shutdown signals
     shutdown_event = asyncio.Event()
@@ -919,11 +954,12 @@ async def _run_dual(application: Application) -> None:
     await shutdown_event.wait()
 
     logger.info("Shutting down...")
-    reload_task.cancel()
-    try:
-        await reload_task
-    except asyncio.CancelledError:
-        pass
+    if reload_task is not None:
+        reload_task.cancel()
+        try:
+            await reload_task
+        except asyncio.CancelledError:
+            pass
     await web_runner.stop()
 
     # Graceful Telegram shutdown (mirror run_polling order: updater → stop → post_stop → shutdown

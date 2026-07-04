@@ -34,3 +34,8 @@ if _web_url_raw:
 else:
     WEB_PORT = int(_web_port_raw) if _web_port_raw else 8088
     WEB_URL = f"http://localhost:{WEB_PORT}"
+
+
+def is_dev_mode() -> bool:
+    """True when started via `make dev` (CONDOR_DEV=1)."""
+    return bool(os.environ.get("CONDOR_DEV"))
