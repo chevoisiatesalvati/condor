@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
   ChevronRight,
@@ -6,39 +6,60 @@ import {
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
-import { ExecutorChart, type SnapshotBubble } from "@/components/charts/ExecutorChart";
 import { AgentPnlChart, metricsToDataPoints } from "@/components/agent/AgentPnlChart";
+import { DetailPanel, ExecutorTable, type SortDir, type SortKey } from "@/components/executor/ExecutorTable";
+import { StopConfirmDialog } from "@/components/executor/StopConfirmDialog";
 import { useAgentExecutors } from "@/hooks/useAgentExecutors";
 import { type AgentExecutorRow, type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
-import { groupExecutorsByMarket } from "@/lib/executor-overlays";
 import { type ParsedJournal, type ParsedSnapshot, parseSnapshot } from "@/lib/parse-agent";
-import { formatCompactUsd, formatCurrencyPnl } from "@/lib/formatters";
+import {
+  formatCompactUsd,
+  formatCurrencyPnl,
+  formatExecutorSide,
+  isExecutorActive,
+  normalizeExecutorType,
+} from "@/lib/formatters";
 import { useRates } from "@/hooks/useRates";
-import { DetailPanel, ExecutorTable, type SortDir, type SortKey } from "@/components/executor/ExecutorTable";
 
 // ── Helper ──
+
+function mergeExecutorOverlay(restEx: ExecutorInfo, wsEx: ExecutorInfo): ExecutorInfo {
+  // WS cache is built from paginated search/SDS and often omits in-memory running
+  // executors; never downgrade a REST running row to terminated via WS overlay.
+  if (isExecutorActive(restEx.status) && !isExecutorActive(wsEx.status)) {
+    return { ...wsEx, status: restEx.status, close_type: restEx.close_type };
+  }
+  return wsEx;
+}
 
 function agentRowToExecutorInfo(row: AgentExecutorRow): ExecutorInfo {
   return {
     id: row.id,
-    type: row.type,
+    type: normalizeExecutorType(row.type),
     connector: row.connector || "unknown",
     trading_pair: row.pair,
     side: row.side,
-    status: row.status,
-    close_type: row.close_type,
+    status: (row.status || "").toLowerCase(),
+    close_type: (row.close_type || "").toLowerCase(),
     pnl: row.pnl,
     volume: row.volume,
     timestamp: row.timestamp,
     controller_id: row.controller_id,
     cum_fees_quote: row.fees,
-    net_pnl_pct: 0,
+    net_pnl_pct: row.net_pnl_pct ?? 0,
     entry_price: row.entry_price,
     current_price: row.current_price,
     close_timestamp: row.close_timestamp,
     custom_info: row.custom_info ?? {},
     config: row.config ?? {},
   };
+}
+
+function detailPanelGridClass(count: number): string {
+  const base = "grid gap-3";
+  if (count <= 1) return `${base} grid-cols-1`;
+  if (count === 2) return `${base} grid-cols-1 sm:grid-cols-2`;
+  return `${base} grid-cols-1 sm:grid-cols-2 lg:grid-cols-3`;
 }
 
 // ── Session Overview ──
@@ -107,7 +128,7 @@ export function SessionActivity({ journal }: { journal: ParsedJournal }) {
   );
 }
 
-// ── Session Executors (chart-focused with WS streaming) ──
+// ── Session Executors ──
 
 export function SessionExecutors({
   slug,
@@ -115,39 +136,48 @@ export function SessionExecutors({
   sessionNum,
   serverName,
   controllerIds,
-  onSnapshotClick,
   sessionSummary,
+  liveSessionStatus,
 }: {
   slug: string;
   sslug: string;
   sessionNum: number;
   serverName: string;
   controllerIds?: string[];
-  onSnapshotClick?: (tick: number) => void;
   sessionSummary?: { status: string; lastTick: number; lastAction: string };
+  liveSessionStatus?: string;
 }) {
-  // REST data (fallback + historical executors)
+  const queryClient = useQueryClient();
+
   const { data: sessionDetail } = useQuery({
     queryKey: ["strategy-session-executors", slug, sslug, sessionNum],
     queryFn: () => api.getStrategySessionExecutors(slug, sslug, sessionNum),
     refetchInterval: 10000,
+    placeholderData: keepPreviousData,
   });
 
   const restExecutors = sessionDetail?.executors ?? [];
 
-  // WS-backed live executors (if controller IDs provided)
+  const sessionControllerIds = useMemo(() => {
+    const ids = new Set<string>([`${slug}.${sslug}_${sessionNum}`]);
+    for (const id of controllerIds ?? []) ids.add(id);
+    return Array.from(ids);
+  }, [slug, sslug, sessionNum, controllerIds]);
+
   const { executors: wsExecutors } = useAgentExecutors(
-    controllerIds?.length ? serverName : null,
-    controllerIds || [],
+    serverName || null,
+    sessionControllerIds,
   );
 
-  // Merge: prefer WS data for matching IDs, keep REST for historical
   const executorInfos = useMemo(() => {
     const restInfos = restExecutors.map(agentRowToExecutorInfo);
     if (wsExecutors.length === 0) return restInfos;
 
     const wsMap = new Map(wsExecutors.map((ex) => [ex.id, ex]));
-    const merged = restInfos.map((ex) => wsMap.get(ex.id) ?? ex);
+    const merged = restInfos.map((ex) => {
+      const wsEx = wsMap.get(ex.id);
+      return wsEx ? mergeExecutorOverlay(ex, wsEx) : ex;
+    });
     const restIds = new Set(restInfos.map((ex) => ex.id));
     for (const ex of wsExecutors) {
       if (!restIds.has(ex.id)) merged.push(ex);
@@ -155,63 +185,14 @@ export function SessionExecutors({
     return merged;
   }, [restExecutors, wsExecutors]);
 
-  // Currency conversion
+  const displaySessionStatus = liveSessionStatus ?? "closed";
+
   const quoteCurrencies = useMemo(
     () => executorInfos.map((ex) => ex.trading_pair?.split("-")[1] || "USDT"),
     [executorInfos],
   );
   const { formatPnlValue, formatValue, formatValueDetailed } = useRates(quoteCurrencies);
 
-  // Fetch snapshots for bubble markers
-  const { data: snapshotsData } = useQuery({
-    queryKey: ["strategy", slug, sslug, "session", sessionNum, "snapshots"],
-    queryFn: () => api.getSessionSnapshots(slug, sslug, sessionNum),
-  });
-
-  // Fetch each snapshot content for agent response previews
-  const snapshotSummaries = snapshotsData?.snapshots ?? [];
-  const snapshotQueries = useQuery({
-    queryKey: ["strategy", slug, sslug, "session", sessionNum, "snapshot-contents", snapshotSummaries.map((s) => s.tick).join(",")],
-    queryFn: async () => {
-      // Fetch all snapshots concurrently: Promise.all preserves input order, so
-      // the result stays sorted by tick while latency collapses to the slowest
-      // request instead of the sum of all of them.
-      return Promise.all(
-        snapshotSummaries.map(async (snap): Promise<SnapshotBubble> => {
-          try {
-            const data = await api.getSnapshot(slug, sslug, sessionNum, snap.tick);
-            if (data?.content) {
-              const parsed = parseSnapshot(data.content);
-              return {
-                tick: snap.tick,
-                timestamp: snap.timestamp,
-                agentResponse: parsed.agentResponse,
-                toolCallCount: parsed.toolCalls.length,
-              };
-            }
-            return { tick: snap.tick, timestamp: snap.timestamp };
-          } catch {
-            return { tick: snap.tick, timestamp: snap.timestamp };
-          }
-        }),
-      );
-    },
-    enabled: snapshotSummaries.length > 0,
-    staleTime: 60000,
-  });
-
-  const snapshotBubbles = snapshotQueries.data ?? snapshotSummaries.map((s) => ({
-    tick: s.tick,
-    timestamp: s.timestamp,
-  }));
-
-  // Group executors by connector:pair for charts
-  const chartGroups = useMemo(
-    () => (serverName ? groupExecutorsByMarket(executorInfos) : []),
-    [executorInfos, serverName],
-  );
-
-  // Aggregate stats
   const stats = useMemo(() => {
     let totalPnl = 0;
     let totalVolume = 0;
@@ -227,26 +208,59 @@ export function SessionExecutors({
     return { totalPnl, totalVolume, totalFees, activeCount, total: executorInfos.length };
   }, [executorInfos]);
 
-  // Table state
-  const [sortKey, setSortKey] = useState<SortKey>("timestamp");
+  const [sortKey, setSortKey] = useState<SortKey>("status");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const stoppingIds = useMemo(() => new Set<string>(), []);
-  const [selectedExecutor, setSelectedExecutor] = useState<ExecutorInfo | null>(null);
+  const [stoppingIds, setStoppingIds] = useState<Set<string>>(new Set());
+  const [pendingStopIds, setPendingStopIds] = useState<string[] | null>(null);
 
-  // Positions held (filtered by controller IDs)
+  const stopMutation = useMutation({
+    mutationFn: async ({ ids, keepPosition }: { ids: string[]; keepPosition: boolean }) => {
+      setStoppingIds((prev) => new Set([...prev, ...ids]));
+      return Promise.allSettled(
+        ids.map((id) => api.stopExecutor(serverName, id, keepPosition)),
+      );
+    },
+    onSettled: (_data, _error, vars) => {
+      setStoppingIds((prev) => {
+        const next = new Set(prev);
+        vars?.ids.forEach((id) => next.delete(id));
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: ["strategy-session-executors", slug, sslug, sessionNum] });
+      queryClient.invalidateQueries({ queryKey: ["executors", serverName] });
+    },
+  });
+
+  const handleStopOne = useCallback((id: string) => {
+    setPendingStopIds([id]);
+  }, []);
+
+  const handleConfirmStop = useCallback(
+    (ids: string[], keepPosition: boolean) => {
+      setPendingStopIds(null);
+      stopMutation.mutate({ ids, keepPosition });
+    },
+    [stopMutation],
+  );
+
+  const selectedExecutors = useMemo(
+    () => executorInfos.filter((ex) => selectedIds.has(ex.id)),
+    [executorInfos, selectedIds],
+  );
+
   const { data: positionsData } = useQuery({
     queryKey: ["positions-held", serverName],
     queryFn: () => api.getPositionsHeld(serverName),
-    enabled: !!serverName && (controllerIds?.length ?? 0) > 0,
+    enabled: !!serverName && sessionControllerIds.length > 0,
     refetchInterval: 10000,
   });
 
   const positions = useMemo(() => {
-    if (!positionsData?.positions || !controllerIds?.length) return [];
-    const cidSet = new Set(controllerIds);
+    if (!positionsData?.positions || sessionControllerIds.length === 0) return [];
+    const cidSet = new Set(sessionControllerIds);
     return positionsData.positions.filter((p) => p.controller_id && cidSet.has(p.controller_id));
-  }, [positionsData, controllerIds]);
+  }, [positionsData, sessionControllerIds]);
 
   const handleSort = useCallback((key: SortKey) => {
     setSortDir((prev) => (sortKey === key ? (prev === "asc" ? "desc" : "asc") : "desc"));
@@ -262,14 +276,6 @@ export function SessionExecutors({
     });
   }, []);
 
-  const selectAll = useCallback(() => {
-    setSelectedIds((prev) =>
-      prev.size === executorInfos.length ? new Set() : new Set(executorInfos.map((e) => e.id)),
-    );
-  }, [executorInfos]);
-
-  const allSelected = selectedIds.size === executorInfos.length && executorInfos.length > 0;
-
   if (!sessionDetail) {
     return (
       <div className="flex h-32 items-center justify-center">
@@ -284,19 +290,18 @@ export function SessionExecutors({
 
   return (
     <div className="space-y-3">
-      {/* Stats strip */}
       <div className="flex flex-wrap items-center gap-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2.5">
         {sessionSummary && (
           <div>
             <span className="block text-[9px] uppercase tracking-wider text-[var(--color-text-muted)]">Status</span>
             <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${
-              sessionSummary.status === "ACTIVE" || sessionSummary.status === "running"
+              displaySessionStatus === "ACTIVE" || displaySessionStatus === "running" || displaySessionStatus === "Running"
                 ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                : sessionSummary.status === "paused"
+                : displaySessionStatus === "paused"
                   ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
                   : "border-[var(--color-border)] bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]"
             }`}>
-              {sessionSummary.status || "idle"}
+              {displaySessionStatus}
             </span>
           </div>
         )}
@@ -337,7 +342,6 @@ export function SessionExecutors({
         )}
       </div>
 
-      {/* Positions Held */}
       {positions.length > 0 && (
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
           <h3 className="mb-3 text-xs font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
@@ -359,7 +363,7 @@ export function SessionExecutors({
               <tbody>
                 {positions.map((p, i) => {
                   const upnl = p.unrealized_pnl_quote ?? p.unrealized_pnl ?? 0;
-                  const side = p.position_side || p.side || "—";
+                  const sideLabel = formatExecutorSide(p.position_side || p.side || "");
                   const amount = p.net_amount_base ?? p.amount ?? 0;
                   const entry = p.buy_breakeven_price ?? p.entry_price ?? 0;
                   const current = p.current_price ?? 0;
@@ -367,8 +371,8 @@ export function SessionExecutors({
                     <tr key={`${p.trading_pair}-${i}`} className="border-b border-[var(--color-border)]/30">
                       <td className="py-2 pr-3 font-mono text-[var(--color-text)]">{p.trading_pair}</td>
                       <td className="py-2 pr-3">
-                        <span className={side.toLowerCase().includes("long") || side.toLowerCase() === "buy" ? "text-[var(--color-green)]" : "text-[var(--color-red)]"}>
-                          {side.toUpperCase()}
+                        <span className={sideLabel === "BUY" ? "text-[var(--color-green)]" : "text-[var(--color-red)]"}>
+                          {sideLabel}
                         </span>
                       </td>
                       <td className="py-2 pr-3 text-right font-mono text-[var(--color-text)]">{Math.abs(amount).toFixed(4)}</td>
@@ -387,63 +391,48 @@ export function SessionExecutors({
         </div>
       )}
 
-      {/* Chart-focused view — each trading pair gets a prominent chart */}
-      {chartGroups.map(([key, group]) => {
-        const pairPnl = group.reduce((sum, ex) => sum + (ex.pnl ?? 0), 0);
-        return (
-          <div key={key}>
-            {/* Pair header (only when multiple pairs) */}
-            {chartGroups.length > 1 && (
-              <div className="mb-1.5 flex items-center gap-2 px-1">
-                <span className="text-xs font-medium text-[var(--color-text)]">{group[0].trading_pair}</span>
-                <span className="text-[10px] text-[var(--color-text-muted)]">{group[0].connector}</span>
-                <span className={`ml-auto font-mono text-xs ${pairPnl >= 0 ? "text-[var(--color-green)]" : "text-[var(--color-red)]"}`}>
-                  {formatCurrencyPnl(pairPnl)}
-                </span>
-                <span className="text-[10px] text-[var(--color-text-muted)]">{group.length} exec</span>
-              </div>
-            )}
-            <ExecutorChart
-              server={serverName}
-              executors={group}
-              connector={group[0].connector}
-              tradingPair={group[0].trading_pair}
-              height={500}
-              snapshots={snapshotBubbles}
-              onSnapshotClick={onSnapshotClick}
-            />
-          </div>
-        );
-      })}
-
-      {/* Executor table */}
       <ExecutorTable
         executors={executorInfos}
         sortKey={sortKey}
         sortDir={sortDir}
         onSort={handleSort}
+        showCheckboxes={false}
+        highlightSelectedIds
         selectedIds={selectedIds}
-        onToggleSelect={toggleSelect}
-        onSelectAll={selectAll}
-        allSelected={allSelected}
-        onRowClick={(ex) => setSelectedExecutor(ex)}
-        selectedExecutorId={selectedExecutor?.id ?? null}
-        onStop={() => {}}
+        onRowClick={(ex) => toggleSelect(ex.id)}
+        selectedExecutorId={null}
+        onStop={handleStopOne}
         stoppingIds={stoppingIds}
+        rateFormatPnl={formatPnlValue}
+        rateFormatValue={formatValue}
+        rateFormatDetailed={formatValueDetailed}
       />
 
-      {/* Executor Detail Panel */}
-      {selectedExecutor && (
-        <DetailPanel
-          executor={selectedExecutor}
-          server={serverName}
-          onClose={() => setSelectedExecutor(null)}
-          onStop={() => {}}
-          stopping={false}
-          rateFormatPnl={formatPnlValue}
-          rateFormatValue={formatValue}
-          rateFormatDetailed={formatValueDetailed}
+      {pendingStopIds && (
+        <StopConfirmDialog
+          ids={pendingStopIds}
+          onConfirm={handleConfirmStop}
+          onCancel={() => setPendingStopIds(null)}
         />
+      )}
+
+      {selectedExecutors.length > 0 && (
+        <div className={detailPanelGridClass(selectedExecutors.length)}>
+          {selectedExecutors.map((ex) => (
+            <DetailPanel
+              key={ex.id}
+              variant="inline"
+              executor={ex}
+              server={serverName}
+              onClose={() => toggleSelect(ex.id)}
+              onStop={handleStopOne}
+              stopping={stoppingIds.has(ex.id)}
+              rateFormatPnl={formatPnlValue}
+              rateFormatValue={formatValue}
+              rateFormatDetailed={formatValueDetailed}
+            />
+          ))}
+        </div>
       )}
     </div>
   );

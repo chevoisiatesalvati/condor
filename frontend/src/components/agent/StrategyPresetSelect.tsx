@@ -2,6 +2,7 @@ import { api } from "@/lib/api";
 
 export function StrategyPresetSelect({
   slug,
+  sslug,
   value,
   presets,
   frequencySec,
@@ -10,6 +11,7 @@ export function StrategyPresetSelect({
   description = "Apply a tuned parameter profile",
 }: {
   slug: string;
+  sslug: string;
   value: string;
   presets: Array<{ id: string; label: string }>;
   frequencySec: number;
@@ -31,7 +33,7 @@ export function StrategyPresetSelect({
       return;
     }
     try {
-      const payload = await api.getStrategyPresetParams(slug, nextPreset, frequencySec);
+      const payload = await api.getStrategyPresetParams(slug, sslug, nextPreset, frequencySec);
       onChange(nextPreset, payload.strategy_params ?? {}, payload.risk_limits);
     } catch {
       onChange(nextPreset, {});

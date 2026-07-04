@@ -10,6 +10,7 @@ import {
   getOverlayTimeRange,
   type ExecutorOverlay,
 } from "@/lib/executor-overlays";
+import { dedupCandlesByTime } from "@/lib/chart-utils";
 import { escapeHtml, formatCompactUsd, tsToSeconds } from "@/lib/formatters";
 import { getThemeColors, pnlHexColor, sideColor } from "@/lib/theme-colors";
 
@@ -411,16 +412,21 @@ export function ExecutorChart({
   useEffect(() => {
     if (!chartReady || !seriesRef.current || !candles?.length || !chartModuleRef.current) return;
 
-    const mapped = candles.map((c) => {
-      const ts = c.timestamp > 1e12 ? c.timestamp / 1000 : c.timestamp;
-      return {
-        time: ts as import("lightweight-charts").UTCTimestamp,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      };
-    });
+    const mapped = dedupCandlesByTime(
+      candles.map((c) => {
+        const ts = c.timestamp > 1e12 ? c.timestamp / 1000 : c.timestamp;
+        return {
+          time: ts,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        };
+      }),
+    ).map((c) => ({
+      ...c,
+      time: c.time as import("lightweight-charts").UTCTimestamp,
+    }));
     seriesRef.current.setData(mapped);
     if (!initializedRef.current) {
       chartRef.current?.timeScale().fitContent();

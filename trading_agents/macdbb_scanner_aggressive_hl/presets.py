@@ -374,7 +374,13 @@ def resolve_timeline_range(config: ConfigT) -> ConfigT:
     if not range_start or not range_end:
         from routines.macdbb_scanner_aggressive_hl_replay.replay_range import timeline_range_from_reports
 
-        range_start, range_end = timeline_range_from_reports()
+        try:
+            range_start, range_end = timeline_range_from_reports()
+        except ValueError:
+            range_start = None
+            range_end = None
+    if not range_start or not range_end:
+        return config
     updates: dict[str, PresetValue] = {}
     if not start:
         updates["range_start_utc"] = range_start

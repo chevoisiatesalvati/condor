@@ -655,9 +655,15 @@ async def fetch_strategy_performance_rows(
     slug: str,
     agent_dir: Path,
     session_nums: list[int] | None = None,
+    run_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch and flatten executor rows for a strategy (optionally filtered sessions)."""
-    ids = enumerate_strategy_agent_ids(slug, agent_dir, sessions_only=True)
+    if run_key:
+        from condor.agents.sessions_index import enumerate_agent_ids
+
+        ids = [(aid, n, k) for aid, n, k in enumerate_agent_ids(run_key, agent_dir) if k == "session"]
+    else:
+        ids = enumerate_strategy_agent_ids(slug, agent_dir, sessions_only=True)
     if session_nums is not None:
         ids = [t for t in ids if t[1] in session_nums]
     if not ids:
@@ -681,10 +687,11 @@ async def build_strategy_digest(
     session_filter: int | None = None,
     running_agent_id: str | None = None,
     running_tick: int | None = None,
+    run_key: str | None = None,
 ) -> PerformanceDigest:
     session_nums = [session_filter] if session_filter is not None else None
     rows = await fetch_strategy_performance_rows(
-        client, slug, agent_dir, session_nums=session_nums
+        client, slug, agent_dir, session_nums=session_nums, run_key=run_key
     )
     journal_entries = load_journal_entries(agent_dir, session_nums=session_nums)
     return build_digest(

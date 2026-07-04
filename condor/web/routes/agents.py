@@ -193,6 +193,21 @@ class AgentDetail(BaseModel):
     strategies: list[StrategySummary] = []
 
 
+class StrategyDefaultsResponse(BaseModel):
+    default_config: dict[str, Any] = {}
+    trading_context: str = ""
+    agent_key: str = ""
+    model_base_url: str = ""
+    strategy_presets: list[dict[str, str]] = []
+
+
+class UpdateStrategyDefaultsRequest(BaseModel):
+    default_config: dict[str, Any] | None = None
+    trading_context: str | None = None
+    agent_key: str | None = None
+    model_base_url: str | None = None
+
+
 class StrategyDetail(BaseModel):
     slug: str
     agent_slug: str
@@ -200,6 +215,8 @@ class StrategyDetail(BaseModel):
     description: str
     strategy_md: str
     config: dict[str, Any] = {}
+    defaults: StrategyDefaultsResponse = StrategyDefaultsResponse()
+    strategy_presets: list[dict[str, str]] = []
     default_trading_context: str = ""
     learnings: str = ""
     status: str = "idle"
@@ -266,21 +283,6 @@ class StartStrategyRequest(BaseModel):
     chat_id: int = 0
     user_id: int | None = None
     session_num: int | None = None
-
-
-class StrategyDefaultsResponse(BaseModel):
-    default_config: dict[str, Any] = {}
-    trading_context: str = ""
-    agent_key: str = ""
-    model_base_url: str = ""
-    strategy_presets: list[dict[str, str]] = []
-
-
-class UpdateStrategyDefaultsRequest(BaseModel):
-    default_config: dict[str, Any] | None = None
-    trading_context: str | None = None
-    agent_key: str | None = None
-    model_base_url: str | None = None
 
 
 class DelegateRequest(BaseModel):
@@ -609,7 +611,7 @@ def _instance_from_engine(engine, perf_by_id: dict) -> RunningInstance:
 async def _build_strategy_summary(strategy) -> StrategySummary:
     """Roll up disk + engine + performance state for one strategy."""
     run_key = _runkey(strategy.agent_slug, strategy.slug)
-    strategy_dir = strategy.dir
+    strategy_dir = strategy.data_dir
 
     try:
         sessions_perf, totals = await _compute_strategy_performance(
@@ -1015,7 +1017,7 @@ async def get_strategy(
 ):
     """Get strategy detail."""
     strategy = _get_strategy(slug, sslug)
-    strategy_dir = strategy.dir
+    strategy_dir = strategy.data_dir
     run_key = _runkey(slug, sslug)
 
     strategy_md = _read_strategy_md(strategy)
@@ -1097,9 +1099,9 @@ async def update_strategy_config(
     strategy = _get_strategy(slug, sslug)
     from condor.agents.config import load_full_config, save_full_config
 
-    config_dict = load_full_config(strategy.dir, strategy.default_config)
+    config_dict = load_full_config(strategy.data_dir, strategy.default_config)
     config_dict.update(req.config)
-    save_full_config(strategy.dir, config_dict)
+    save_full_config(strategy.data_dir, config_dict)
     return {"updated": True, "config": config_dict}
 
 
@@ -1239,7 +1241,7 @@ async def get_strategy_performance(
     strategy = _get_strategy(slug, sslug)
     run_key = _runkey(slug, sslug)
     sessions, totals = await _compute_strategy_performance(
-        run_key, strategy.dir, strategy.default_config
+        run_key, strategy.data_dir, strategy.default_config
     )
     running_ids = {e.agent_id for e in _get_engines_for(slug, sslug) if e.is_running}
     for s in sessions:
@@ -1260,7 +1262,7 @@ async def get_session_executors(
     strategy = _get_strategy(slug, sslug)
     agent_id = f"{_runkey(slug, sslug)}_{session_num}"
     client, _server = await _get_client_for_strategy(
-        strategy.dir, strategy.default_config
+        strategy.data_dir, strategy.default_config
     )
     if client is None:
         return {
@@ -1313,7 +1315,7 @@ async def start_strategy(
 
     agent = _get_agent(slug)
     strategy = _get_strategy(slug, sslug)
-    strategy_dir = strategy.dir
+    strategy_dir = strategy.data_dir
     run_key = _runkey(slug, sslug)
     orphaned = _find_orphaned_active_sessions(run_key, strategy_dir)
 
@@ -1511,7 +1513,7 @@ async def get_learnings(
 ):
     """Read a strategy's learnings.md."""
     strategy = _get_strategy(slug, sslug)
-    learnings_path = strategy.dir / "learnings.md"
+    learnings_path = strategy.data_dir / "learnings.md"
     content = learnings_path.read_text() if learnings_path.exists() else ""
     return {"content": content}
 
@@ -1524,7 +1526,7 @@ async def get_learnings_archive(
     from condor.agents.journal import LEARNINGS_ARCHIVE_FILENAME
 
     strategy = _get_strategy(slug, sslug)
-    archive_path = strategy.dir / LEARNINGS_ARCHIVE_FILENAME
+    archive_path = strategy.data_dir / LEARNINGS_ARCHIVE_FILENAME
     content = archive_path.read_text() if archive_path.exists() else ""
     return {"content": content}
 
@@ -1538,7 +1540,7 @@ async def update_learnings(
 ):
     """Update a strategy's learnings.md."""
     strategy = _get_strategy(slug, sslug)
-    (strategy.dir / "learnings.md").write_text(req.content)
+    (strategy.data_dir / "learnings.md").write_text(req.content)
     return {"updated": True}
 
 
@@ -1551,7 +1553,7 @@ async def list_strategy_sessions(
 ):
     """List sessions for a strategy."""
     strategy = _get_strategy(slug, sslug)
-    sessions = list_sessions(strategy.dir)
+    sessions = list_sessions(strategy.data_dir)
     return {"sessions": [SessionInfo(**s).model_dump() for s in sessions]}
 
 
@@ -1564,7 +1566,7 @@ async def get_journal(
 ):
     """Read journal.md for a session."""
     strategy = _get_strategy(slug, sslug)
-    session_dir = find_session_dir(strategy.dir, session_num)
+    session_dir = find_session_dir(strategy.data_dir, session_num)
     if not session_dir:
         raise HTTPException(status_code=404, detail=f"Session {session_num} not found")
     journal_path = session_dir / "journal.md"
@@ -1581,7 +1583,7 @@ async def list_snapshots(
 ):
     """List snapshots for a session."""
     strategy = _get_strategy(slug, sslug)
-    session_dir = find_session_dir(strategy.dir, session_num)
+    session_dir = find_session_dir(strategy.data_dir, session_num)
     if not session_dir:
         raise HTTPException(status_code=404, detail=f"Session {session_num} not found")
 
@@ -1619,7 +1621,7 @@ async def get_snapshot(
 ):
     """Read a specific snapshot."""
     strategy = _get_strategy(slug, sslug)
-    session_dir = find_session_dir(strategy.dir, session_num)
+    session_dir = find_session_dir(strategy.data_dir, session_num)
     if not session_dir:
         raise HTTPException(status_code=404, detail=f"Session {session_num} not found")
 
@@ -1639,7 +1641,7 @@ async def list_strategy_experiments(
 ):
     """List experiments for a strategy."""
     strategy = _get_strategy(slug, sslug)
-    experiments = list_experiments(strategy.dir)
+    experiments = list_experiments(strategy.data_dir)
     return {"experiments": [ExperimentInfo(**e).model_dump() for e in experiments]}
 
 
@@ -1649,7 +1651,7 @@ async def get_experiment(
 ):
     """Read an experiment snapshot."""
     strategy = _get_strategy(slug, sslug)
-    path = find_experiment_file(strategy.dir, exp_num)
+    path = find_experiment_file(strategy.data_dir, exp_num)
     if not path:
         raise HTTPException(status_code=404, detail=f"Experiment {exp_num} not found")
     return {"content": path.read_text(), "number": exp_num}

@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
+  ChevronDown,
   ChevronRight,
   Clock,
   FlaskConical,
@@ -7,9 +9,16 @@ import {
   Zap,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { AgentPnlChart, sessionsToDataPoints } from "@/components/agent/AgentPnlChart";
+import { computeMaxTotalExposure } from "@/components/agent/AgentSessionConfigFields";
 import { ModeBadge } from "@/components/agent/ModeBadge";
+import {
+  InstanceLifecycleButtons,
+  ResumeSessionButton,
+} from "@/components/agent/SessionLifecycleActions";
 import { api } from "@/lib/api";
 import { formatCurrency, formatCurrencyPnl, formatCurrencyVolume } from "@/lib/formatters";
 
@@ -81,10 +90,73 @@ export function MarkdownEditor({
   );
 }
 
+export function LearningsArchivePanel({ slug, sslug }: { slug: string; sslug: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["strategy", slug, sslug, "learnings-archive"],
+    queryFn: () => api.getStrategyLearningsArchive(slug, sslug),
+    enabled: expanded,
+  });
+  const content = data?.content?.trim() ?? "";
+
+  return (
+    <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]">
+      <button
+        type="button"
+        onClick={() => setExpanded((open) => !open)}
+        className="flex w-full items-center justify-between px-4 py-3 text-left"
+      >
+        <div className="flex items-center gap-2">
+          {expanded ? (
+            <ChevronDown className="h-4 w-4 text-[var(--color-text-muted)]" />
+          ) : (
+            <ChevronRight className="h-4 w-4 text-[var(--color-text-muted)]" />
+          )}
+          <Archive className="h-4 w-4 text-[var(--color-text-muted)]" />
+          <span className="text-xs font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
+            Archive (not sent to agent)
+          </span>
+        </div>
+        <span className="text-[10px] text-[var(--color-text-muted)]">
+          Historical market observations — for debugging only
+        </span>
+      </button>
+      {expanded && (
+        <div className="border-t border-[var(--color-border)] px-4 py-4">
+          {isLoading && (
+            <p className="text-sm text-[var(--color-text-muted)]">Loading archive...</p>
+          )}
+          {isError && (
+            <p className="text-sm text-red-400">Failed to load archive.</p>
+          )}
+          {!isLoading && !isError && !content && (
+            <p className="text-sm text-[var(--color-text-muted)]">No archived observations yet.</p>
+          )}
+          {!isLoading && !isError && content && (
+            <div className="prose prose-invert max-w-none text-sm text-[var(--color-text)]">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Instance Card ──
 
-export function InstanceCard({ instance }: { instance: import("@/lib/api").RunningInstance }) {
+export function InstanceCard({
+  instance,
+  slug,
+  sslug,
+}: {
+  instance: import("@/lib/api").RunningInstance;
+  slug?: string;
+  sslug?: string;
+}) {
   const riskLimits = (instance.risk_limits || {}) as Record<string, unknown>;
+  const maxExecutors = Number(riskLimits.max_open_executors ?? 0);
+  const maxTotalExposure = computeMaxTotalExposure(instance.total_amount_quote, maxExecutors);
   const statusColor = instance.status === "running" ? "text-emerald-400" : instance.status === "paused" ? "text-amber-400" : "text-[var(--color-text-muted)]";
 
   return (
@@ -96,6 +168,7 @@ export function InstanceCard({ instance }: { instance: import("@/lib/api").Runni
           <ModeBadge mode={instance.execution_mode} />
         </div>
         <div className="flex items-center gap-3 text-xs text-[var(--color-text-muted)]">
+          {slug && sslug && <InstanceLifecycleButtons slug={slug} sslug={sslug} instance={instance} />}
           <span>Ticks: {instance.tick_count}</span>
           <span className={instance.daily_pnl >= 0 ? "text-[var(--color-green)]" : "text-[var(--color-red)]"}>
             PnL: {formatCurrencyPnl(instance.daily_pnl)}
@@ -128,9 +201,13 @@ export function InstanceCard({ instance }: { instance: import("@/lib/api").Runni
           <span className="text-[var(--color-text-muted)]">frequency</span>
           <span className="text-[var(--color-text)]">{instance.frequency_sec}s</span>
         </div>
+        {maxTotalExposure > 0 && (
+          <div className="flex justify-between">
+            <span className="text-[var(--color-text-muted)]">max exposure</span>
+            <span className="text-[var(--color-text)]">${maxTotalExposure.toFixed(0)}</span>
+          </div>
+        )}
         {Object.entries(riskLimits).map(([k, v]) => {
-          // These are risk LIMITS (max_*), not current values — keep the "max"
-          // so e.g. "open executors: 10" isn't misread as 10 executors open now.
           const label =
             k === "max_position_size_quote"
               ? "max position"
@@ -264,6 +341,7 @@ export function PerformancePanel({
                   <th className="px-2 py-1 text-right">Volume</th>
                   <th className="px-2 py-1 text-right">Trades</th>
                   <th className="px-2 py-1 text-right">Open</th>
+                  <th className="px-2 py-1 text-right">Actions</th>
                   {onSessionClick && <th className="px-2 py-1 w-6" />}
                 </tr>
               </thead>
@@ -304,6 +382,11 @@ export function PerformancePanel({
                         </td>
                         <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">{s.trade_count}</td>
                         <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">{s.open_count}</td>
+                        <td className="px-2 py-1.5 text-right">
+                          {!isExperiment && s.status !== "running" && (
+                            <ResumeSessionButton slug={slug} sslug={sslug} sessionNum={s.session_num} />
+                          )}
+                        </td>
                         {onSessionClick && (
                           <td className="px-2 py-1.5 text-[var(--color-text-muted)]">
                             <ChevronRight className="h-3.5 w-3.5" />

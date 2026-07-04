@@ -33,6 +33,25 @@ fi
 if [ -f "$PROD_DIR/config.yml" ] && [ ! -f "$DEV_DIR/config.dev.yml" ]; then
   cp "$PROD_DIR/config.yml" "$DEV_DIR/config.dev.yml"
   echo "Created config.dev.yml from prod config.yml"
+elif [ ! -f "$DEV_DIR/config.dev.yml" ] && [ -f "$DEV_DIR/config.dev.yml.example" ]; then
+  cp "$DEV_DIR/config.dev.yml.example" "$DEV_DIR/config.dev.yml"
+  echo "Created config.dev.yml from config.dev.yml.example (edit admin_id and web_jwt_secret)"
+fi
+
+# Optional: share prod macdbb session history with dev (read-only symlink).
+MACDBB_STRATEGY_DIR="$DEV_DIR/agents/macdbb_scanner_aggressive_hl/strategies/macdbb_scanner_aggressive_hl"
+PROD_MACDBB="$PROD_DIR/trading_agents/macdbb_scanner_aggressive_hl"
+if [ -d "$PROD_MACDBB/sessions" ] && [ ! -e "$MACDBB_STRATEGY_DIR/sessions" ]; then
+  ln -s "$PROD_MACDBB/sessions" "$MACDBB_STRATEGY_DIR/sessions"
+  echo "Linked prod macdbb sessions into dev strategy dir"
+fi
+if [ -f "$PROD_MACDBB/learnings.md" ] && [ ! -e "$MACDBB_STRATEGY_DIR/learnings.md" ]; then
+  ln -s "$PROD_MACDBB/learnings.md" "$MACDBB_STRATEGY_DIR/learnings.md"
+  echo "Linked prod macdbb learnings.md into dev strategy dir"
+fi
+if [ -d "$PROD_DIR/reports" ] && [ ! -e "$DEV_DIR/reports-dev" ]; then
+  ln -s "$PROD_DIR/reports" "$DEV_DIR/reports-dev"
+  echo "Linked prod reports into dev reports-dev (for preset/timeline resolution)"
 fi
 
 echo ""

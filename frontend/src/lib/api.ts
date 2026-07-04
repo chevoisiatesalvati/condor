@@ -471,7 +471,7 @@ export interface StrategyDetail {
   description: string;
   strategy_md: string;
   config: Record<string, unknown>;
-  defaults: Record<string, unknown>;
+  defaults?: StrategyDefaults;
   strategy_presets: Array<{ id: string; label: string }>;
   default_trading_context: string;
   learnings: string;
@@ -1151,21 +1151,21 @@ export const api = {
       },
     ),
 
-  stopStrategy: (slug: string, sslug: string) =>
+  stopStrategy: (slug: string, sslug: string, agentId?: string) =>
     apiFetch<{ stopped: boolean }>(
-      `/api/v1/agents/${encodeURIComponent(slug)}/strategies/${encodeURIComponent(sslug)}/stop`,
+      `/api/v1/agents/${encodeURIComponent(slug)}/strategies/${encodeURIComponent(sslug)}/stop${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ""}`,
       { method: "POST" },
     ),
 
-  pauseStrategy: (slug: string, sslug: string) =>
+  pauseStrategy: (slug: string, sslug: string, agentId?: string) =>
     apiFetch<{ paused: boolean }>(
-      `/api/v1/agents/${encodeURIComponent(slug)}/strategies/${encodeURIComponent(sslug)}/pause`,
+      `/api/v1/agents/${encodeURIComponent(slug)}/strategies/${encodeURIComponent(sslug)}/pause${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ""}`,
       { method: "POST" },
     ),
 
-  resumeStrategy: (slug: string, sslug: string) =>
+  resumeStrategy: (slug: string, sslug: string, agentId?: string) =>
     apiFetch<{ resumed: boolean }>(
-      `/api/v1/agents/${encodeURIComponent(slug)}/strategies/${encodeURIComponent(sslug)}/resume`,
+      `/api/v1/agents/${encodeURIComponent(slug)}/strategies/${encodeURIComponent(sslug)}/resume${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ""}`,
       { method: "POST" },
     ),
 

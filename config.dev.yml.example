@@ -1,0 +1,15 @@
+# Template for isolated dev worktree (make dev-local).
+# Copy to config.dev.yml and fill in your values — never commit config.dev.yml.
+version: 1
+servers:
+  local:
+    host: localhost
+    port: 8000
+    username: admin
+    password: admin
+default_server: local
+admin_id: 0
+users: {}
+server_access: {}
+chat_defaults: {}
+web_jwt_secret: change-me-in-config-dev-yml

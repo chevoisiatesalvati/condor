@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { dedupSortedByTime } from "@/lib/chart-utils";
 import { formatCurrencyPnl } from "@/lib/formatters";
 import type { MetricEntry } from "@/lib/parse-agent";
 import { getThemeColors } from "@/lib/theme-colors";
@@ -153,7 +154,7 @@ export function AgentPnlChart({ data, height = 180, title }: AgentPnlChartProps)
     const series = seriesRef.current;
     if (!chartReady || !series) return;
 
-    const sorted = [...data].sort((a, b) => a.time - b.time);
+    const sorted = dedupSortedByTime(data);
     series.setData(
       sorted.map((d) => ({
         time: d.time as import("lightweight-charts").UTCTimestamp,
@@ -210,13 +211,13 @@ export function AgentPnlChart({ data, height = 180, title }: AgentPnlChartProps)
 
 // Helper to convert MetricEntry[] to PnlDataPoint[]
 export function metricsToDataPoints(metrics: MetricEntry[]): PnlDataPoint[] {
-  return metrics
+  const points = metrics
     .filter((m) => m.timestamp)
     .map((m) => ({
       time: Math.floor(new Date(m.timestamp).getTime() / 1000),
       value: m.pnl,
-    }))
-    .sort((a, b) => a.time - b.time);
+    }));
+  return dedupSortedByTime(points);
 }
 
 // Helper to convert session-level performance to PnlDataPoints (aggregate)

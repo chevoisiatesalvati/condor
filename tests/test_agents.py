@@ -172,6 +172,46 @@ def test_strategy_agent_key_override_optional(tmp_path, monkeypatch):
     assert store.get_by_key(s2.key).agent_key == "ollama:z"
 
 
+def test_strategy_slug_uses_directory_name(tmp_path, monkeypatch):
+    """Directory sslug wins over display name (MACD+BB would slugify differently)."""
+    _patch_roots(monkeypatch, tmp_path)
+    _write_agent(tmp_path, "macdbb_scanner_aggressive_hl", name="MACD Agent")
+    strat_dir = (
+        tmp_path
+        / "macdbb_scanner_aggressive_hl"
+        / "strategies"
+        / "macdbb_scanner_aggressive_hl"
+    )
+    strat_dir.mkdir(parents=True)
+    (strat_dir / "strategy.md").write_text(
+        "---\n"
+        "name: MACD+BB Scanner Aggressive HL\n"
+        "description: display name\n"
+        "default_config: {}\n"
+        "---\n\n"
+        "Playbook body.\n"
+    )
+    s = StrategyStore().get("macdbb_scanner_aggressive_hl", "macdbb_scanner_aggressive_hl")
+    assert s is not None
+    assert s.slug == "macdbb_scanner_aggressive_hl"
+    assert s.name == "MACD+BB Scanner Aggressive HL"
+    assert s.key == "macdbb_scanner_aggressive_hl.macdbb_scanner_aggressive_hl"
+    assert s.dir == strat_dir
+
+
+def test_macdbb_agent_listed_in_repo():
+    """Shipped macdbb tree is discoverable by AgentStore."""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    agent_md = repo_root / "agents" / "macdbb_scanner_aggressive_hl" / "AGENT.md"
+    assert agent_md.is_file(), "macdbb AGENT.md must exist in repo"
+    slugs = {a.slug for a in AgentStore().list_all()}
+    assert "macdbb_scanner_aggressive_hl" in slugs
+    strategies = StrategyStore().list("macdbb_scanner_aggressive_hl")
+    assert [s.slug for s in strategies] == ["macdbb_scanner_aggressive_hl"]
+
+
 # ── MCP tool: manage_trading_agent agent CRUD (the AGENT.md identity) ──
 
 

@@ -80,3 +80,28 @@ def iter_strategy_slugs() -> list[str]:
             if path.is_dir() and not path.name.startswith("."):
                 slugs.add(path.name)
     return sorted(slugs)
+
+
+_SESSION_DIRNAMES = ("sessions", "trading_sessions")
+
+
+def _dir_has_sessions(path: Path) -> bool:
+    for dirname in _SESSION_DIRNAMES:
+        sessions_dir = path / dirname
+        if not sessions_dir.is_dir():
+            continue
+        for entry in sessions_dir.iterdir():
+            if entry.is_dir() and entry.name.startswith("session_"):
+                return True
+    return False
+
+
+def resolve_strategy_data_dir(agent_slug: str, sslug: str) -> Path:
+    """Session/journal root: prefer agents/ tree, fall back to trading_agents/{sslug}."""
+    upstream = REPO_ROOT / "agents" / agent_slug / "strategies" / sslug
+    legacy = TRADING_AGENTS_DIR / sslug
+    if _dir_has_sessions(upstream):
+        return upstream
+    if _dir_has_sessions(legacy):
+        return legacy
+    return upstream

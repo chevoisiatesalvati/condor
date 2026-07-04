@@ -6,16 +6,18 @@ import { type RunningInstance } from "@/lib/api";
 
 export function ResumeSessionButton({
   slug,
+  sslug,
   sessionNum,
   disabled = false,
   size = "sm",
 }: {
   slug: string;
+  sslug: string;
   sessionNum: number;
   disabled?: boolean;
   size?: "sm" | "md";
 }) {
-  const { resumeSessionMut, loading, error } = useSessionLifecycle(slug);
+  const { resumeSessionMut, loading, error } = useSessionLifecycle(slug, sslug);
 
   const sizeCls = size === "md" ? "gap-1.5 px-3 py-1.5 text-xs" : "gap-1 px-2 py-1 text-[10px]";
 
@@ -45,14 +47,16 @@ export function ResumeSessionButton({
 
 export function InstanceLifecycleButtons({
   slug,
+  sslug,
   instance,
   size = "sm",
 }: {
   slug: string;
+  sslug: string;
   instance: RunningInstance;
   size?: "sm" | "md";
 }) {
-  const { stopMut, pauseMut, resumeMut, loading, error } = useSessionLifecycle(slug);
+  const { stopMut, pauseMut, resumeMut, loading, error } = useSessionLifecycle(slug, sslug);
   const [confirmStop, setConfirmStop] = useState(false);
 
   const sizeCls = size === "md" ? "gap-1.5 px-3 py-1.5 text-xs" : "gap-1 px-2 py-1 text-[10px]";

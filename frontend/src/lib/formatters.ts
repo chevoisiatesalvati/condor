@@ -150,6 +150,35 @@ export function formatPct(val: number): string {
   return (val >= 0 ? "+" : "") + (val * 100).toFixed(2) + "%";
 }
 
+export function normalizeExecutorType(raw: string): string {
+  const label = raw
+    .toLowerCase()
+    .replace("_executor", "")
+    .replace("executor", "")
+    .replace(/^_+|_+$/g, "");
+  return label || raw;
+}
+
 export function isExecutorActive(status: string) {
-  return status === "active" || status === "running";
+  const s = (status || "").toLowerCase();
+  return s === "active" || s === "running" || s === "active_position";
+}
+
+export function formatExecutorSide(side: unknown): "BUY" | "SELL" {
+  if (typeof side === "string") {
+    const upper = side.toUpperCase();
+    if (side === "1" || upper === "BUY" || side === "TradeType.BUY" || upper === "LONG") {
+      return "BUY";
+    }
+    if (side === "2" || upper === "SELL" || side === "TradeType.SELL" || upper === "SHORT") {
+      return "SELL";
+    }
+  }
+  if (typeof side === "number") {
+    return side === 1 ? "BUY" : "SELL";
+  }
+  const label = String(side ?? "").toUpperCase();
+  if (label === "LONG") return "BUY";
+  if (label === "SHORT") return "SELL";
+  return label === "BUY" ? "BUY" : "SELL";
 }

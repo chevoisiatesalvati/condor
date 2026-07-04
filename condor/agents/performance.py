@@ -9,10 +9,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+_LEGACY_AGENT_ID_RE = re.compile(r"^([^.]+)\.([^.]+)_(e?\d+)$")
+
+
+def controller_ids_for_lookup(agent_id: str) -> list[str]:
+    """HB API ``controller_id`` tags to try for a session agent_id.
+
+    Post-merge ids look like ``{agent}.{strategy}_{N}``; pre-merge live
+    executors on Hyperliquid were tagged ``{strategy}_{N}`` (no dot).
+    """
+    ids = [agent_id]
+    m = _LEGACY_AGENT_ID_RE.match(agent_id)
+    if not m:
+        return ids
+    agent_slug, sslug, suffix = m.group(1), m.group(2), m.group(3)
+    for candidate in (f"{sslug}_{suffix}", f"{agent_slug}_{suffix}"):
+        if candidate not in ids:
+            ids.append(candidate)
+    return ids
 
 
 @dataclass
@@ -223,33 +243,36 @@ async def fetch_agent_performance_batch(
     MAX_PAGES = 200  # safety cap → 10,000 executors per agent
 
     async def _fetch_rows_once(aid: str) -> list[dict]:
-        rows: list[dict] = []
-        cursor: str | None = None
-        for _ in range(MAX_PAGES):
-            kwargs: dict[str, Any] = {
-                "controller_ids": [aid],
-                "limit": PAGE_SIZE,
-            }
-            if cursor:
-                kwargs["cursor"] = cursor
-            result = await client.executors.search_executors(**kwargs)
-            page = _extract_executors_list(result)
-            for ex in page:
-                if isinstance(ex, dict):
-                    rows.append(_executor_row(ex))
+        for cid in controller_ids_for_lookup(aid):
+            rows: list[dict] = []
+            cursor: str | None = None
+            for _ in range(MAX_PAGES):
+                kwargs: dict[str, Any] = {
+                    "controller_ids": [cid],
+                    "limit": PAGE_SIZE,
+                }
+                if cursor:
+                    kwargs["cursor"] = cursor
+                result = await client.executors.search_executors(**kwargs)
+                page = _extract_executors_list(result)
+                for ex in page:
+                    if isinstance(ex, dict):
+                        rows.append(_executor_row(ex))
 
-            next_cursor = None
-            if isinstance(result, dict):
-                next_cursor = result.get("next_cursor") or result.get("cursor")
-                pagination = result.get("pagination")
-                if not next_cursor and isinstance(pagination, dict):
-                    next_cursor = pagination.get("next_cursor") or pagination.get(
-                        "cursor"
-                    )
-            if not next_cursor or len(page) < PAGE_SIZE:
-                break
-            cursor = next_cursor
-        return rows
+                next_cursor = None
+                if isinstance(result, dict):
+                    next_cursor = result.get("next_cursor") or result.get("cursor")
+                    pagination = result.get("pagination")
+                    if not next_cursor and isinstance(pagination, dict):
+                        next_cursor = pagination.get("next_cursor") or pagination.get(
+                            "cursor"
+                        )
+                if not next_cursor or len(page) < PAGE_SIZE:
+                    break
+                cursor = next_cursor
+            if rows:
+                return rows
+        return []
 
     async def _fetch_rows(aid: str) -> list[dict]:
         # search_executors can transiently return empty while in-memory executors

@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ArrowLeft, FileText, FlaskConical, ScrollText, Trash2, X, Zap } from "lucide-react";
+import { AlertCircle, ArrowLeft, FileText, FlaskConical, ScrollText, Settings, Trash2, X, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { AgentControls } from "@/components/agent/AgentControls";
+import { StrategyDefaultsDialog } from "@/components/agent/StrategyDefaultsDialog";
 import { AgentMarketStrip } from "@/components/agent/AgentMarketStrip";
 import {
   InstanceCard,
+  LearningsArchivePanel,
   MarkdownEditor,
   PerformancePanel,
 } from "@/components/agent/AgentOverviewTab";
@@ -37,6 +39,7 @@ export function StrategyDetail() {
   const [showStrategyModal, setShowStrategyModal] = useState(false);
   const [showRoutinesBrowser, setShowRoutinesBrowser] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDefaults, setShowDefaults] = useState(false);
   // Unsaved-edit guards for the Playbook/Learnings editors (CORR-093)
   const [playbookDirty, setPlaybookDirty] = useState(false);
   const [learningsDirty, setLearningsDirty] = useState(false);
@@ -212,6 +215,14 @@ export function StrategyDetail() {
               <span className="hidden sm:inline">Routines</span>
             </button>
             <button
+              onClick={() => setShowDefaults(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition-all hover:border-[var(--color-primary)]/50 hover:text-[var(--color-primary)]"
+              title="Session Defaults"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Settings</span>
+            </button>
+            <button
               onClick={() => setShowDeleteConfirm(true)}
               disabled={strategy.status === "running"}
               className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-400 transition-all hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-30"
@@ -225,7 +236,9 @@ export function StrategyDetail() {
               sslug={sslug!}
               status={strategy.status}
               defaultContext={strategy.default_trading_context || (strategy.config.trading_context as string) || ""}
-              agentConfig={strategy.config}
+              defaultAgentKey={strategy.defaults?.agent_key ?? ""}
+              agentConfig={strategy.defaults?.default_config ?? strategy.config}
+              strategyPresets={strategy.strategy_presets ?? []}
             />
           </div>
         </div>
@@ -280,7 +293,7 @@ export function StrategyDetail() {
           </h3>
           <div className="space-y-3">
             {instances.map((inst) => (
-              <InstanceCard key={inst.agent_id} instance={inst} />
+              <InstanceCard key={inst.agent_id} instance={inst} slug={slug!} sslug={sslug!} />
             ))}
           </div>
         </div>
@@ -328,14 +341,17 @@ export function StrategyDetail() {
                   invalidateKey={["strategy", slug, sslug]}
                   onDirtyChange={setPlaybookDirty}
                 />
-                <MarkdownEditor
-                  label="Learnings"
-                  sublabel="persists across sessions"
-                  content={strategy.learnings}
-                  onSave={(value) => api.updateStrategyLearnings(slug!, sslug!, value)}
-                  invalidateKey={["strategy", slug, sslug]}
-                  onDirtyChange={setLearningsDirty}
-                />
+                <div className="flex flex-col gap-4">
+                  <MarkdownEditor
+                    label="Learnings"
+                    sublabel="persists across sessions"
+                    content={strategy.learnings}
+                    onSave={(value) => api.updateStrategyLearnings(slug!, sslug!, value)}
+                    invalidateKey={["strategy", slug, sslug]}
+                    onDirtyChange={setLearningsDirty}
+                  />
+                  <LearningsArchivePanel slug={slug!} sslug={sslug!} />
+                </div>
               </div>
             </div>
           </div>
@@ -399,6 +415,13 @@ export function StrategyDetail() {
         </div>
       )}
 
+      <StrategyDefaultsDialog
+        open={showDefaults}
+        onClose={() => setShowDefaults(false)}
+        slug={slug!}
+        sslug={sslug!}
+      />
+
       {/* Session Reviewer Overlay */}
       {reviewerOpen && (strategy.sessions.length > 0 || strategy.experiments.length > 0) && (
         <SessionReviewer
@@ -411,6 +434,7 @@ export function StrategyDetail() {
           initialKind={reviewerKind}
           serverName={serverName}
           controllerIds={controllerIds}
+          runningInstances={instances}
           onClose={() => setReviewerSessionNum(null)}
         />
       )}

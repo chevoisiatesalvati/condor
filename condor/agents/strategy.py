@@ -84,6 +84,7 @@ def _render_frontmatter(meta: dict, body: str) -> str:
 class Strategy:
     agent_slug: str  # the owning Agent's slug
     name: str
+    slug: str = ""  # filesystem directory name; defaults from name when empty
     description: str = ""
     instructions: str = ""  # body: the TACTIC of the tick (not the identity)
     agent_key: str | None = None  # optional model override of the Agent's default
@@ -94,13 +95,10 @@ class Strategy:
     created_at: str = ""  # ISO timestamp
 
     def __post_init__(self):
+        if not self.slug:
+            self.slug = _slugify(self.name)
         if not self.created_at:
             self.created_at = datetime.now(timezone.utc).isoformat()
-
-    @property
-    def slug(self) -> str:
-        """Filesystem-safe slug derived from the strategy name (unique per agent)."""
-        return _slugify(self.name)
 
     @property
     def key(self) -> str:
@@ -111,6 +109,13 @@ class Strategy:
     def dir(self) -> Path:
         """This strategy's folder: agents/{agent_slug}/strategies/{slug}/."""
         return _DATA_ROOT / self.agent_slug / "strategies" / self.slug
+
+    @property
+    def data_dir(self) -> Path:
+        """Operational dir for sessions/journal (may fall back to trading_agents/)."""
+        from condor.agents.strategy_paths import resolve_strategy_data_dir
+
+        return resolve_strategy_data_dir(self.agent_slug, self.slug)
 
 
 def split_key(key: str) -> tuple[str, str] | None:
@@ -125,13 +130,47 @@ def split_key(key: str) -> tuple[str, str] | None:
     return agent_slug, sslug
 
 
+def _merge_private_frontmatter(meta: dict, sslug: str) -> dict:
+    """Overlay private strategies/{sslug}/agent.md frontmatter when present."""
+    from condor.agents.strategy_paths import resolve_agent_md_for_read
+
+    private_path = resolve_agent_md_for_read(sslug)
+    if private_path is None:
+        return meta
+    try:
+        private_meta, _ = _parse_frontmatter(private_path.read_text())
+        merged = dict(meta)
+        for key in ("description", "agent_key", "skills", "created_by", "created_at"):
+            val = private_meta.get(key)
+            if val not in (None, "", []):
+                merged[key] = val
+        if private_meta.get("default_trading_context"):
+            merged["default_trading_context"] = private_meta["default_trading_context"]
+        elif private_meta.get("trading_context"):
+            merged["default_trading_context"] = private_meta["trading_context"]
+        private_cfg = private_meta.get("default_config")
+        if isinstance(private_cfg, dict) and private_cfg:
+            base = dict(merged.get("default_config") or {})
+            base.update(private_cfg)
+            merged["default_config"] = base
+        if private_meta.get("name") and not merged.get("name"):
+            merged["name"] = private_meta["name"]
+        return merged
+    except Exception:
+        log.exception("Failed to merge private frontmatter for %s", sslug)
+        return meta
+
+
 def _load_strategy_from_file(path: Path, agent_slug: str) -> Strategy | None:
     """Load a Strategy from a ``strategy.md`` file under an agent."""
     try:
+        sslug = path.parent.name
         meta, body = _parse_frontmatter(path.read_text())
+        meta = _merge_private_frontmatter(meta, sslug)
         return Strategy(
             agent_slug=agent_slug,
-            name=meta.get("name", path.parent.name),
+            slug=sslug,
+            name=meta.get("name", sslug),
             description=meta.get("description", ""),
             instructions=body,
             agent_key=meta.get("agent_key") or None,
@@ -174,6 +213,7 @@ class StrategyStore:
     ) -> Strategy:
         strategy = Strategy(
             agent_slug=agent_slug,
+            slug=_slugify(name),
             name=name,
             description=description,
             instructions=instructions,

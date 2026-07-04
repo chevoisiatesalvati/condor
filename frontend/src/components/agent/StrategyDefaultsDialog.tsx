@@ -16,6 +16,7 @@ import {
 } from "@/components/agent/AgentSessionConfigFields";
 import { StrategyPresetSelect } from "@/components/agent/StrategyPresetSelect";
 import { StrategyParamsForm } from "@/components/agent/StrategyParamsForm";
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { api } from "@/lib/api";
 
 function readRiskLimit(defaults: Record<string, unknown>, key: string, fallback: number) {
@@ -24,20 +25,23 @@ function readRiskLimit(defaults: Record<string, unknown>, key: string, fallback:
   return value !== undefined && value !== null ? String(value) : String(fallback);
 }
 
-export function AgentDefaultsDialog({
+export function StrategyDefaultsDialog({
   open,
   onClose,
   slug,
+  sslug,
 }: {
   open: boolean;
   onClose: () => void;
   slug: string;
+  sslug: string;
 }) {
   const queryClient = useQueryClient();
+  useEscapeKey(open, onClose);
 
   const { data: defaults, isLoading } = useQuery({
-    queryKey: ["agent-defaults", slug],
-    queryFn: () => api.getAgentDefaults(slug),
+    queryKey: ["strategy-defaults", slug, sslug],
+    queryFn: () => api.getStrategyDefaults(slug, sslug),
     enabled: open,
   });
 
@@ -57,8 +61,8 @@ export function AgentDefaultsDialog({
   const [strategyParams, setStrategyParams] = useState<Record<string, unknown>>({});
 
   const { data: strategySchema } = useQuery({
-    queryKey: ["strategy-config-schema", slug],
-    queryFn: () => api.getStrategyConfigSchema(slug),
+    queryKey: ["strategy-config-schema", slug, sslug],
+    queryFn: () => api.getStrategyConfigSchema(slug, sslug),
     enabled: open,
   });
 
@@ -91,7 +95,7 @@ export function AgentDefaultsDialog({
 
   const saveMut = useMutation({
     mutationFn: () =>
-      api.updateAgentDefaults(slug, {
+      api.updateStrategyDefaults(slug, sslug, {
         default_config: {
           server_name: serverName,
           total_amount_quote: Number(totalAmountQuote) || 100,
@@ -110,8 +114,8 @@ export function AgentDefaultsDialog({
         model_base_url: modelBaseUrl,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agent", slug] });
-      queryClient.invalidateQueries({ queryKey: ["agent-defaults", slug] });
+      queryClient.invalidateQueries({ queryKey: ["strategy", slug, sslug] });
+      queryClient.invalidateQueries({ queryKey: ["strategy-defaults", slug, sslug] });
       onClose();
     },
   });
@@ -132,7 +136,7 @@ export function AgentDefaultsDialog({
             <Settings className="h-5 w-5" />
             Session Defaults
           </h2>
-          <button onClick={onClose} className="text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
+          <button onClick={onClose} className="text-[var(--color-text-muted)] hover:text-[var(--color-text)]" title="Close" aria-label="Close">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -189,6 +193,7 @@ export function AgentDefaultsDialog({
             {strategyPresets.length > 0 && (
               <StrategyPresetSelect
                 slug={slug}
+                sslug={sslug}
                 value={strategyPreset}
                 presets={strategyPresets}
                 frequencySec={Number(frequencySec) || 60}
@@ -236,7 +241,7 @@ export function AgentDefaultsDialog({
         </div>
 
         {saveMut.isError && (
-          <p className="mt-3 text-xs text-red-400">Failed to save defaults. Please try again.</p>
+          <p className="mt-3 text-xs text-red-400">{saveMut.error.message}</p>
         )}
       </div>
     </div>

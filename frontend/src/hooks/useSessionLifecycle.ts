@@ -2,36 +2,40 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
 
-function invalidateAgentQueries(queryClient: ReturnType<typeof useQueryClient>, slug: string) {
-  queryClient.invalidateQueries({ queryKey: ["agent", slug] });
-  queryClient.invalidateQueries({ queryKey: ["agent-performance", slug] });
+function invalidateStrategyQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  slug: string,
+  sslug: string,
+) {
+  queryClient.invalidateQueries({ queryKey: ["strategy", slug, sslug] });
+  queryClient.invalidateQueries({ queryKey: ["strategy-performance", slug, sslug] });
   queryClient.invalidateQueries({ queryKey: ["agents"] });
-  queryClient.invalidateQueries({ queryKey: ["agent", slug, "session"] });
-  queryClient.invalidateQueries({ queryKey: ["agent-session-executors", slug] });
+  queryClient.invalidateQueries({ queryKey: ["strategy", slug, sslug, "session"] });
+  queryClient.invalidateQueries({ queryKey: ["strategy-session-executors", slug, sslug] });
 }
 
-export function useSessionLifecycle(slug: string) {
+export function useSessionLifecycle(slug: string, sslug: string) {
   const queryClient = useQueryClient();
 
-  const onSuccess = () => invalidateAgentQueries(queryClient, slug);
+  const onSuccess = () => invalidateStrategyQueries(queryClient, slug, sslug);
 
   const resumeSessionMut = useMutation({
-    mutationFn: (sessionNum: number) => api.startAgent(slug, {}, "", "", sessionNum),
+    mutationFn: (sessionNum: number) => api.startStrategy(slug, sslug, {}, "", "", sessionNum),
     onSuccess,
   });
 
   const stopMut = useMutation({
-    mutationFn: (agentId: string) => api.stopAgent(slug, agentId),
+    mutationFn: (agentId: string) => api.stopStrategy(slug, sslug, agentId),
     onSuccess,
   });
 
   const pauseMut = useMutation({
-    mutationFn: (agentId: string) => api.pauseAgent(slug, agentId),
+    mutationFn: (agentId: string) => api.pauseStrategy(slug, sslug, agentId),
     onSuccess,
   });
 
   const resumeMut = useMutation({
-    mutationFn: (agentId: string) => api.resumeAgent(slug, agentId),
+    mutationFn: (agentId: string) => api.resumeStrategy(slug, sslug, agentId),
     onSuccess,
   });
 

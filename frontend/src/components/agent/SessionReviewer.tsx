@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
@@ -23,8 +23,12 @@ import {
   SessionOverview,
   SessionSnapshots,
 } from "@/components/agent/AgentSessionContent";
+import {
+  InstanceLifecycleButtons,
+  ResumeSessionButton,
+} from "@/components/agent/SessionLifecycleActions";
 import { MODE_STYLES } from "@/components/agent/modeStyles";
-import { type ExperimentInfo, type SessionInfo, api } from "@/lib/api";
+import { type ExperimentInfo, type RunningInstance, type SessionInfo, api } from "@/lib/api";
 import { formatCurrencyPnl, formatDateTime, formatToolName } from "@/lib/formatters";
 import { type ParsedJournal, type ParsedSnapshot, parseJournal, parseSnapshot } from "@/lib/parse-agent";
 
@@ -93,6 +97,7 @@ interface SessionReviewerProps {
   initialKind?: "session" | "experiment";
   serverName: string;
   controllerIds?: string[];
+  runningInstances?: RunningInstance[];
   onClose: () => void;
 }
 
@@ -105,7 +110,7 @@ export function SessionReviewer({
   initialSessionNum,
   initialKind = "session",
   serverName,
-  controllerIds,
+  runningInstances = [],
   onClose,
 }: SessionReviewerProps) {
   const [selectedNum, setSelectedNum] = useState(initialSessionNum);
@@ -173,8 +178,24 @@ export function SessionReviewer({
     queryFn: () => api.getStrategySessionExecutors(slug, sslug, selectedNum),
     enabled: !isExperiment && selectedNum > 0,
     refetchInterval: 10000,
+    placeholderData: keepPreviousData,
   });
   const sessionPerf = sessionPerfData?.performance ?? null;
+
+  const activeInstance = useMemo(
+    () =>
+      !isExperiment
+        ? runningInstances.find((inst) => inst.session_num === selectedNum)
+        : undefined,
+    [runningInstances, selectedNum, isExperiment],
+  );
+
+  const sessionControllerIds = useMemo(
+    () => (activeInstance ? [activeInstance.agent_id] : [`${slug}.${sslug}_${selectedNum}`]),
+    [activeInstance, slug, sslug, selectedNum],
+  );
+
+  const liveSessionStatus = activeInstance?.status;
 
   const currentIdx = sidebarItems.findIndex(
     (s) => s.number === selectedNum && s.kind === selectedKind,
@@ -186,14 +207,6 @@ export function SessionReviewer({
     setSelectedKind(item.kind);
     setActiveSubTab("overview");
     setShowSystemPrompt(false);
-  }, []);
-
-  // Snapshot click from chart → navigate to snapshots tab with that tick
-  const [pendingSnapshotTick, setPendingSnapshotTick] = useState<number | null>(null);
-
-  const handleSnapshotClick = useCallback((tick: number) => {
-    setPendingSnapshotTick(tick);
-    setActiveSubTab("snapshots");
   }, []);
 
   // Keyboard: Escape only
@@ -348,6 +361,12 @@ export function SessionReviewer({
               <span className={`text-sm font-mono font-semibold ${pnlColor}`}>
                 {formatCurrencyPnl(pnl)}
               </span>
+            )}
+            {!isExperiment && activeInstance && (
+              <InstanceLifecycleButtons slug={slug} sslug={sslug} instance={activeInstance} size="md" />
+            )}
+            {!isExperiment && !activeInstance && (
+              <ResumeSessionButton slug={slug} sslug={sslug} sessionNum={selectedNum} size="md" />
             )}
           </div>
 
@@ -536,16 +555,16 @@ export function SessionReviewer({
                       sslug={sslug}
                       sessionNum={selectedNum}
                       serverName={serverName}
-                      controllerIds={controllerIds}
-                      onSnapshotClick={handleSnapshotClick}
+                      controllerIds={sessionControllerIds}
                       sessionSummary={parsedJournal.summary}
+                      liveSessionStatus={liveSessionStatus}
                     />
                     <SessionOverview journal={parsedJournal} perf={sessionPerf} />
                   </div>
                 )}
                 {activeSubTab === "activity" && <SessionActivity journal={parsedJournal} />}
                 {activeSubTab === "snapshots" && (
-                  <SessionSnapshots slug={slug} sslug={sslug} sessionNum={selectedNum} initialTick={pendingSnapshotTick} />
+                  <SessionSnapshots slug={slug} sslug={sslug} sessionNum={selectedNum} />
                 )}
               </>
             )

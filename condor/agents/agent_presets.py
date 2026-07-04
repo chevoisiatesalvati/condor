@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 AGENT_PRESET_LOADERS: dict[str, str] = {
     "macdbb_scanner_aggressive_hl": "trading_agents.macdbb_scanner_aggressive_hl.presets",
@@ -66,7 +69,11 @@ def apply_agent_strategy_preset(
         return result
 
     freq = int(result.get("frequency_sec") or 60)
-    preset_params = strategy_params_for_preset(slug, selected, frequency_sec=freq)
+    try:
+        preset_params = strategy_params_for_preset(slug, selected, frequency_sec=freq)
+    except Exception:
+        log.exception("strategy_params_for_preset(%s, %s) failed", slug, selected)
+        preset_params = None
     if not preset_params:
         return result
 
@@ -78,11 +85,14 @@ def apply_agent_strategy_preset(
     from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
     from trading_agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
 
-    replay_cfg = resolve_config_with_preset(
-        DynamicStrategyReplayConfig(preset=selected, frequency_sec=freq)
-    )
-    risk = dict(result.get("risk_limits") or {})
-    risk["max_open_executors"] = int(replay_cfg.max_open_executors)
-    result["risk_limits"] = risk
+    try:
+        replay_cfg = resolve_config_with_preset(
+            DynamicStrategyReplayConfig(preset=selected, frequency_sec=freq)
+        )
+        risk = dict(result.get("risk_limits") or {})
+        risk["max_open_executors"] = int(replay_cfg.max_open_executors)
+        result["risk_limits"] = risk
+    except Exception:
+        log.exception("resolve_config_with_preset(%s) failed for live config", selected)
 
     return result

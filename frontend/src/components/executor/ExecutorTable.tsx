@@ -21,6 +21,7 @@ import {
   formatAge,
   formatPrice,
   formatPct,
+  formatExecutorSide,
   isExecutorActive,
 } from "@/lib/formatters";
 
@@ -42,6 +43,10 @@ export type SortKey =
 
 export type SortDir = "asc" | "desc";
 
+function statusSortRank(status: string): number {
+  return isExecutorActive(status) ? 1 : 0;
+}
+
 function compareExecutors(a: ExecutorInfo, b: ExecutorInfo, key: SortKey, dir: SortDir): number {
   let cmp = 0;
   switch (key) {
@@ -50,9 +55,13 @@ function compareExecutors(a: ExecutorInfo, b: ExecutorInfo, key: SortKey, dir: S
     case "connector":
     case "trading_pair":
     case "side":
-    case "status":
     case "close_type":
       cmp = (a[key] || "").localeCompare(b[key] || "");
+      break;
+    case "status":
+      cmp = statusSortRank(a.status) - statusSortRank(b.status);
+      if (cmp === 0) cmp = (a.status || "").localeCompare(b.status || "");
+      if (cmp === 0) cmp = (a.timestamp || 0) - (b.timestamp || 0);
       break;
     case "pnl":
     case "net_pnl_pct":
@@ -128,6 +137,7 @@ const ExecutorRow = memo(function ExecutorRow({
   isSelected,
   isChecked,
   isStopping,
+  showCheckboxes,
   onRowClick,
   onToggleSelect,
   onStop,
@@ -139,6 +149,7 @@ const ExecutorRow = memo(function ExecutorRow({
   isSelected: boolean;
   isChecked: boolean;
   isStopping: boolean;
+  showCheckboxes: boolean;
   onRowClick: (ex: ExecutorInfo) => void;
   onToggleSelect: (id: string) => void;
   onStop: (id: string) => void;
@@ -146,7 +157,7 @@ const ExecutorRow = memo(function ExecutorRow({
   fmtVol: RowFormatter;
   fmtDet: RowFormatter;
 }) {
-  const side = ex.side.toUpperCase();
+  const side = formatExecutorSide(ex.side);
   const pnlBorder = ex.pnl >= 0 ? "var(--color-green)" : "var(--color-red)";
   const quote = ex.trading_pair?.split("-")[1] || "USDT";
   return (
@@ -155,14 +166,16 @@ const ExecutorRow = memo(function ExecutorRow({
       style={{ borderLeft: `3px solid ${pnlBorder}` }}
       onClick={() => onRowClick(ex)}
     >
-      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-        <input
-          type="checkbox"
-          checked={isChecked}
-          onChange={() => onToggleSelect(ex.id)}
-          className="rounded border-[var(--color-border)]"
-        />
-      </td>
+      {showCheckboxes && (
+        <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={isChecked}
+            onChange={() => onToggleSelect(ex.id)}
+            className="rounded border-[var(--color-border)]"
+          />
+        </td>
+      )}
       <td className="px-4 py-2.5 text-xs font-mono text-[var(--color-text-muted)]" title={ex.id}>
         {ex.id.slice(0, 8)}
       </td>
@@ -179,11 +192,19 @@ const ExecutorRow = memo(function ExecutorRow({
         <span
           className="text-xs font-semibold uppercase"
           style={{
-            color: side === "BUY" || side === "1" ? "var(--color-green)" : "var(--color-red)",
+            color: side === "BUY" ? "var(--color-green)" : "var(--color-red)",
           }}
         >
           {side}
         </span>
+      </td>
+      <td className="px-4 py-2.5">
+        <div className="flex items-center gap-1.5">
+          <StatusDot status={ex.status} />
+          <span className="text-xs capitalize text-[var(--color-text-muted)]">
+            {ex.status || "\u2014"}
+          </span>
+        </div>
       </td>
       <td
         className="px-4 py-2.5 text-sm text-right tabular-nums font-medium"
@@ -240,14 +261,16 @@ export function ExecutorTable({
   sortKey,
   sortDir,
   onSort,
-  selectedIds,
+  selectedIds = new Set<string>(),
   onToggleSelect,
   onSelectAll,
-  allSelected,
+  allSelected = false,
   onRowClick,
   selectedExecutorId,
   onStop,
   stoppingIds,
+  showCheckboxes = true,
+  highlightSelectedIds = false,
   rateFormatPnl,
   rateFormatValue,
   rateFormatDetailed,
@@ -256,14 +279,16 @@ export function ExecutorTable({
   sortKey: SortKey;
   sortDir: SortDir;
   onSort: (key: SortKey) => void;
-  selectedIds: Set<string>;
-  onToggleSelect: (id: string) => void;
-  onSelectAll: () => void;
-  allSelected: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  onSelectAll?: () => void;
+  allSelected?: boolean;
   onRowClick: (ex: ExecutorInfo) => void;
   selectedExecutorId: string | null;
   onStop: (id: string) => void;
   stoppingIds: Set<string>;
+  showCheckboxes?: boolean;
+  highlightSelectedIds?: boolean;
   rateFormatPnl?: (val: number, quote: string) => string;
   rateFormatValue?: (val: number, quote: string) => string;
   rateFormatDetailed?: (val: number, quote: string) => string;
@@ -298,19 +323,22 @@ export function ExecutorTable({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-              <th className="px-3 py-3 w-8">
-                <input
-                  type="checkbox"
-                  checked={allSelected && executors.length > 0}
-                  onChange={onSelectAll}
-                  className="rounded border-[var(--color-border)]"
-                />
-              </th>
+              {showCheckboxes && (
+                <th className="px-3 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={allSelected && executors.length > 0}
+                    onChange={onSelectAll}
+                    className="rounded border-[var(--color-border)]"
+                  />
+                </th>
+              )}
               <SortHeader label="ID" sortKey="id" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="Type" sortKey="type" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="Connector" sortKey="connector" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="Pair" sortKey="trading_pair" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="Side" sortKey="side" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
+              <SortHeader label="Status" sortKey="status" currentKey={sortKey} currentDir={sortDir} onSort={onSort} />
               <SortHeader label="PnL" sortKey="pnl" currentKey={sortKey} currentDir={sortDir} onSort={onSort} align="right" />
               <SortHeader label="PnL%" sortKey="net_pnl_pct" currentKey={sortKey} currentDir={sortDir} onSort={onSort} align="right" />
               <SortHeader label="Volume" sortKey="volume" currentKey={sortKey} currentDir={sortDir} onSort={onSort} align="right" />
@@ -325,11 +353,12 @@ export function ExecutorTable({
               <ExecutorRow
                 key={ex.id}
                 ex={ex}
-                isSelected={selectedExecutorId === ex.id}
+                isSelected={highlightSelectedIds ? selectedIds.has(ex.id) : selectedExecutorId === ex.id}
                 isChecked={selectedIds.has(ex.id)}
                 isStopping={stoppingIds.has(ex.id)}
+                showCheckboxes={showCheckboxes}
                 onRowClick={onRowClick}
-                onToggleSelect={onToggleSelect}
+                onToggleSelect={onToggleSelect ?? (() => {})}
                 onStop={onStop}
                 fmtPnl={fmtPnl}
                 fmtVol={fmtVol}
@@ -364,6 +393,7 @@ export function DetailPanel({
   onClose,
   onStop,
   stopping,
+  variant = "sidebar",
   rateFormatPnl,
   rateFormatValue,
   rateFormatDetailed,
@@ -373,11 +403,13 @@ export function DetailPanel({
   onClose: () => void;
   onStop: (id: string) => void;
   stopping: boolean;
+  variant?: "sidebar" | "inline";
   rateFormatPnl?: (val: number, quote: string) => string;
   rateFormatValue?: (val: number, quote: string) => string;
   rateFormatDetailed?: (val: number, quote: string) => string;
 }) {
   const navigate = useNavigate();
+  const isInline = variant === "inline";
   const [panelWidth, setPanelWidth] = useState(480);
 
   const { onMouseDown } = useResizeDrag({
@@ -391,9 +423,9 @@ export function DetailPanel({
     lockUserSelect: true,
   });
 
-  const sideLabel = executor.side.toUpperCase();
-  const sideColor = sideLabel === "BUY" || sideLabel === "1" ? "var(--color-green)" : "var(--color-red)";
-  const sideBg = sideLabel === "BUY" || sideLabel === "1" ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)";
+  const sideLabel = formatExecutorSide(executor.side);
+  const sideColor = sideLabel === "BUY" ? "var(--color-green)" : "var(--color-red)";
+  const sideBg = sideLabel === "BUY" ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)";
   const configEntries = Object.entries(executor.config || {});
   const customEntries = Object.entries(executor.custom_info || {});
 
@@ -418,13 +450,19 @@ export function DetailPanel({
 
   return (
       <div
-        className="h-full bg-[var(--color-bg)] border-l border-[var(--color-border)] overflow-y-auto shadow-xl shrink-0 relative"
-        style={{ width: panelWidth }}
+        className={
+          isInline
+            ? "w-full min-w-0 max-h-[70vh] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] overflow-y-auto relative"
+            : "h-full bg-[var(--color-bg)] border-l border-[var(--color-border)] overflow-y-auto shadow-xl shrink-0 relative"
+        }
+        style={isInline ? undefined : { width: panelWidth }}
       >
-        <div
-          className="absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-[var(--color-primary)]/30 transition-colors z-10"
-          onMouseDown={onMouseDown}
-        />
+        {!isInline && (
+          <div
+            className="absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-[var(--color-primary)]/30 transition-colors z-10"
+            onMouseDown={onMouseDown}
+          />
+        )}
 
         <div className="sticky top-0 bg-[var(--color-bg)] border-b border-[var(--color-border)] px-5 py-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold truncate pr-4 font-mono" title={executor.id}>

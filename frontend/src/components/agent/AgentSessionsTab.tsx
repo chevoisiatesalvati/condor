@@ -1,3 +1,4 @@
+/** @deprecated Unused after agent→strategy merge; use StrategyDetail + SessionReviewer instead. */
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Activity,
