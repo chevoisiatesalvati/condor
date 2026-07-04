@@ -63,7 +63,8 @@ def attribute_to(agent: str | None):
         _report_agent.reset(token)
 
 
-CHARTS_DIR = Path(__file__).resolve().parent.parent / "reports"
+_default_reports_dir = Path(__file__).resolve().parent.parent / "reports"
+CHARTS_DIR = Path(os.environ.get("CONDOR_REPORTS_DIR", str(_default_reports_dir)))
 INDEX_FILE = CHARTS_DIR / "reports_index.json"
 # Max reports in index before oldest are auto-deleted. 0 = retain all (default).
 MAX_REPORTS = int(os.environ.get("CONDOR_MAX_REPORTS", "0"))

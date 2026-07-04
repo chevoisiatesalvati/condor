@@ -2,7 +2,10 @@
 SHELL := /bin/bash
 export PATH := $(HOME)/.local/bin:$(HOME)/.cargo/bin:$(PATH)
 
-.PHONY: help setup install run dev dev-backend dev-frontend test lint build-frontend setup-chrome
+.PHONY: help setup install run dev dev-backend dev-frontend dev-local dev-local-backend dev-local-frontend test lint build-frontend setup-chrome
+
+DEV_WEB_PORT ?= 8089
+DEV_VITE_PORT ?= 5174
 
 # Helper function to find node/npm via nvm or system
 define find_node
@@ -21,6 +24,7 @@ help:
 	@echo "  make install     - Setup + install all dependencies"
 	@echo "  make run         - Run locally (production: built UI on :8088)"
 	@echo "  make dev         - Dev mode: Vite HMR (:5173) + API/Telegram (:8088)"
+	@echo "  make dev-local   - Isolated dev: web-only API (:8089) + Vite (:5174)"
 	@echo "  make test        - Run tests"
 	@echo "  make lint        - Run black + isort"
 
@@ -68,6 +72,29 @@ dev:
 	@trap 'kill 0' INT TERM; \
 	$(MAKE) dev-backend & \
 	$(MAKE) dev-frontend & \
+	wait
+
+dev-local-backend:
+	CONDOR_DEV=1 CONDOR_WEB_ONLY=1 \
+	WEB_PORT=$(DEV_WEB_PORT) WEB_URL=http://localhost:$(DEV_VITE_PORT) \
+	CONDOR_CONFIG_FILE=config.dev.yml \
+	CONDOR_PERSISTENCE_FILE=data/condor_dev.pickle \
+	CONDOR_REPORTS_DIR=reports-dev \
+	uv run python main.py
+
+dev-local-frontend:
+	@bash -c ' \
+		export NVM_DIR="$$HOME/.nvm"; \
+		[ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh"; \
+		cd frontend && \
+		if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm install; fi && \
+		VITE_PORT=$(DEV_VITE_PORT) VITE_API_PORT=$(DEV_WEB_PORT) npm run dev \
+	'
+
+dev-local:
+	@trap 'kill 0' INT TERM; \
+	$(MAKE) dev-local-backend & \
+	$(MAKE) dev-local-frontend & \
 	wait
 
 test:

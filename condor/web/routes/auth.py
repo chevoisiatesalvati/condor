@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 
@@ -52,6 +54,38 @@ async def token_login(req: TokenLoginRequest, response: Response):
         first_name=info.get("first_name", ""),
         role=role.value,
     )
+    return LoginResponse(token=jwt_token, user=user)
+
+
+@router.post("/auth/dev-login", response_model=LoginResponse)
+async def dev_login(response: Response):
+    """Local dev login for web-only instances (no /web Telegram command)."""
+    if not (os.environ.get("CONDOR_DEV") and os.environ.get("CONDOR_WEB_ONLY")):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    from utils.config import ADMIN_USER_ID
+
+    if not ADMIN_USER_ID:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ADMIN_USER_ID not configured",
+        )
+
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+
+    user_id = int(ADMIN_USER_ID)
+    cm = get_config_manager()
+    role = cm.get_user_role(user_id)
+
+    if role not in (UserRole.USER, UserRole.ADMIN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Ask the admin to approve your account in Telegram.",
+        )
+
+    jwt_token = create_jwt(user_id=user_id, username="", first_name="Dev", role=role.value)
+    user = WebUser(id=user_id, username="", first_name="Dev", role=role.value)
     return LoginResponse(token=jwt_token, user=user)
 
 

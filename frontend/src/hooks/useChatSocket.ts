@@ -120,7 +120,8 @@ export function useChatSocket() {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = import.meta.env.DEV ? "localhost:8088" : window.location.host;
+    const apiPort = import.meta.env.VITE_API_PORT || "8088";
+    const host = import.meta.env.DEV ? `localhost:${apiPort}` : window.location.host;
     const url = `${protocol}//${host}/api/v1/ws/chat`;
 
     // Pass the JWT via the Sec-WebSocket-Protocol subprotocol header instead of

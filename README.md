@@ -418,6 +418,43 @@ make dev   # Starts API/Telegram on :8088 and Vite on :5173
 
 Open `http://localhost:5173` for the dashboard. React changes hot-reload instantly. Python changes under `handlers/`, `routines/`, `condor/web/`, and other `condor/` modules reload automatically without restarting the Telegram bot.
 
+### Dual-instance dev (prod + feature branch)
+
+Run production Condor (Telegram + dashboard) on `main` while developing a feature branch in a separate git worktree — without Telegram polling conflicts or port collisions.
+
+| | Prod (`make run`) | Dev worktree (`make dev-local`) |
+|--|-------------------|----------------------------------|
+| Path | `~/projects/Hummingbot/condor` | `~/projects/Hummingbot/condor-dev` |
+| Branch | `main` | feature branch |
+| Telegram | Full polling | **Web-only** (no polling) |
+| Dashboard | `http://localhost:8088` | Vite `http://localhost:5174` → API `:8089` |
+| State | `config.yml`, `data/condor_bot_data.pickle` | `config.dev.yml`, `data/condor_dev.pickle`, `reports-dev/` |
+
+**One-time setup:**
+
+```bash
+# From prod checkout on main
+git checkout main
+./scripts/setup-dev-worktree.sh merge-upstream-2026-07-04
+```
+
+**Daily use:**
+
+```bash
+# Terminal 1 — prod
+cd ~/projects/Hummingbot/condor && make run
+
+# Terminal 2 — dev (web-only)
+cd ~/projects/Hummingbot/condor-dev && make dev-local
+```
+
+Open `http://localhost:5174` and click **Dev login (admin)**. Prod Telegram stays the only polling owner; use `/web` on prod for production dashboard links.
+
+**Warnings:**
+
+- Never set `CONDOR_WEB_ONLY=1` on prod.
+- Both instances can share Hummingbot API at `localhost:8000`; avoid starting live trading agents on dev unless intentional.
+
 **Still requires a full restart:**
 
 - Changes to `main.py` boot logic

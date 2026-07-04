@@ -5,6 +5,7 @@ Manages servers, users, permissions, and settings in a single config.yml file.
 
 import asyncio
 import logging
+import os
 import secrets
 import time
 from enum import Enum
@@ -68,10 +69,11 @@ class ConfigManager:
         self._load_audit_log()
 
     @classmethod
-    def instance(cls, config_path: str = "config.yml") -> "ConfigManager":
+    def instance(cls, config_path: str | None = None) -> "ConfigManager":
         """Get the singleton instance."""
         if cls._instance is None:
-            cls._instance = cls(config_path)
+            path = config_path or os.getenv("CONDOR_CONFIG_FILE", "config.yml")
+            cls._instance = cls(path)
         return cls._instance
 
     @classmethod

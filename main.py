@@ -494,6 +494,57 @@ async def register_bot_commands(application: Application) -> None:
             logger.warning(f"Failed to set admin-specific commands: {e}", exc_info=True)
 
 
+async def _boot_web_services() -> None:
+    """Start shared web/API services (safe without a Telegram Application)."""
+    await sync_server_permissions()
+
+    import asyncio
+
+    from utils.transcribe import DEFAULT_MODEL, _get_model
+
+    asyncio.get_event_loop().run_in_executor(None, _get_model, DEFAULT_MODEL)
+
+    from condor.server_data_service import get_server_data_service
+    from condor.server_data_service import register_default_fetches as sds_register
+
+    sds_register()
+    sds = get_server_data_service()
+    sds.start()
+    await sds.auto_subscribe_servers()
+
+
+async def _shutdown_services() -> None:
+    """Tear down agents, web sockets, API clients, and background services."""
+    from handlers.agents.session import destroy_all_sessions, stop_health_monitor
+
+    await stop_health_monitor()
+    await destroy_all_sessions()
+
+    from condor.agents.engine import get_all_engines
+
+    for engine in list(get_all_engines().values()):
+        try:
+            await engine.stop()
+        except Exception:
+            pass
+
+    from condor.web.ws_manager import get_ws_manager
+
+    get_ws_manager().stop()
+
+    from condor.server_data_service import get_server_data_service
+
+    get_server_data_service().stop()
+
+    from config_manager import get_config_manager
+
+    await get_config_manager().close_all_clients()
+
+    from mcp_servers.hummingbot_api.hummingbot_client import hummingbot_client
+
+    await hummingbot_client.close()
+
+
 async def post_init(application: Application) -> None:
     """Register bot commands after initialization."""
     from handlers import scrub_all_user_agent_llm_typing_states
@@ -505,15 +556,7 @@ async def post_init(application: Application) -> None:
             cleared,
         )
 
-    # Sync server permissions (ensures all servers have ownership entries)
-    await sync_server_permissions()
-
-    # Preload Whisper model in background so first voice message is fast
-    import asyncio
-
-    from utils.transcribe import DEFAULT_MODEL, _get_model
-
-    asyncio.get_event_loop().run_in_executor(None, _get_model, DEFAULT_MODEL)
+    await _boot_web_services()
 
     # Register command menus (public + admin overlay)
     await register_bot_commands(application)
@@ -527,15 +570,6 @@ async def post_init(application: Application) -> None:
     from condor.routine_store import get_routine_store
 
     get_routine_store().set_bot(application.bot)
-
-    # Start ServerDataService (unified server-centric cache)
-    from condor.server_data_service import get_server_data_service
-    from condor.server_data_service import register_default_fetches as sds_register
-
-    sds_register()
-    sds = get_server_data_service()
-    sds.start()
-    await sds.auto_subscribe_servers()
 
     # Start agent session health monitor
     from handlers.agents.session import start_health_monitor
@@ -803,6 +837,46 @@ async def watch_and_reload(application: Application) -> None:
             logger.error("❌ Auto-reload failed: %s", e, exc_info=True)
 
 
+async def watch_and_reload_web() -> None:
+    """Watch condor/ for changes and hot-reload the web server (web-only dev mode)."""
+    try:
+        from watchfiles import DefaultFilter, awatch
+    except ImportError:
+        logger.warning(
+            "watchfiles not installed. Auto-reload disabled. Install with: uv add watchfiles"
+        )
+        return
+
+    project_root = Path(__file__).parent
+    condor_path = project_root / "condor"
+    condor_web_path = condor_path / "web"
+    main_py = Path(__file__)
+
+    watch_paths: list[Path] = [condor_path, main_py]
+    logger.info(
+        "👀 Watching for web changes in: %s",
+        ", ".join(str(p) for p in watch_paths),
+    )
+
+    async for changes in awatch(*watch_paths, watch_filter=DefaultFilter()):
+        logger.info("📝 Detected web changes: %s", changes)
+        try:
+            _reload_assistants, _reload_handlers, needs_web_reload, extra_modules = _classify_changes(
+                changes,
+                handlers_path=project_root / "handlers",
+                routines_path=project_root / "routines",
+                assistants_path=project_root / "assistants",
+                condor_path=condor_path,
+                condor_web_path=condor_web_path,
+                main_py=main_py,
+                project_root=project_root,
+            )
+            if needs_web_reload:
+                queue_web_reload(extra_modules or None)
+        except Exception as e:
+            logger.error("❌ Web auto-reload failed: %s", e, exc_info=True)
+
+
 def get_persistence() -> SafePicklePersistence:
     """
     Build a persistence object that works both locally and in Docker.
@@ -852,6 +926,10 @@ async def send_to_all(self, message: str, parse_mode: str = "Markdown"):
 
 def main() -> None:
     """Run the bot."""
+    if os.environ.get("CONDOR_WEB_ONLY"):
+        asyncio.run(_run_web_only())
+        return
+
     # Reap any ACP/MCP subprocess trees orphaned by a prior hard kill (kill -9,
     # OOM, power loss) before we spawn our own — those bypass post_shutdown.
     try:
@@ -869,39 +947,7 @@ def main() -> None:
 
     async def post_shutdown(application: Application) -> None:
         """Clean up agent subprocesses on shutdown."""
-        from handlers.agents.session import destroy_all_sessions, stop_health_monitor
-
-        await stop_health_monitor()
-        await destroy_all_sessions()
-
-        # Stop all trading agents
-        from condor.agents.engine import get_all_engines
-
-        for engine in list(get_all_engines().values()):
-            try:
-                await engine.stop()
-            except Exception:
-                pass
-
-        # Stop WebSocket manager
-        from condor.web.ws_manager import get_ws_manager
-
-        get_ws_manager().stop()
-
-        # Stop ServerDataService
-        from condor.server_data_service import get_server_data_service
-
-        get_server_data_service().stop()
-
-        # Close cached Hummingbot API clients (ConfigManager)
-        from config_manager import get_config_manager
-
-        await get_config_manager().close_all_clients()
-
-        # Close MCP hummingbot client
-        from mcp_servers.hummingbot_api.hummingbot_client import hummingbot_client
-
-        await hummingbot_client.close()
+        await _shutdown_services()
 
     # Create the Application with persistence enabled
     application = (
@@ -1001,6 +1047,52 @@ async def _run_dual(application: Application) -> None:
     await application.shutdown()
     if application.post_shutdown:
         await application.post_shutdown(application)
+
+
+async def _run_web_only() -> None:
+    """Run FastAPI + background services without Telegram polling (dev worktree)."""
+    import signal
+
+    from condor.web.ws_manager import get_ws_manager
+
+    global _web_reload_event
+    _web_reload_event = asyncio.Event()
+
+    web_runner = WebServerRunner(host="0.0.0.0", port=WEB_PORT)
+    await web_runner.start()
+    reload_task = asyncio.create_task(web_reload_loop(web_runner))
+    watcher_task = asyncio.create_task(watch_and_reload_web())
+
+    await _boot_web_services()
+    get_ws_manager().start()
+
+    logger.info(
+        "Starting Condor (web-only dev): API on port %s — UI at %s",
+        WEB_PORT,
+        WEB_URL,
+    )
+
+    shutdown_event = asyncio.Event()
+
+    def _signal_handler():
+        shutdown_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _signal_handler)
+
+    await shutdown_event.wait()
+
+    logger.info("Shutting down...")
+    watcher_task.cancel()
+    reload_task.cancel()
+    for task in (watcher_task, reload_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    await web_runner.stop()
+    await _shutdown_services()
 
 
 if __name__ == "__main__":
