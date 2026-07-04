@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 if [[ -f .gitmodules ]] && grep -q 'path = strategies' .gitmodules 2>/dev/null; then
-  echo "Initializing strategies submodule..."
-  git submodule update --init --recursive strategies
+  echo "Initializing strategies submodule (tracking main)..."
+  git submodule update --init --remote strategies
   exit 0
 fi
 
