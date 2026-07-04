@@ -1,20 +1,29 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
   ChevronRight,
   Wrench,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AgentPnlChart, metricsToDataPoints } from "@/components/agent/AgentPnlChart";
 import { useAgentExecutors } from "@/hooks/useAgentExecutors";
 import { type AgentExecutorRow, type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
 import { type ParsedJournal, type ParsedSnapshot, parseSnapshot } from "@/lib/parse-agent";
 import { useRates } from "@/hooks/useRates";
-import { normalizeExecutorType } from "@/lib/formatters";
+import { isExecutorActive, normalizeExecutorType } from "@/lib/formatters";
 import { DetailPanel, ExecutorTable, StopConfirmDialog, type SortDir, type SortKey } from "@/pages/Executors";
 
 // ── Helper ──
+
+function mergeExecutorOverlay(restEx: ExecutorInfo, wsEx: ExecutorInfo): ExecutorInfo {
+  // WS cache is built from paginated search/SDS and often omits in-memory running
+  // executors; never downgrade a REST running row to terminated via WS overlay.
+  if (isExecutorActive(restEx.status) && !isExecutorActive(wsEx.status)) {
+    return { ...wsEx, status: restEx.status, close_type: restEx.close_type };
+  }
+  return wsEx;
+}
 
 function agentRowToExecutorInfo(row: AgentExecutorRow): ExecutorInfo {
   return {
@@ -136,6 +145,7 @@ export function SessionExecutors({
     queryKey: ["agent-session-executors", slug, sessionNum],
     queryFn: () => api.getAgentSessionExecutors(slug, sessionNum),
     refetchInterval: 10000,
+    placeholderData: keepPreviousData,
   });
 
   const restExecutors = sessionDetail?.executors ?? [];
@@ -159,7 +169,10 @@ export function SessionExecutors({
     if (wsExecutors.length === 0) return restInfos;
 
     const wsMap = new Map(wsExecutors.map((ex) => [ex.id, ex]));
-    const merged = restInfos.map((ex) => wsMap.get(ex.id) ?? ex);
+    const merged = restInfos.map((ex) => {
+      const wsEx = wsMap.get(ex.id);
+      return wsEx ? mergeExecutorOverlay(ex, wsEx) : ex;
+    });
     const restIds = new Set(restInfos.map((ex) => ex.id));
     for (const ex of wsExecutors) {
       if (!restIds.has(ex.id)) merged.push(ex);

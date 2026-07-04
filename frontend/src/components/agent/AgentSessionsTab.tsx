@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   Camera,
@@ -181,6 +181,7 @@ export function SessionsTab({
     queryFn: () => api.getAgentSessionExecutors(slug, selectedSessionNum),
     enabled: selectedSessionNum > 0,
     refetchInterval: 10000,
+    placeholderData: keepPreviousData,
   });
   const sessionPerf = sessionPerfData?.performance ?? null;
 

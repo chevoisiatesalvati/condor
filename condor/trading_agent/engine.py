@@ -27,11 +27,6 @@ from condor.acp.client import (
 )
 from condor.acp.cursor_sdk_client import CursorSdkClient, is_cursor_sdk_model
 from condor.acp.pydantic_ai_client import PydanticAIClient, is_pydantic_ai_model
-from condor.open_position_audit import (
-    config_audit_slice,
-    log_open_position_event,
-    summarize_executor_open_state,
-)
 
 from condor.trading_agent.performance import is_running_status
 
@@ -110,59 +105,6 @@ def _extract_agent_created_executor_ids(tool_calls: list[dict[str, Any]]) -> set
             if eid:
                 created.add(eid)
     return created
-
-
-async def _audit_created_executors_post_tick(
-    client: Any,
-    tool_calls: list[dict[str, Any]],
-    *,
-    agent_id: str,
-    tick_num: int,
-) -> None:
-    """Log executor open state at end-of-tick for every create from this tick."""
-    created = _extract_agent_created_executor_ids(tool_calls)
-    if not created:
-        return
-    from condor.fetchers.executors import get_executor_detail
-
-    for executor_id in sorted(created):
-        create_config: dict[str, Any] = {}
-        for tc in tool_calls:
-            inp = _parse_tool_call_payload(tc.get("input"))
-            out = _parse_tool_call_payload(tc.get("output"))
-            if not inp or str(inp.get("action") or "").lower() != "create":
-                continue
-            if _executor_id_from_tool_payload(out or {}) != executor_id:
-                continue
-            cfg = inp.get("executor_config") if isinstance(inp.get("executor_config"), dict) else {}
-            create_config = config_audit_slice(cfg)
-            break
-        try:
-            detail = await get_executor_detail(client, executor_id)
-        except Exception as exc:
-            log_open_position_event(
-                phase="tick_end_fetch_error",
-                message="post-tick get_executor failed",
-                data={
-                    "agent_id": agent_id,
-                    "tick_num": tick_num,
-                    "executor_id": executor_id,
-                    "error": str(exc),
-                    "create_config": create_config,
-                },
-            )
-            continue
-        log_open_position_event(
-            phase="tick_end",
-            message="post-tick executor state after agent create",
-            data={
-                "agent_id": agent_id,
-                "tick_num": tick_num,
-                "executor_id": executor_id,
-                "create_config": create_config,
-                **summarize_executor_open_state(detail),
-            },
-        )
 
 
 def _extract_agent_closed_executor_ids(tool_calls: list[dict[str, Any]]) -> set[str]:
@@ -843,13 +785,6 @@ class TickEngine:
                 self._last_running_executor_ids.update(created)
             if agent_closed:
                 self._last_running_executor_ids -= agent_closed
-
-            await _audit_created_executors_post_tick(
-                client,
-                tool_calls,
-                agent_id=self.agent_id,
-                tick_num=tick_num,
-            )
 
     async def _collect_stream(
         self,

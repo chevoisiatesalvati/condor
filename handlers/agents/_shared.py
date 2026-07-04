@@ -310,17 +310,6 @@ def _condor_mcp_args(
     return args
 
 
-def _open_position_audit_env() -> list[dict[str, str]]:
-    """Env vars for MCP subprocesses so open-position audit always writes to repo log."""
-    repo_root = Path(__file__).resolve().parents[2]
-    audit_path = repo_root / ".cursor" / "open-position-audit.ndjson"
-    path_str = str(audit_path)
-    return [
-        {"name": "CONDOR_OPEN_POSITION_LOG", "value": path_str},
-        {"name": "CONDOR_MCP_AUDIT_LOG", "value": path_str},
-    ]
-
-
 def build_mcp_servers_for_session(
     user_id: int, chat_id: int | str, user_data: dict | None = None,
     execution_mode: str = "loop",
@@ -385,7 +374,6 @@ def build_mcp_servers_for_session(
             "--password", server["password"],
             "--server-name", server_name,
         ],
-        "env": _open_position_audit_env(),
     }
 
     return [mcp_hummingbot, condor]
@@ -436,7 +424,6 @@ def build_mcp_servers_for_agent(
             "--password", server["password"],
             "--server-name", server_name,
         ],
-        "env": _open_position_audit_env(),
     }
 
     return [mcp_hummingbot, condor]

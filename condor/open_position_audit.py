@@ -27,7 +27,6 @@ def log_open_position_event(
     phase: str,
     message: str = "",
     data: dict[str, Any] | None = None,
-    hypothesis_id: str = "",
     run_id: str = "open-audit",
 ) -> None:
     """Append one NDJSON line. Never raises."""
@@ -38,8 +37,6 @@ def log_open_position_event(
         "data": data or {},
         "runId": run_id,
     }
-    if hypothesis_id:
-        payload["hypothesisId"] = hypothesis_id
     try:
         path = audit_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,34 +44,6 @@ def log_open_position_event(
             fh.write(json.dumps(payload, default=str, ensure_ascii=False) + "\n")
     except OSError:
         pass
-
-
-def config_audit_slice(config: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(config, dict):
-        return {}
-    tbc = config.get("triple_barrier_config")
-    tbc_out: dict[str, Any] = {}
-    if isinstance(tbc, dict):
-        for key in (
-            "open_order_type",
-            "stop_loss",
-            "take_profit",
-            "stop_loss_order_type",
-            "take_profit_order_type",
-        ):
-            if key in tbc:
-                tbc_out[key] = tbc[key]
-    out: dict[str, Any] = {
-        "connector_name": config.get("connector_name"),
-        "trading_pair": config.get("trading_pair"),
-        "side": config.get("side"),
-        "leverage": config.get("leverage"),
-        "amount": config.get("amount"),
-        "entry_price": config.get("entry_price"),
-    }
-    if tbc_out:
-        out["triple_barrier_config"] = tbc_out
-    return out
 
 
 def summarize_executor_open_state(detail: Any) -> dict[str, Any]:

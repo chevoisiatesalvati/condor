@@ -175,37 +175,54 @@ async def fetch_agent_performance_batch(
     PAGE_SIZE = 50
     MAX_PAGES = 200  # safety cap → 10,000 executors per agent
 
-    async def _fetch_rows(aid: str) -> list[dict]:
+    async def _fetch_rows_once(aid: str) -> list[dict]:
         rows: list[dict] = []
         cursor: str | None = None
-        try:
-            for _ in range(MAX_PAGES):
-                kwargs: dict[str, Any] = {
-                    "controller_ids": [aid],
-                    "limit": PAGE_SIZE,
-                }
-                if cursor:
-                    kwargs["cursor"] = cursor
-                result = await client.executors.search_executors(**kwargs)
-                page = _extract_executors_list(result)
-                for ex in page:
-                    if isinstance(ex, dict):
-                        rows.append(_executor_row(ex))
+        for _ in range(MAX_PAGES):
+            kwargs: dict[str, Any] = {
+                "controller_ids": [aid],
+                "limit": PAGE_SIZE,
+            }
+            if cursor:
+                kwargs["cursor"] = cursor
+            result = await client.executors.search_executors(**kwargs)
+            page = _extract_executors_list(result)
+            for ex in page:
+                if isinstance(ex, dict):
+                    rows.append(_executor_row(ex))
 
-                next_cursor = None
-                if isinstance(result, dict):
-                    next_cursor = result.get("next_cursor") or result.get("cursor")
-                    pagination = result.get("pagination")
-                    if not next_cursor and isinstance(pagination, dict):
-                        next_cursor = pagination.get("next_cursor") or pagination.get(
-                            "cursor"
-                        )
-                if not next_cursor or len(page) < PAGE_SIZE:
-                    break
-                cursor = next_cursor
-        except Exception as e:
-            log.warning("search_executors(%s) failed: %s", aid, e)
+            next_cursor = None
+            if isinstance(result, dict):
+                next_cursor = result.get("next_cursor") or result.get("cursor")
+                pagination = result.get("pagination")
+                if not next_cursor and isinstance(pagination, dict):
+                    next_cursor = pagination.get("next_cursor") or pagination.get(
+                        "cursor"
+                    )
+            if not next_cursor or len(page) < PAGE_SIZE:
+                break
+            cursor = next_cursor
         return rows
+
+    async def _fetch_rows(aid: str) -> list[dict]:
+        # search_executors can transiently return empty while in-memory executors
+        # are still starting; retry briefly before surfacing an empty session list.
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                rows = await _fetch_rows_once(aid)
+                if rows or attempt == 2:
+                    return rows
+            except Exception as e:
+                last_error = e
+                log.warning(
+                    "search_executors(%s) failed (attempt %d): %s", aid, attempt + 1, e
+                )
+            if attempt < 2:
+                await asyncio.sleep(0.4 * (attempt + 1))
+        if last_error:
+            log.warning("search_executors(%s) exhausted retries: %s", aid, last_error)
+        return []
 
     rows_lists = await asyncio.gather(*[_fetch_rows(aid) for aid in agent_ids])
     for aid, rows in zip(agent_ids, rows_lists):

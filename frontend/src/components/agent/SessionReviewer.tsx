@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   Camera,
@@ -132,6 +132,7 @@ export function SessionReviewer({
     queryFn: () => api.getAgentSessionExecutors(slug, selectedNum),
     enabled: !isExperiment && selectedNum > 0,
     refetchInterval: 10000,
+    placeholderData: keepPreviousData,
   });
   const sessionPerf = sessionPerfData?.performance ?? null;
 
