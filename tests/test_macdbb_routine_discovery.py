@@ -17,3 +17,14 @@ def test_assistant_routines_dir_falls_back_to_trading_agents():
     assert path.parent.name == "macdbb_scanner_aggressive_hl"
     assert "trading_agents" in str(path)
     assert path.is_dir()
+
+
+def test_backtest_routine_fields_include_group_metadata():
+    store = get_routine_store()
+    routine = next(
+        r for r in store.list_routines() if r["name"] == "macdbb_scanner_aggressive_hl_backtest"
+    )
+    assert routine.get("groups")
+    fields = routine["fields"]
+    assert fields["preset"]["group"] == "Preset & mode"
+    assert sum(1 for meta in fields.values() if meta.get("group")) > 20

@@ -46,6 +46,23 @@ def test_reports_dir_env_override(monkeypatch, tmp_path):
     assert reports_mod.CHARTS_DIR == target
 
 
+def test_static_reports_mount_uses_charts_dir(monkeypatch, tmp_path):
+    import importlib
+
+    import condor.reports as reports_mod
+
+    target = tmp_path / "reports-dev"
+    target.mkdir()
+    (target / "sample_report.html").write_text("<html><body>ok</body></html>")
+    monkeypatch.setenv("CONDOR_REPORTS_DIR", str(target))
+    importlib.reload(reports_mod)
+
+    client = TestClient(create_app())
+    response = client.get("/reports/sample_report.html")
+    assert response.status_code == 200
+    assert "ok" in response.text
+
+
 def test_main_uses_web_only_when_env_set(monkeypatch):
     monkeypatch.setenv("CONDOR_WEB_ONLY", "1")
     ran = []

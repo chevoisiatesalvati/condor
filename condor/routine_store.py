@@ -228,7 +228,7 @@ class RoutineStore:
                 "is_continuous": info.is_continuous,
                 "category": info.category,
                 "source": info.source,
-                "fields": info.get_fields(),
+                "fields": info.get_routine_field_metadata(),
                 "last_modified": info.last_modified,
                 "report_count": report_counts.get(name, 0)
                 or report_counts.get(name.split("/")[-1], 0),

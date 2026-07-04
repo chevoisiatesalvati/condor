@@ -78,10 +78,11 @@ def create_app() -> FastAPI:
     app.include_router(chat_ws.router, prefix="/api/v1")
     app.include_router(transcribe.router, prefix="/api/v1")
 
-    # ── Serve report HTML files ──
-    reports_dir = Path(__file__).resolve().parent.parent.parent / "reports"
-    reports_dir.mkdir(exist_ok=True)
-    app.mount("/reports", StaticFiles(directory=str(reports_dir)), name="reports")
+    # ── Serve report HTML files (same dir as condor.reports CHARTS_DIR) ──
+    from condor.reports import CHARTS_DIR
+
+    CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/reports", StaticFiles(directory=str(CHARTS_DIR)), name="reports")
 
     # ── Serve built frontend (production only; dev uses Vite on :5173) ──
     dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"

@@ -530,6 +530,7 @@ export interface RoutineInfo {
   category: string;
   source: string;
   fields: Record<string, RoutineFieldInfo>;
+  groups?: string[];
   /** Source-file modification time (epoch seconds), or null if unavailable. */
   last_modified: number | null;
   report_count: number;
@@ -1336,6 +1337,21 @@ export const api = {
     apiFetch<{ options: string[] }>(
       `/api/v1/routines/options/${encodeURIComponent(source)}?server=${encodeURIComponent(server)}`,
     ),
+
+  getTimelineReportRange: (server: string) =>
+    apiFetch<{ start: string | null; end: string | null }>(
+      `/api/v1/routines/options/timeline_report_range?server=${encodeURIComponent(server)}`,
+    ),
+
+  getTimelineSnapshotRange: (server: string, snapshotDir?: string) => {
+    const params = new URLSearchParams({ server });
+    if (snapshotDir) {
+      params.set("snapshot_dir", snapshotDir);
+    }
+    return apiFetch<{ start: string | null; end: string | null }>(
+      `/api/v1/routines/options/timeline_snapshot_range?${params.toString()}`,
+    );
+  },
 
   getRoutineHooks: (name: string) =>
     apiFetch<RoutineHooks>(`/api/v1/routines/${encodeURIComponent(name)}/hooks`),
