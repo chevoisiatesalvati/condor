@@ -67,6 +67,7 @@ echo ""
 echo "Installing dependencies in dev worktree..."
 (cd "$DEV_DIR" && uv sync --extra dev)
 (cd "$DEV_DIR/frontend" && npm install)
+(cd "$DEV_DIR/condor/acp/cursor_bridge" && npm install)
 
 echo ""
 echo "Setup complete."

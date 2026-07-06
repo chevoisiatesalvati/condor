@@ -2,7 +2,7 @@
 SHELL := /bin/bash
 export PATH := $(HOME)/.local/bin:$(HOME)/.cargo/bin:$(PATH)
 
-.PHONY: help setup install run dev dev-backend dev-frontend dev-local dev-local-backend dev-local-frontend test lint build-frontend setup-chrome
+.PHONY: help setup install run dev dev-backend dev-frontend dev-local dev-local-backend dev-local-frontend test lint build-frontend setup-chrome setup-cursor-bridge
 
 DEV_WEB_PORT ?= 8089
 DEV_VITE_PORT ?= 5174
@@ -38,7 +38,15 @@ install: setup
 		[ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh"; \
 		cd frontend && npm install \
 	'
+	@$(MAKE) setup-cursor-bridge
 	@$(MAKE) setup-chrome
+
+setup-cursor-bridge:
+	@bash -c ' \
+		export NVM_DIR="$$HOME/.nvm"; \
+		[ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh"; \
+		cd condor/acp/cursor_bridge && npm install \
+	'
 
 setup-chrome:
 	@echo "Setting up Chrome for chart rendering..."
