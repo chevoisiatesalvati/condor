@@ -21,7 +21,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.live_ledger import (
     sim_trades_to_legs,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
 from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index
 from routines.macdbb_scanner_aggressive_hl_replay.session_config import (
@@ -79,7 +79,7 @@ async def run_session_parity(
         print(f"session {session_num}: not loaded", file=sys.stderr)
         return 1
 
-    session_dir = TRADING_AGENTS_DIR / strategy_slug / f"sessions/session_{session_num}"
+    session_dir = strategy_sessions_dir(strategy_slug) / f"session_{session_num}"
     journal_path = session_dir / "journal.md"
 
     session_config = apply_policy_override(

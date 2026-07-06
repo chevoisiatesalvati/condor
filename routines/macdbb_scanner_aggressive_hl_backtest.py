@@ -23,7 +23,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.models import (
     write_csv,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay import presets
 from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
@@ -217,8 +217,7 @@ async def run(
 ) -> str | RoutineResult:
     config = resolve_config_with_preset(config)
     configure_replay_data_sources(config)
-    strategy_dir = TRADING_AGENTS_DIR / config.strategy_slug
-    sessions_dir = strategy_dir / "sessions"
+    sessions_dir = strategy_sessions_dir(config.strategy_slug)
 
     logger.info(
         "Dynamic replay: mode=%s data_source=%s preset=%s",

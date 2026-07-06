@@ -11,7 +11,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.replay_data import should_pref
 from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import hl_prefetch_settings_from_config, prefetch_replay_hl_prices
 from routines.macdbb_scanner_aggressive_hl_replay.live_ledger import parse_journal_live_pnl
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
 from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index
 from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
@@ -65,7 +65,7 @@ def test_hydrated_timeline_prefetch_discovers_pairs():
 
 
 def _session_dir(session_num: int):
-    return TRADING_AGENTS_DIR / STRATEGY_SLUG / f"sessions/session_{session_num}"
+    return strategy_sessions_dir(STRATEGY_SLUG) / f"session_{session_num}"
 
 
 @pytest.mark.parametrize("session_num", PARITY_SESSIONS)

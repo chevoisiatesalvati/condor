@@ -44,7 +44,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import (
     quote_volume_window,
     scanner_interval_for_tick,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR, REPORTS_DIR, REPORTS_INDEX_PATH
+from routines.macdbb_scanner_aggressive_hl_replay.paths import REPORTS_DIR, REPORTS_INDEX_PATH, strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ParsedScannerReport,
@@ -406,7 +406,7 @@ def collect_session_tick_times(
     strategy_slug: str = "macdbb_scanner_aggressive_hl",
     until: dt.datetime | None = None,
 ) -> list[dt.datetime]:
-    sessions_dir = TRADING_AGENTS_DIR / strategy_slug / "sessions"
+    sessions_dir = strategy_sessions_dir(strategy_slug)
     timestamps: list[dt.datetime] = []
     for session_num in session_nums:
         journal_path = sessions_dir / f"session_{session_num}" / "journal.md"

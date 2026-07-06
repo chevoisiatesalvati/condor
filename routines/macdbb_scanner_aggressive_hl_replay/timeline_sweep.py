@@ -31,7 +31,6 @@ from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import warm_sna
 from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
 from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     _DRIVER_TIMELINE,
     _DYNAMIC_PRESET_INFRA,

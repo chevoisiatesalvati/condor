@@ -10,7 +10,7 @@ from pathlib import Path
 
 from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import DynamicReplayPolicy
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
 from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index
 from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
@@ -47,7 +47,7 @@ def validate_sessions(
     )
     tick_maps, session_configs, selected = load_replay_sessions(config)
     reports_by_pair = build_reports_by_pair(load_reports_index())
-    sessions_dir = TRADING_AGENTS_DIR / strategy_slug / "sessions"
+    sessions_dir = strategy_sessions_dir(strategy_slug)
 
     rows: list[dict[str, str | float | int]] = []
     for session_num in selected:

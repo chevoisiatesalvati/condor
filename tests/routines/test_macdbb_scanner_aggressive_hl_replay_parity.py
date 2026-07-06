@@ -367,7 +367,9 @@ def test_parse_snapshot_barrier_closes_from_barrier_section():
         parse_journal_ticks,
     )
 
-    session_dir = Path("trading_agents/macdbb_scanner_aggressive_hl/sessions/session_58")
+    from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_data_dir
+
+    session_dir = strategy_data_dir("macdbb_scanner_aggressive_hl") / "sessions/session_58"
     snapshot_text = (session_dir / "snapshots" / "snapshot_59.md").read_text()
     events = _parse_snapshot_barrier_closes(snapshot_text)
     assert len(events) == 1

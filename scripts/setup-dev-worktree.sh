@@ -49,9 +49,18 @@ if [ -f "$PROD_MACDBB/learnings.md" ] && [ ! -e "$MACDBB_STRATEGY_DIR/learnings.
   ln -s "$PROD_MACDBB/learnings.md" "$MACDBB_STRATEGY_DIR/learnings.md"
   echo "Linked prod macdbb learnings.md into dev strategy dir"
 fi
+if [ -d "$PROD_DIR/reports" ] && [ ! -e "$DEV_DIR/reports" ]; then
+  ln -s "$PROD_DIR/reports" "$DEV_DIR/reports"
+  echo "Linked prod reports into dev reports/ (for replay/timeline tests)"
+fi
 if [ -d "$PROD_DIR/reports" ] && [ ! -e "$DEV_DIR/reports-dev" ]; then
   ln -s "$PROD_DIR/reports" "$DEV_DIR/reports-dev"
-  echo "Linked prod reports into dev reports-dev (for preset/timeline resolution)"
+  echo "Linked prod reports into dev reports-dev (for make dev-local)"
+fi
+if [ -d "$PROD_DIR/data/replay_snapshots_binance_1y" ] && [ ! -e "$DEV_DIR/data/replay_snapshots_binance_1y" ]; then
+  mkdir -p "$DEV_DIR/data"
+  ln -s "$PROD_DIR/data/replay_snapshots_binance_1y" "$DEV_DIR/data/replay_snapshots_binance_1y"
+  echo "Linked prod replay snapshots into dev data/"
 fi
 
 echo ""

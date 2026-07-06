@@ -18,7 +18,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import (
     EntryPolicyResult,
     resolve_fixed_entry_policy,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.replay_data import is_report_driven_data_source
 from routines.macdbb_scanner_aggressive_hl_replay.reports import ReportMeta, ScannerReportMeta, load_scanner_reports_index
 from routines.macdbb_scanner_aggressive_hl_replay.session_builder import (
@@ -673,7 +673,7 @@ def simulate_strategy_session(
     report_driven_params: dict[str, Any] | None = None
     scanner_reports: list[ScannerReportMeta] | None = None
     if is_report_driven_data_source(config.data_source):
-        session_dir = TRADING_AGENTS_DIR / config.strategy_slug / f"sessions/session_{session_num}"
+        session_dir = strategy_sessions_dir(config.strategy_slug) / f"session_{session_num}"
         if session_dir.is_dir():
             _, report_driven_params = replay_config_from_session(
                 session_dir,

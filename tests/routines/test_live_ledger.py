@@ -10,9 +10,10 @@ from routines.macdbb_scanner_aggressive_hl_replay.live_ledger import (
     parse_journal_live_pnl,
 )
 
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_data_dir
+
 SESSION_60 = (
-    Path(__file__).resolve().parents[2]
-    / "trading_agents/macdbb_scanner_aggressive_hl/sessions/session_60"
+    strategy_data_dir("macdbb_scanner_aggressive_hl") / "sessions/session_60"
 )
 
 
@@ -48,8 +49,7 @@ def test_compare_legs_matches_by_entry_tick_not_index_order():
 
 
 SESSION_58 = (
-    Path(__file__).resolve().parents[2]
-    / "trading_agents/macdbb_scanner_aggressive_hl/sessions/session_58"
+    strategy_data_dir("macdbb_scanner_aggressive_hl") / "sessions/session_58"
 )
 
 

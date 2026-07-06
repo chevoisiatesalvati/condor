@@ -30,7 +30,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.models import (
     StrategyReplayConfig,
     parse_session_selector,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     DYNAMIC_PRESET_OVERRIDES,
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
@@ -1206,8 +1206,7 @@ async def _load_sessions(
     dict[str, list[dict[str, float]]],
     list[int],
 ]:
-    strategy_dir = TRADING_AGENTS_DIR / config.strategy_slug
-    sessions_dir = strategy_dir / "sessions"
+    sessions_dir = strategy_sessions_dir(config.strategy_slug)
     selected_sessions = parse_session_selector(config.session_nums, sessions_dir)
 
     if is_report_driven_data_source(config.data_source):
