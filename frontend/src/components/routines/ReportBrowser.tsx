@@ -159,8 +159,18 @@ export function ReportBrowser({
   useEffect(() => {
     if (!activeRoutine) return;
     setConfigValues(buildConfigValues(activeRoutine));
-    setShowConfigPanel(false);
+    setShowNotifyPanel(false);
   }, [activeSource, activeRoutine]);
+
+  const reportsReady = !loadingReports && !!activeSource;
+  const hasNoReports = reports.length === 0;
+
+  // Use the same scrollable config layout as the Config tab when a routine has no reports yet.
+  useEffect(() => {
+    if (!activeRoutine || !reportsReady) return;
+    const hasFields = Object.keys(activeRoutine.fields).length > 0;
+    setShowConfigPanel(hasNoReports && hasFields);
+  }, [activeSource, reportsReady, hasNoReports, activeRoutine]);
 
   // Track running instance to poll for completion
   const [pollingInstanceId, setPollingInstanceId] = useState<string | null>(null);
@@ -944,31 +954,7 @@ export function ReportBrowser({
                   <p className="mt-1 text-xs text-[var(--color-text-muted)]">
                     {activeRoutine?.description ?? "Run this routine to generate your first report."}
                   </p>
-                  {activeRoutine && Object.keys(activeRoutine.fields).length > 0 && (
-                    <div className="mt-4 w-full max-w-md rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-                      <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)]">
-                        Configuration
-                      </h3>
-                      <RoutineConfigFormShell
-                        fields={activeRoutine.fields}
-                        groups={activeRoutine.groups}
-                        values={configValues}
-                        onChange={(key, value) => {
-                          setConfigValues((prev) => {
-                            const next = updateConfigValues(
-                              prev,
-                              key,
-                              value,
-                              activeRoutine.preset_overrides,
-                            );
-                            saveConfig(activeSource, next);
-                            return next;
-                          });
-                        }}
-                      />
-                    </div>
-                  )}
-                  {activeRoutine && server && (
+                  {activeRoutine && server && !showConfigPanel && (
                     <button
                       onClick={() => runMutation.mutate()}
                       disabled={runMutation.isPending}
