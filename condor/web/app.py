@@ -28,6 +28,7 @@ from condor.web.routes import (
     transcribe,
     ws,
 )
+from utils.config import is_dev_mode
 
 
 def _build_cors_origins() -> list[str]:
@@ -86,7 +87,7 @@ def create_app() -> FastAPI:
 
     # ── Serve built frontend (production only; dev uses Vite on :5173) ──
     dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-    if dist.is_dir() and not os.environ.get("CONDOR_DEV"):
+    if dist.is_dir() and not is_dev_mode():
         index_html = dist / "index.html"
         dist_root = dist.resolve()
         app.mount(

@@ -406,7 +406,7 @@ make run         # Production: build UI + serve on http://localhost:8088
 |--|-----------|-----------|
 | Frontend | Vite HMR at `http://localhost:5173` | Built static files at `http://localhost:8088` |
 | Backend restart | Only for `main.py` / dependency changes | Full restart each time |
-| Handler/routine edits | Auto-reload (Telegram handlers) | Auto-reload (Telegram handlers) |
+| Handler/routine edits | Auto-reload (Telegram handlers) | Manual restart |
 | Web API edits (`condor/web/`) | Auto-reload uvicorn task | Manual restart |
 | Telegram `/web` link | `http://localhost:5173` | `http://localhost:8088` |
 

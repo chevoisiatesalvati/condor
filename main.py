@@ -20,7 +20,7 @@ from telegram.ext import (
 from condor.persistence import SafePicklePersistence
 from handlers import clear_all_input_states
 from utils.auth import restricted
-from utils.config import TELEGRAM_TOKEN, WEB_PORT, WEB_URL
+from utils.config import TELEGRAM_TOKEN, WEB_PORT, WEB_URL, is_dev_mode
 
 # Enable logging
 logging.basicConfig(
@@ -581,8 +581,11 @@ async def post_init(application: Application) -> None:
 
     schedule_update_checks(application)
 
-    # Start file watcher
-    asyncio.create_task(watch_and_reload(application))
+    # Start file watcher (dev only)
+    if is_dev_mode():
+        asyncio.create_task(watch_and_reload(application))
+    else:
+        logger.info("Auto-reload disabled (production mode)")
 
 
 # ── Web server hot-reload (dev) ──
@@ -809,7 +812,12 @@ async def watch_and_reload(application: Application) -> None:
     async for changes in awatch(*watch_paths, watch_filter=_ReloadFilter()):
         logger.info("📝 Detected changes: %s", changes)
         try:
-            reload_assistants_flag, needs_handler_reload, needs_web_reload, extra_modules = _classify_changes(
+            (
+                reload_assistants_flag,
+                needs_handler_reload,
+                needs_web_reload,
+                extra_modules,
+            ) = _classify_changes(
                 changes,
                 handlers_path=handlers_path,
                 routines_path=routines_path,
@@ -983,11 +991,14 @@ async def _run_dual(application: Application) -> None:
     await application.initialize()
 
     global _web_reload_event
-    _web_reload_event = asyncio.Event()
+    reload_task: asyncio.Task | None = None
+    if is_dev_mode():
+        _web_reload_event = asyncio.Event()
 
     web_runner = WebServerRunner(host="0.0.0.0", port=WEB_PORT)
     await web_runner.start()
-    reload_task = asyncio.create_task(web_reload_loop(web_runner))
+    if is_dev_mode():
+        reload_task = asyncio.create_task(web_reload_loop(web_runner))
 
     if application.post_init:
         await application.post_init(application)
@@ -1010,14 +1021,16 @@ async def _run_dual(application: Application) -> None:
         except Exception as e:
             logger.warning(f"Failed to send startup notification to admin: {e}")
 
-    if os.environ.get("CONDOR_DEV"):
+    if is_dev_mode():
         logger.info(
             "Starting Condor (dev): Telegram bot + API on port %s — UI at %s",
             WEB_PORT,
             WEB_URL,
         )
     else:
-        logger.info("Starting Condor: Telegram bot + web dashboard on port %s", WEB_PORT)
+        logger.info(
+            "Starting Condor: Telegram bot + web dashboard on port %s", WEB_PORT
+        )
 
     # Handle shutdown signals
     shutdown_event = asyncio.Event()
@@ -1033,11 +1046,12 @@ async def _run_dual(application: Application) -> None:
     await shutdown_event.wait()
 
     logger.info("Shutting down...")
-    reload_task.cancel()
-    try:
-        await reload_task
-    except asyncio.CancelledError:
-        pass
+    if reload_task is not None:
+        reload_task.cancel()
+        try:
+            await reload_task
+        except asyncio.CancelledError:
+            pass
     await web_runner.stop()
 
     await application.updater.stop()

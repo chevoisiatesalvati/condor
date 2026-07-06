@@ -270,6 +270,7 @@ def _write_index(entries: list[dict]) -> None:
 
 def list_reports(
     source_type: str | None = None,
+    source_names: list[str] | None = None,
     tag: str | None = None,
     search: str | None = None,
     agent: str | None = None,
@@ -282,6 +283,9 @@ def list_reports(
 
     if source_type:
         entries = [e for e in entries if e.get("source_type") == source_type]
+    if source_names:
+        allowed = set(source_names)
+        entries = [e for e in entries if e.get("source_name") in allowed]
     if tag:
         entries = [e for e in entries if tag in e.get("tags", [])]
     if agent:
