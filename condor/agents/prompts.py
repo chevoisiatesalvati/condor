@@ -67,7 +67,7 @@ MEMORY (about the user, NOT operational learnings):
 
 NOTIFICATIONS:
 - Use send_notification(text="...") to message the user on Telegram.
-- Call send_notification at the END of substantive work for this tick. Default is plain text (no Telegram markup).
+- Call send_notification at the END of substantive work for this tick.
 - Be brief: ideally under ~900 characters, 5–10 short lines maximum.
 - **Position size in notifications:** report **notional USD** only. **Do NOT multiply notional × leverage.**
 - Structured layout (adapt fields to what happened):
