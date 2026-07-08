@@ -3,8 +3,7 @@
 Data is organized by strategy (a playbook owned by an Agent) and session.
 
 Upstream layout uses ``agents/{agent_slug}/strategies/{strategy_slug}/``.
-This fork also supports legacy ``trading_agents/{strategy_slug}/`` via
-``condor.agents.strategy_paths`` and the private ``strategies/`` submodule.
+Private strategy overlays still come from the ``strategies/`` submodule.
 """
 
 from __future__ import annotations

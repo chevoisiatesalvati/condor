@@ -2,7 +2,7 @@
 
 Condor is a Telegram + web trading platform built on the **Hummingbot Backend API**. It includes global analysis **routines**, autonomous **trading agents** (LLM tick loops that trade via executors), and MCP tools for market data and execution.
 
-This file is the project-level guide for AI coding agents. Cursor also loads `.cursor/rules/*.mdc` (see `python-testing.mdc` for pytest/PYTHONPATH rules). For trading-agent work, see `trading_agents/AGENTS.md`.
+This file is the project-level guide for AI coding agents. Cursor also loads `.cursor/rules/*.mdc` (see `python-testing.mdc` for pytest/PYTHONPATH rules).
 
 ---
 
@@ -13,7 +13,7 @@ This file is the project-level guide for AI coding agents. Cursor also loads `.c
 | `condor/` | Core app: web API, trading agent engine, reports, routine store |
 | `handlers/` | Telegram command handlers (`/portfolio`, `/trade`, `/routines`, `/agent`, …) |
 | `routines/` | **Global** auto-discovered routines (`*.py` at top level + packages) |
-| `trading_agents/{slug}/` | One folder per autonomous agent (strategy, sessions, agent-local routines) |
+| `agents/{slug}/` | Canonical agent tree: metadata, routines, strategies, and sessions |
 | `scripts/` | One-off CLIs (sweeps, backfills, candle prefetch, winner application) |
 | `tests/` | Pytest suite — run from repo root with `.venv/bin/pytest` |
 | `mcp_servers/` | MCP tool implementations (Hummingbot API, etc.) |
@@ -60,7 +60,7 @@ See `.claude/skills/create-routine/SKILL.md` for the full template.
 
 ### Agent-local routines
 
-- Location: `trading_agents/{slug}/routines/{name}.py`
+- Location: `agents/{slug}/routines/{name}.py`
 - Discovery name: `{slug}/{name}` (prefixed with agent slug)
 - Same `Config` + `run` contract as global routines
 
@@ -72,7 +72,7 @@ When an agent has a replay/backtest stack, name by **agent slug**:
 |------|---------|---------|
 | Backtest routine | `{slug}_backtest.py` | `macdbb_scanner_aggressive_hl_backtest` |
 | Replay library (internal) | `{slug}_replay/` | `macdbb_scanner_aggressive_hl_replay/` |
-| Shared presets (agent-owned) | `trading_agents/{slug}/presets.py` | live + backtest |
+| Shared presets (agent-owned) | `agents/{slug}/presets.py` | live + backtest |
 
 Invoke backtests:
 
@@ -86,19 +86,19 @@ Future agents should follow the same `{slug}_backtest` + `{slug}_replay` pattern
 
 ## Trading agents
 
-Each agent is a directory under `trading_agents/{slug}/`:
+Each agent is a directory under `agents/{slug}/`:
 
 ```
-trading_agents/{slug}/
-  agent.md              # YAML frontmatter + LLM system prompt / tick instructions
-  learnings.md          # Execution notes (injected each tick; agent-written)
-  learnings_archive.md  # Human-only historical observations (never injected)
-  routines/             # Deterministic helpers scoped to this agent
-  sessions/session_N/   # Live run: config.yml, journal.md, snapshots/
-  dry_runs/             # One-shot dry-run snapshots
+agents/{slug}/
+  AGENT.md                        # public agent metadata
+  presets.py                      # shared public preset logic
+  routines/                       # deterministic helpers scoped to this agent
+  strategies/{strategy_slug}/
+    strategy.md                   # public strategy stub / fallback playbook
+    sessions/session_N/           # live run: config.yml, journal.md, snapshots/
 ```
 
-- **`agent.md` frontmatter**: `name`, `description`, `agent_key`, `default_config`, `strategy_params`, …
+- **`strategy.md` / private `agent.md` frontmatter**: `name`, `description`, `agent_key`, `default_config`, `strategy_params`, …
 - **Tick engine**: `condor/trading_agent/engine.py` — providers, prompt, MCP, journal, risk
 - **Deep dive**: `condor/trading_agent/README.md`
 - **Builder workflow**: `.claude/skills/trading-agent-builder/SKILL.md` (5 phases: design → routine → strategy → dry-run → live)
@@ -128,7 +128,7 @@ Agent-local routines (`macdbb_signal_metrics`, `macdbb_entry_policy`) wrap these
 
 Key files for this agent:
 
-- Strategy: `trading_agents/macdbb_scanner_aggressive_hl/agent.md`
+- Strategy: `agents/macdbb_scanner_aggressive_hl/strategies/macdbb_scanner_aggressive_hl/strategy.md`
 - Live routines: `macdbb_signal_metrics`, `macdbb_entry_policy` (under agent `routines/`)
 - Global routines used at tick time: `hyperliquid_market_scanner`, `macd_bb_analysis`
 - Replay library: `routines/macdbb_scanner_aggressive_hl_replay/`

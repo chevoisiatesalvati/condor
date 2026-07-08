@@ -34,7 +34,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
     run_timeline_dynamic_sweep,
     timeline_range_from_reports,
 )
-from trading_agents.macdbb_scanner_aggressive_hl.presets import (
+from agents.macdbb_scanner_aggressive_hl.presets import (
     DEFAULT_AGENT_STRATEGY_PRESET,
     DYNAMIC_PRESET_OVERRIDES,
 )

@@ -1170,7 +1170,7 @@ async def get_strategy_preset_params(
         strategy.slug, preset, frequency_sec=frequency_sec
     ) or {}
     from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
-    from trading_agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
+    from agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
 
     replay_cfg = resolve_config_with_preset(
         DynamicStrategyReplayConfig(preset=preset, frequency_sec=frequency_sec)

@@ -12,7 +12,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.presets import DYNAMIC_PRESET_
 def _load_routine_module():
     path = (
         Path(__file__).resolve().parents[2]
-        / "trading_agents/macdbb_scanner_aggressive_hl/routines/macdbb_entry_policy.py"
+        / "agents/macdbb_scanner_aggressive_hl/routines/macdbb_entry_policy.py"
     )
     spec = importlib.util.spec_from_file_location("macdbb_entry_policy_test", path)
     assert spec and spec.loader

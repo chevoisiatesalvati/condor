@@ -205,7 +205,7 @@ class ReplayConfigBase(BaseModel):
     @field_validator("preset")
     @classmethod
     def _validate_preset(cls, value: str) -> str:
-        from trading_agents.macdbb_scanner_aggressive_hl.presets import known_preset_names
+        from agents.macdbb_scanner_aggressive_hl.presets import known_preset_names
 
         allowed = known_preset_names()
         if value not in allowed:

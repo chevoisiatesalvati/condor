@@ -8,7 +8,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 AGENT_PRESET_LOADERS: dict[str, str] = {
-    "macdbb_scanner_aggressive_hl": "trading_agents.macdbb_scanner_aggressive_hl.presets",
+    "macdbb_scanner_aggressive_hl": "agents.macdbb_scanner_aggressive_hl.presets",
 }
 
 
@@ -83,7 +83,7 @@ def apply_agent_strategy_preset(
     result["strategy_params"] = merged_params
 
     from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
-    from trading_agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
+    from agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
 
     try:
         replay_cfg = resolve_config_with_preset(

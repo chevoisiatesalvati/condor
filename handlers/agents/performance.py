@@ -23,9 +23,6 @@ from utils.auth import restricted
 
 log = logging.getLogger(__name__)
 
-_TRADING_AGENTS_ROOT = Path(__file__).resolve().parent.parent.parent / "trading_agents"
-
-
 def _resolve_strategy(store: StrategyStore, slug: str) -> Strategy | None:
     """Resolve a strategy by flat slug (macdbb-style agent == strategy slug)."""
     strategy = store.get(slug, slug)
@@ -40,9 +37,6 @@ def _resolve_strategy(store: StrategyStore, slug: str) -> Strategy | None:
 def _strategy_dir(strategy: Strategy | None, slug: str) -> Path | None:
     if strategy is not None:
         return strategy.data_dir
-    legacy = _TRADING_AGENTS_ROOT / slug
-    if legacy.is_dir():
-        return legacy
     return None
 
 

@@ -48,7 +48,7 @@ def resolve_routine_by_name(routine_name: str, extra_routines_dir: str | None = 
         slug, rname = routine_name.split("/", 1)
         agents_dir = (
             Path(__file__).resolve().parent.parent
-            / "trading_agents"
+            / "agents"
             / slug
             / "routines"
         )

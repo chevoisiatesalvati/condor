@@ -8,7 +8,7 @@ from condor.trading_agent.agent_presets import (
 
 
 def test_macdbb_agent_preset_catalog():
-    from trading_agents.macdbb_scanner_aggressive_hl.presets import private_presets_available
+    from agents.macdbb_scanner_aggressive_hl.presets import private_presets_available
 
     catalog = get_agent_strategy_preset_catalog("macdbb_scanner_aggressive_hl")
     assert catalog is not None

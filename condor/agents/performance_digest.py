@@ -15,7 +15,7 @@ from typing import Any
 
 from condor.trading_agent.performance import fetch_agent_performance_batch
 
-_DATA_ROOT = Path(__file__).resolve().parent.parent.parent / "trading_agents"
+_DATA_ROOT = Path(__file__).resolve().parent.parent.parent / "agents"
 
 WINDOWS: dict[str, timedelta] = {
     "1h": timedelta(hours=1),
@@ -138,7 +138,7 @@ def enumerate_strategy_agent_ids(
     slug: str, agent_dir: Path | None = None, sessions_only: bool = True
 ) -> list[tuple[str, int, str]]:
     """Return (agent_id, session_num, kind) for every session on disk."""
-    root = agent_dir or (_DATA_ROOT / slug)
+    root = agent_dir or (_DATA_ROOT / slug / "strategies" / slug)
     ids: list[tuple[str, int, str]] = []
     for dirname in ("sessions", "trading_sessions"):
         d = root / dirname

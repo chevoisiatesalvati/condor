@@ -293,7 +293,7 @@ export function AgentRoutinesTab({ slug }: AgentRoutinesTabProps) {
             <p className="text-xs text-[var(--color-text-muted)]">
               No routines yet — create one in{" "}
               <code className="rounded bg-[var(--color-surface-hover)] px-1 py-0.5">
-                trading_agents/{slug}/routines/
+                agents/{slug}/routines/
               </code>
             </p>
           </div>

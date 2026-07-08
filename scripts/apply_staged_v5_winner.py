@@ -171,7 +171,10 @@ async def _main() -> int:
     preset_overrides = build_staged_winner_preset_overrides(config)
     if not args.skip_agent:
         params = apply_winner_to_agent(config, frequency_sec=args.frequency_sec)
-        print(f"\nUpdated trading_agents/macdbb_scanner_aggressive_hl/agent.md ({len(params)} params)")
+        print(
+            "\nUpdated agents/macdbb_scanner_aggressive_hl/strategies/"
+            f"macdbb_scanner_aggressive_hl/strategy.md ({len(params)} params)"
+        )
 
     if not args.skip_preset:
         apply_winner_to_presets(preset_overrides, preset_name=args.preset_name)

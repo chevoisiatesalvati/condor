@@ -1,5 +1,5 @@
 # Copy to strategies/{slug}/presets.yaml (private repo) or
-# trading_agents/{slug}/presets.private.yaml (gitignored local override).
+# agents/{slug}/presets.private.yaml (gitignored local override).
 labels:
   my_timeline_winner: My timeline winner
 agent_strategy_preset_names:

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-TRADING_AGENTS_DIR = REPO_ROOT / "trading_agents"
+AGENTS_DIR = REPO_ROOT / "agents"
 
 
 def strategies_dir() -> Path:
@@ -18,7 +18,7 @@ def strategies_dir() -> Path:
 
 def agent_dir(slug: str) -> Path:
     """Public agent folder (routines, sessions, dry runs)."""
-    return TRADING_AGENTS_DIR / slug
+    return AGENTS_DIR / slug
 
 
 def private_strategy_dir(slug: str) -> Path:
@@ -28,13 +28,8 @@ def private_strategy_dir(slug: str) -> Path:
 
 def resolve_agent_md(slug: str) -> Path | None:
     """Return the active private agent.md path, or None if missing."""
-    for candidate in (
-        private_strategy_dir(slug) / "agent.md",
-        agent_dir(slug) / "agent.md",
-    ):
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = private_strategy_dir(slug) / "agent.md"
+    return candidate if candidate.is_file() else None
 
 
 def resolve_agent_md_for_read(slug: str) -> Path | None:
@@ -42,10 +37,8 @@ def resolve_agent_md_for_read(slug: str) -> Path | None:
     active = resolve_agent_md(slug)
     if active is not None:
         return active
-    example = agent_dir(slug) / "agent.example.md"
-    if example.is_file():
-        return example
-    return None
+    public_strategy = agent_dir(slug) / "strategies" / slug / "strategy.md"
+    return public_strategy if public_strategy.is_file() else None
 
 
 def agent_md_write_path(slug: str) -> Path:
@@ -53,7 +46,7 @@ def agent_md_write_path(slug: str) -> Path:
     private_dir = private_strategy_dir(slug)
     if private_dir.exists() or strategies_dir().is_dir():
         return private_dir / "agent.md"
-    return agent_dir(slug) / "agent.md"
+    return agent_dir(slug) / "strategies" / slug / "strategy.md"
 
 
 def resolve_presets_yaml(slug: str) -> Path | None:
@@ -68,10 +61,10 @@ def resolve_presets_yaml(slug: str) -> Path | None:
 
 
 def iter_strategy_slugs() -> list[str]:
-    """Union of slug directories under trading_agents/ and strategies/."""
+    """Union of slug directories under agents/ and strategies/."""
     slugs: set[str] = set()
-    if TRADING_AGENTS_DIR.is_dir():
-        for path in TRADING_AGENTS_DIR.iterdir():
+    if AGENTS_DIR.is_dir():
+        for path in AGENTS_DIR.iterdir():
             if path.is_dir() and not path.name.startswith("_") and path.name != "strategies":
                 slugs.add(path.name)
     strategies_root = strategies_dir()
@@ -97,11 +90,5 @@ def _dir_has_sessions(path: Path) -> bool:
 
 
 def resolve_strategy_data_dir(agent_slug: str, sslug: str) -> Path:
-    """Session/journal root: prefer agents/ tree, fall back to trading_agents/{sslug}."""
-    upstream = REPO_ROOT / "agents" / agent_slug / "strategies" / sslug
-    legacy = TRADING_AGENTS_DIR / sslug
-    if _dir_has_sessions(upstream):
-        return upstream
-    if _dir_has_sessions(legacy):
-        return legacy
-    return upstream
+    """Session/journal root under the canonical agents/ tree."""
+    return REPO_ROOT / "agents" / agent_slug / "strategies" / sslug

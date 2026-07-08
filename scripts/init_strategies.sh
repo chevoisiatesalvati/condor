@@ -29,6 +29,6 @@ echo "  git submodule add git@github.com:YOUR_ORG/condor-strategies.git strategi
 echo ""
 echo "For local-only development (placeholder agent only — not production tuning):"
 echo "  mkdir -p strategies/macdbb_scanner_aggressive_hl"
-echo "  cp trading_agents/macdbb_scanner_aggressive_hl/presets.private.example.yaml strategies/macdbb_scanner_aggressive_hl/presets.yaml"
+echo "  cp agents/macdbb_scanner_aggressive_hl/presets.private.example.yaml strategies/macdbb_scanner_aggressive_hl/presets.yaml"
 echo ""
 echo "For production: add agent.md and presets.yaml under strategies/{slug}/ in the private repo."

@@ -40,7 +40,7 @@ fi
 
 # Optional: share prod macdbb session history with dev (read-only symlink).
 MACDBB_STRATEGY_DIR="$DEV_DIR/agents/macdbb_scanner_aggressive_hl/strategies/macdbb_scanner_aggressive_hl"
-PROD_MACDBB="$PROD_DIR/trading_agents/macdbb_scanner_aggressive_hl"
+PROD_MACDBB="$PROD_DIR/agents/macdbb_scanner_aggressive_hl/strategies/macdbb_scanner_aggressive_hl"
 if [ -d "$PROD_MACDBB/sessions" ] && [ ! -e "$MACDBB_STRATEGY_DIR/sessions" ]; then
   ln -s "$PROD_MACDBB/sessions" "$MACDBB_STRATEGY_DIR/sessions"
   echo "Linked prod macdbb sessions into dev strategy dir"

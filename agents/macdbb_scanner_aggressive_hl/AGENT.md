@@ -20,4 +20,4 @@ Autonomous trading agent for Hyperliquid perpetuals. Each tick scans the market,
 evaluates MACD/Bollinger Band signals, and manages positions via executors only.
 
 Operational playbook and tuned parameters live in the private `strategies/` submodule;
-the public repo ships the replay machinery and agent-local routines under `trading_agents/`.
+the public repo ships the replay machinery and agent-local routines under `agents/`.

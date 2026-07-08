@@ -31,13 +31,7 @@ def assistant_routines_dir(agent_slug: str | None) -> Path:
     - trading agent / domain expert (slug) → ``agents/<slug>/routines`` (isolated)
     """
     if agent_slug:
-        primary = _PROJECT_ROOT / "agents" / agent_slug / "routines"
-        legacy = _PROJECT_ROOT / "trading_agents" / agent_slug / "routines"
-        if primary.is_dir():
-            return primary
-        if legacy.is_dir():
-            return legacy
-        return primary
+        return _PROJECT_ROOT / "agents" / agent_slug / "routines"
     return _PROJECT_ROOT / "routines"
 
 

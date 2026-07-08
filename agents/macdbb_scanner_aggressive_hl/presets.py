@@ -5,7 +5,7 @@ from typing import Any, TypeVar
 import yaml
 from pydantic import BaseModel
 
-from condor.trading_agent.strategy_paths import resolve_presets_yaml
+from condor.agents.strategy_paths import resolve_presets_yaml
 
 PresetValue = float | int | bool | str | None
 
@@ -84,15 +84,10 @@ def current_winner_preset_name() -> str:
     )
 
 
-# Backward-compatible module attributes (prefer the functions above in new code).
 PRESET_LABELS = preset_labels()
 AGENT_STRATEGY_PRESET_NAMES = agent_strategy_preset_names()
 DEFAULT_AGENT_STRATEGY_PRESET = default_agent_strategy_preset()
 
-# Standard capital-at-risk reference for cap-norm PnL (sweep + routine).
-# HL_SWEEP_BEST fixed replay, sessions 37-58: avg $ notional per trade.
-# cap_norm_pnl = raw_pnl × (FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL / avg_notional).
-# Re-measure after the session window or HL_SWEEP_BEST baseline changes.
 FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL = 266.45
 
 
@@ -109,7 +104,6 @@ def capital_normalized_pnl(
 
 PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {}
 
-# Shared infra keys merged into dynamic presets (not mode-specific).
 _DYNAMIC_PRESET_INFRA: dict[str, PresetValue] = {
     "formal_notional_quote": 500.0,
     "price_source": "auto",
@@ -127,7 +121,6 @@ _DRIVER_SESSION: dict[str, PresetValue] = {
     "write_csv": False,
 }
 
-# Default parquet snapshots for timeline mega best preset (UI + routine).
 DEFAULT_TIMELINE_SNAPSHOT_DIR = "data/replay_snapshots_binance_1y"
 
 _DRIVER_TIMELINE: dict[str, PresetValue] = {
@@ -267,7 +260,6 @@ def _merge_preset_layers(*layers: dict[str, PresetValue]) -> dict[str, PresetVal
     return merged
 
 
-# Dynamic replay presets: public session parity + private yaml winners.
 PUBLIC_DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
     "hl_dynamic_session_parity": _merge_preset_layers(
         _DYNAMIC_PRESET_INFRA,
@@ -316,9 +308,9 @@ def backtest_preset_names() -> frozenset[str]:
         return frozenset({"custom", *private.keys()})
     return frozenset({"custom", *PUBLIC_DYNAMIC_PRESET_OVERRIDES.keys()})
 
+
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
 
-# Form values that should win over named preset defaults when explicitly set.
 USER_WINS_AFTER_PRESET_KEYS = frozenset(
     {
         "snapshot_dir",
@@ -395,14 +387,7 @@ def resolve_timeline_range(config: ConfigT) -> ConfigT:
 
 
 def resolve_config_with_preset(config: ConfigT) -> ConfigT:
-    """Apply a named preset profile on top of the submitted config.
-
-    When preset is not ``custom``, keys defined in PRESET_OVERRIDES always win
-    over form/default values (the UI sends every field, so exclude_unset would
-    not help). Fields outside the preset dict — e.g. session_nums, sl_pct —
-    still come from the form. Infra paths/ranges in USER_WINS_AFTER_PRESET_KEYS
-    are preserved when the user explicitly sets them.
-    """
+    """Apply a named preset profile on top of the submitted config."""
     preset = getattr(config, "preset", "custom")
     if preset == "custom":
         return resolve_timeline_range(config)

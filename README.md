@@ -491,7 +491,7 @@ Tuned agent configs and sweep presets are **not** committed to the public repo. 
 ./scripts/init_strategies.sh
 ```
 
-See [`strategies/README.md`](strategies/README.md) and [`trading_agents/AGENTS.md`](trading_agents/AGENTS.md) for layout and workflow.
+See [`strategies/README.md`](strategies/README.md) and [`AGENTS.md`](AGENTS.md) for layout and workflow.
 
 ## Support
 

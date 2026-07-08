@@ -112,7 +112,7 @@ class Strategy:
 
     @property
     def data_dir(self) -> Path:
-        """Operational dir for sessions/journal (may fall back to trading_agents/)."""
+        """Operational dir for sessions/journal under the canonical agents/ tree."""
         from condor.agents.strategy_paths import resolve_strategy_data_dir
 
         return resolve_strategy_data_dir(self.agent_slug, self.slug)

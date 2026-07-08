@@ -310,7 +310,7 @@ def test_entry_sltp_grid_version_and_space():
 
 
 def test_iter_entry_sltp_sweep_configs():
-    from trading_agents.macdbb_scanner_aggressive_hl.presets import private_presets_available
+    from agents.macdbb_scanner_aggressive_hl.presets import private_presets_available
 
     if not private_presets_available():
         pytest.skip("private presets.yaml not available")

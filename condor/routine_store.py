@@ -178,27 +178,6 @@ class RoutineStore:
                     prefixed_info.name = f"{slug}/{rname}"
                     all_routines[prefixed_info.name] = prefixed_info
 
-        # Fallback: trading_agents/*/routines/ (fork legacy layout)
-        trading_agents_dir = Path(__file__).resolve().parent.parent / "trading_agents"
-        if trading_agents_dir.exists():
-            for agent_dir in sorted(trading_agents_dir.iterdir()):
-                if not agent_dir.is_dir() or agent_dir.name.startswith("_"):
-                    continue
-                routines_path = agent_dir / "routines"
-                if not routines_path.is_dir():
-                    continue
-                slug = agent_dir.name
-                agent_routines = discover_routines_from_path(
-                    routines_path, agent_slug=slug
-                )
-                for rname, rinfo in agent_routines.items():
-                    prefixed = f"{slug}/{rname}"
-                    if prefixed in all_routines:
-                        continue
-                    prefixed_info = copy.copy(rinfo)
-                    prefixed_info.name = prefixed
-                    all_routines[prefixed] = prefixed_info
-
         return all_routines
 
     def _get_report_counts(self) -> dict[str, int]:

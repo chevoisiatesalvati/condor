@@ -1,4 +1,4 @@
-"""Backtest simulator for trading_agents/macdbb_scanner_aggressive_hl (dynamic sizing + barriers)."""
+"""Backtest simulator for agents/macdbb_scanner_aggressive_hl (dynamic sizing + barriers)."""
 
 from __future__ import annotations
 
