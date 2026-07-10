@@ -80,19 +80,14 @@ function TimelineDateRangePicker({
     applyRange(snapshotRange?.start ?? null, snapshotRange?.end ?? null);
   };
 
-  const applyLastDays = (days: number, endIso?: string | null) => {
-    const anchorEnd = endIso
-      ?? (usesSnapshots ? snapshotRange?.end : reportRange?.end);
-    const range = lastDaysRangeIso(days, anchorEnd);
+  const applyLastDays = (days: number) => {
+    const range = lastDaysRangeIso(days);
     onChange("range_start_utc", range.start);
     onChange("range_end_utc", range.end);
   };
 
   const applyLastYears = (years: number) => {
-    const anchorEnd = usesSnapshots
-      ? snapshotRange?.end
-      : reportRange?.end;
-    applyLastDays(years * 365, anchorEnd);
+    applyLastDays(years * 365);
   };
 
   return (
