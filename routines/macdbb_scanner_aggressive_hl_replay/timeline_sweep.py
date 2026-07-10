@@ -26,6 +26,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     resolve_sweep_config_iterator,
     resolve_sweep_workers,
     run_sweep_config_batch,
+    sweep_base_config,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import warm_snapshot_caches
 from routines.macdbb_scanner_aggressive_hl_replay.models import (
@@ -185,6 +186,7 @@ async def run_timeline_dynamic_sweep(
     parent_overrides: dict[str, Any] | None = None,
     config_items: list[tuple[str, dict[str, Any]]] | None = None,
     sweep_grid: str = "mega_v5",
+    sample_mode: str = "random",
     workers: int = 1,
     worker_ram_gb: float = 2.0,
     allow_non_fork: bool = False,
@@ -202,7 +204,11 @@ async def run_timeline_dynamic_sweep(
     load_config = DynamicStrategyReplayConfig(
         **finalize_sweep_config(
             _merge(
-                _dynamic_sweep_base(dynamic_mode, parent_overrides=parent_overrides),
+                sweep_base_config(
+                    sweep_grid,
+                    dynamic_mode,
+                    parent_overrides=parent_overrides,
+                ),
                 **timeline_fields,
             ),
             sweep_grid=sweep_grid,
@@ -227,7 +233,11 @@ async def run_timeline_dynamic_sweep(
 
     stem = (
         output_stem
-        or f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline"
+        or (
+            f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_entry_sltp_timeline"
+            if sweep_grid in ("entry_sltp", "entry_sltp_v6")
+            else f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline"
+        )
     )
     baseline = f"dyn_{dynamic_mode}_timeline_baseline_winner"
     benchmark_avg_notional = FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
@@ -248,6 +258,7 @@ async def run_timeline_dynamic_sweep(
                 dynamic_mode,
                 min_configs=min_configs,
                 seed=seed,
+                sample_mode=sample_mode,
                 parent_overrides=parent_overrides,
             )
         )

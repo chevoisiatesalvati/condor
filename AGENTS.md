@@ -139,6 +139,8 @@ Replay modes (`DynamicStrategyReplayConfig.replay_mode`):
 - `session_parity` — replay journal tick timestamps against live session data
 - `timeline_backtest` — synthetic UTC range, no sessions/journal (parameter sweeps)
 
+**Snapshot data** — timeline mode with `data_source=snapshots` reads parquet under `data/replay_snapshots_*`. Build or extend with `scripts/build_replay_snapshots.py` (see root `README.md` → *Replay snapshots*). Backtests can auto-update via `auto_update_snapshots`; sweeps assume snapshots are already current.
+
 ---
 
 ## Code conventions

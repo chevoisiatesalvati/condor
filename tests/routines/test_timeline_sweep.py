@@ -42,7 +42,15 @@ async def test_run_timeline_dynamic_sweep_writes_periodic_checkpoint_csv(
     ]
     pnls = [50.0, 300.0, 150.0, 10.0]
 
-    def fake_iter(sweep_grid, mode, *, min_configs=None, seed=42, parent_overrides=None):
+    def fake_iter(
+        sweep_grid,
+        mode,
+        *,
+        min_configs=None,
+        seed=42,
+        sample_mode="random",
+        parent_overrides=None,
+    ):
         return configs
 
     def fake_run(name, *args, **kwargs):

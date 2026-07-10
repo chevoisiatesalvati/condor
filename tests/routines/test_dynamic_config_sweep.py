@@ -9,7 +9,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     ENTRY_SLTP_SWEEP_FIXED_OVERRIDES,
     ENTRY_SLTP_SWEEP_GRID,
     ENTRY_SLTP_SWEEP_MIN_CONFIGS,
-    ENTRY_SLTP_SWEEP_VERSION,
+    ENTRY_SLTP_SWEEP_STATIC_DEFAULTS,
     LIVE_AGENT_DEFAULT_OVERRIDES,
     MEGA_GRID_FIXED_OVERRIDES,
     MEGA_GRID_VERSION,
@@ -22,6 +22,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     _dynamic_grid_for_mode,
     _dynamic_sweep_base,
     _entry_sltp_space_size,
+    _entry_sltp_sweep_base,
     default_min_configs_for_mode,
     default_min_configs_for_refine_phase,
     default_min_configs_for_sweep_grid,
@@ -299,51 +300,55 @@ def test_iter_refine_sweep_configs_yields_anchor_and_samples():
         )
 
 
-def test_entry_sltp_grid_version_and_space():
-    assert ENTRY_SLTP_SWEEP_VERSION == "v6_entry_sltp"
-    assert "entry_sltp_v6" in SWEEP_GRID_CHOICES
+def test_entry_sltp_grid_space():
+    assert "entry_sltp" in SWEEP_GRID_CHOICES
     assert len(ENTRY_SLTP_SWEEP_GRID) == 17
     assert "tp_pct" not in ENTRY_SLTP_SWEEP_GRID
     assert "max_open_executors" not in ENTRY_SLTP_SWEEP_GRID
-    assert sweep_space_size("entry_sltp_v6", "both_on") == _entry_sltp_space_size()
-    assert default_min_configs_for_sweep_grid("entry_sltp_v6", "both_on") == 600
+    assert sweep_space_size("entry_sltp", "both_on") == _entry_sltp_space_size()
+    assert default_min_configs_for_sweep_grid("entry_sltp", "both_on") == ENTRY_SLTP_SWEEP_MIN_CONFIGS
+    assert ENTRY_SLTP_SWEEP_MIN_CONFIGS == 20_000
+
+
+def test_entry_sltp_neutral_baseline():
+    base = _entry_sltp_sweep_base("both_on")
+    assert base["price_source"] == "reports"
+    assert base["enable_dynamic_sizing"] is True
+    assert base["enable_dynamic_barriers"] is True
+    assert base["sl_pct"] == ENTRY_SLTP_SWEEP_GRID["sl_pct"][1]
+    assert base["max_notional_quote"] == ENTRY_SLTP_SWEEP_STATIC_DEFAULTS["max_notional_quote"]
+    assert is_sensible_replay_config(base, reject_saturated_barriers=False)
 
 
 def test_iter_entry_sltp_sweep_configs():
-    from agents.macdbb_scanner_aggressive_hl.presets import private_presets_available
-
-    if not private_presets_available():
-        pytest.skip("private presets.yaml not available")
-
     configs = list(iter_entry_sltp_sweep_configs("both_on", min_configs=25, seed=11))
-    assert len(configs) >= 27
+    assert len(configs) == 25
     names = {name for name, _ in configs}
     assert len(names) == len(configs)
-    assert any("entry_sltp_baseline_winner" in name for name in names)
-    assert any(f"entry_sltp_anchor_{CURRENT_WINNER_PRESET}" in name for name in names)
-    for name, overrides in configs:
+    assert not any("anchor" in name for name in names)
+    assert not any("baseline_winner" in name for name in names)
+    for _name, overrides in configs:
         assert overrides["max_open_executors"] == 10
         assert overrides["tp_pct"] == 5.0
         assert overrides["enable_dynamic_sizing"] is True
         assert overrides["enable_dynamic_barriers"] is True
         assert overrides["activation_ticks"] == ENTRY_SLTP_SWEEP_FIXED_OVERRIDES["activation_ticks"]
-        is_anchor = "anchor" in name or name.endswith("baseline_winner")
-        assert is_sensible_replay_config(
-            overrides, reject_saturated_barriers=not is_anchor
+        assert is_sensible_replay_config(overrides)
+    sl_values = {cfg["sl_pct"] for _name, cfg in configs}
+    assert len(sl_values) > 1
+
+
+def test_iter_entry_sltp_exhaustive_sample_mode():
+    configs = list(
+        iter_entry_sltp_sweep_configs(
+            "both_on",
+            min_configs=12,
+            sample_mode="exhaustive",
         )
-    sampled = [
-        cfg
-        for name, cfg in configs
-        if "baseline_winner" not in name and "anchor" not in name
-    ]
-    assert any(cfg["sl_pct"] != CURRENT_WINNER_OVERRIDES["sl_pct"] for cfg in sampled)
-    adaptive_keys = [
-        k for k in CURRENT_WINNER_OVERRIDES
-        if k.startswith("adaptive_") and k != "adaptive_requires_flat"
-    ]
-    assert all(k in ENTRY_SLTP_SWEEP_GRID for k in adaptive_keys)
-    executor_values = {cfg["max_open_executors"] for cfg in sampled}
-    assert executor_values == {10}
+    )
+    assert len(configs) == 12
+    names = {name for name, _ in configs}
+    assert len(names) == len(configs)
 
 
 def test_entry_sltp_rejects_parent_overrides():

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
-    ENTRY_SLTP_SWEEP_VERSION,
+    ENTRY_SLTP_SWEEP_SAMPLE_MODES,
     SWEEP_GRID_CHOICES,
     default_min_configs_for_sweep_grid,
     sweep_space_size,
@@ -47,8 +47,14 @@ def _parse_args() -> argparse.Namespace:
     sweep.add_argument(
         "--sweep-grid",
         choices=SWEEP_GRID_CHOICES,
-        default="entry_sltp_v6",
-        help="Config grid: entry_sltp_v6 (adaptive+SL floors) or mega_v5 (full mega)",
+        default="entry_sltp",
+        help="Config grid: entry_sltp (adaptive+SL floors) or mega_v5 (full mega)",
+    )
+    sweep.add_argument(
+        "--sample-mode",
+        choices=ENTRY_SLTP_SWEEP_SAMPLE_MODES,
+        default="random",
+        help="entry_sltp sampling: random (default) or exhaustive grid walk",
     )
     sweep.add_argument(
         "--min-configs",
@@ -126,7 +132,7 @@ def _parse_args() -> argparse.Namespace:
     sweep_all.add_argument(
         "--sweep-grid",
         choices=SWEEP_GRID_CHOICES,
-        default="entry_sltp_v6",
+        default="entry_sltp",
     )
     sweep_all.add_argument("--min-configs", type=int, default=0)
     sweep_all.add_argument("--seed", type=int, default=42)
@@ -224,11 +230,7 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         end = manifest["range_end_utc"]
     else:
         start, end = timeline_range_from_reports()
-    grid_tag = (
-        ENTRY_SLTP_SWEEP_VERSION
-        if args.sweep_grid == "entry_sltp_v6"
-        else args.sweep_grid
-    )
+    grid_tag = args.sweep_grid
     output_stem = (
         args.output_stem
         or f"macdbb_scanner_aggressive_hl_backtest_{args.dynamic_mode}_{grid_tag}_timeline"
@@ -258,6 +260,7 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
             )
     print(
         f"Timeline sweep grid={args.sweep_grid} mode={args.dynamic_mode} | "
+        f"sample_mode={getattr(args, 'sample_mode', 'random')} | "
         f"space~{sweep_space_size(args.sweep_grid, args.dynamic_mode):,} | "
         f"min_configs={min_configs} | range {start} -> {end} | snapshots={args.snapshot_dir}"
     )
@@ -282,6 +285,7 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         workers=args.workers,
         worker_ram_gb=args.worker_ram_gb,
         sweep_grid=args.sweep_grid,
+        sample_mode=getattr(args, "sample_mode", "random"),
         start_index=start_index,
         resume_results=resume_results,
     )

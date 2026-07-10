@@ -469,6 +469,45 @@ make setup    # answer y for Tailscale on production/VPS setups
 make deploy
 ```
 
+### Replay snapshots (timeline backtests & sweeps)
+
+Timeline backtests and parameter sweeps read pre-built **market snapshots** (scanner rankings + MACD/BB reports per tick) from parquet files under `data/replay_snapshots_*`. The default preset uses `data/replay_snapshots_binance_1y` (often a symlink to the prod `condor/data/` tree).
+
+**When to rebuild**
+
+- Before a sweep or backtest on a date range **past** the snapshot manifest `range_end_utc`
+- After refreshing the local Binance candle cache for new days
+- The backtest routine can **auto-extend** snapshots when `auto_update_snapshots=true` (see `macdbb_scanner_aggressive_hl_backtest` config); sweeps do **not** auto-build — run this script first
+
+**Check current coverage**
+
+```bash
+cat data/replay_snapshots_binance_1y/manifest.json | python -m json.tool
+```
+
+**Incremental build** (only missing ticks are processed):
+
+```bash
+cd /path/to/condor
+PYTHONPATH=. .venv/bin/python scripts/build_replay_snapshots.py \
+  --range-start 2026-07-09T00:00:00+00:00 \
+  --range-end   2026-07-10T23:59:59+00:00 \
+  --snapshot-dir data/replay_snapshots_binance_1y \
+  --cache-dir data/binance_candles \
+  --candle-source binance_perpetual \
+  --frequency-sec 1800
+```
+
+Use `--sessions 37-47` instead of `--range-start`/`--range-end` to build ticks from live session journals. Add `--force` to rebuild ticks that already exist. The script merges results into the existing parquet files and updates `manifest.json`.
+
+**Notes**
+
+- Requires network access when the candle cache has gaps (Binance API fill).
+- `frequency_sec` must match the replay preset (default **1800** = 30-minute ticks).
+- Entry/barrier prices come from the candle cache at replay time; snapshots supply scanner/MACD signals only.
+
+See also [`AGENTS.md`](AGENTS.md) for backtest vs sweep workflow.
+
 ### Flow Documentation
 
 See `flows/` directory for detailed command flow documentation:
