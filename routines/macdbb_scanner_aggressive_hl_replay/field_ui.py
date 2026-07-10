@@ -49,6 +49,14 @@ REPLAY_FIELD_UI: dict[str, dict[str, Any]] = {
         "options_from": "replay_snapshot_dirs",
         "widget": "select",
     },
+    "auto_update_snapshots": {
+        "group": "Preset & mode",
+        "visible_when": SNAPSHOT_MODE,
+    },
+    "max_auto_snapshot_days": {
+        "group": "Preset & mode",
+        "visible_when": SNAPSHOT_MODE,
+    },
 }
 
 for _hl_field in _HL_PREFETCH_FIELDS:

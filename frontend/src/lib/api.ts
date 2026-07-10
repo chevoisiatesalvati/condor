@@ -556,6 +556,10 @@ export interface RoutineInstance {
   table_columns?: string[] | null;
   sections?: Record<string, unknown>[] | null;
   error?: string | null;
+  log_path?: string | null;
+  execution_mode?: string;
+  worker_pid?: number | null;
+  queue_position?: number | null;
 }
 
 export interface RoutineHooks {

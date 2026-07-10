@@ -32,6 +32,30 @@ def test_render_table_skips_session_column_sentiment():
     assert 'class="positive">189.9' in html
 
 
+def test_render_table_datetime_cell_includes_data_attribute():
+    html = ReportBuilder._render_table(
+        ["Entry Time"],
+        [
+            {
+                "Entry Time": ReportBuilder.datetime_cell(
+                    "2026-06-12T17:00:00+00:00"
+                ),
+            }
+        ],
+    )
+    assert 'data-datetime-utc="2026-06-12T17:00:00+00:00"' in html
+    assert "2026-06-12 17:00 UTC" in html
+
+
+def test_render_table_wide_uses_wide_section_class():
+    html = ReportBuilder._render_table(
+        ["Pair", "Side"],
+        [{"Pair": "BTC-USD", "Side": "LONG"}],
+        wide=True,
+    )
+    assert "section-table-wide" in html
+
+
 def test_params_renders_collapsible_panel():
     builder = ReportBuilder("Test")
     builder.manual_order()

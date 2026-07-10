@@ -21,6 +21,7 @@ import { RoutineTable, type RoutineRow } from "@/components/routines/RoutineTabl
 import { useServer } from "@/hooks/useServer";
 import { api } from "@/lib/api";
 import { formatRelativeTime, toMs } from "@/lib/formatters";
+import { filterRoutinesBySourceType } from "@/lib/routineFilters";
 import { formatInterval } from "@/lib/routineUtils";
 
 type SourceTypeFilter = "all" | "routine" | "agent" | string;
@@ -97,15 +98,7 @@ export function Routines() {
 
   // Filtered routines
   const filteredRoutines = useMemo(() => {
-    let result = routines;
-
-    if (sourceTypeFilter === "routine") {
-      result = result.filter((r) => !r.source.startsWith("agent:"));
-    } else if (sourceTypeFilter === "agent") {
-      result = result.filter((r) => r.source.startsWith("agent:"));
-    } else if (sourceTypeFilter !== "all") {
-      result = result.filter((r) => r.source === `agent:${sourceTypeFilter}`);
-    }
+    let result = filterRoutinesBySourceType(routines, sourceTypeFilter);
 
     if (search) {
       const q = search.toLowerCase();
@@ -121,7 +114,11 @@ export function Routines() {
   }, [routines, sourceTypeFilter, search]);
 
   const activeInstances = useMemo(
-    () => instances.filter((i) => i.status === "running" || i.status === "scheduled"),
+    () =>
+      instances.filter(
+        (i) =>
+          i.status === "running" || i.status === "scheduled" || i.status === "queued",
+      ),
     [instances],
   );
 

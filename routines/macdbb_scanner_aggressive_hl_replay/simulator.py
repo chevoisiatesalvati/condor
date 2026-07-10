@@ -289,6 +289,7 @@ def _close_trade(
     exit_tick: int,
     exit_price: float,
     exit_reason: str,
+    exit_time: dt.datetime | None = None,
 ) -> SimTrade:
     return_pct = compute_return_pct(position.side, position.entry_price, exit_price)
     hold_ticks = exit_tick - position.entry_tick
@@ -314,6 +315,8 @@ def _close_trade(
         tp_pct_used=position.tp_pct,
         volatility_proxy_pct=position.volatility_proxy_pct,
         sizing_multiplier=position.sizing_multiplier,
+        entry_time_utc=position.entry_time,
+        exit_time_utc=exit_time,
     )
 
 
@@ -518,6 +521,7 @@ def _apply_journal_barrier_closes(
                 tick,
                 exit_price,
                 exit_reason,
+                exit_time=meta.timestamp,
             )
         )
         closes_this_tick.append(f"{event.pair}:{exit_reason}")
@@ -560,7 +564,7 @@ def _apply_intrabar_barriers(
         )
         if hit is None:
             continue
-        exit_reason, exit_price = hit
+        exit_reason, exit_price, exit_time = hit
         simulated_trades.append(
             _close_trade(
                 session_num,
@@ -568,6 +572,7 @@ def _apply_intrabar_barriers(
                 tick,
                 exit_price,
                 exit_reason,
+                exit_time=exit_time,
             )
         )
         closes_this_tick.append(f"{pair}:{exit_reason}")
@@ -906,6 +911,7 @@ def simulate_strategy_session(
                         tick,
                         exit_price,
                         exit_reason,
+                        exit_time=meta.timestamp,
                     )
                 )
                 closes_this_tick.append(f"{pair}:{exit_reason}")
@@ -959,15 +965,6 @@ def simulate_strategy_session(
         if entries_allowed:
             formal_candidates: list[tuple[str, str, Any]] = []
             adaptive_candidates: list[tuple[str, str, Any]] = []
-            barrier_reentry_this_tick = any(
-                token.endswith(
-                    (
-                        ":stop_loss_close_proxy",
-                        ":take_profit_close_proxy",
-                    )
-                )
-                for token in closes_this_tick
-            )
 
             for pair, snapshot in snapshots.items():
                 if pair in open_positions:
@@ -1138,6 +1135,10 @@ def simulate_strategy_session(
                     ),
                 )
                 pair, side, snapshot = ranked[0]
+                if pair in open_positions:
+                    continue
+                if len(open_positions) >= config.max_open_executors:
+                    continue
                 metrics = snapshot.metrics
                 trigger = f"adaptive_{side}"
                 opened_from_flat = len(open_before_entry) == 0
@@ -1251,6 +1252,7 @@ def simulate_strategy_session(
         if last_seen is None:
             continue
         exit_tick, exit_price = last_seen
+        exit_meta = tick_meta_map.get(exit_tick)
         simulated_trades.append(
             _close_trade(
                 session_num,
@@ -1258,6 +1260,7 @@ def simulate_strategy_session(
                 exit_tick,
                 exit_price,
                 "session_end_proxy",
+                exit_time=exit_meta.timestamp if exit_meta else None,
             )
         )
 

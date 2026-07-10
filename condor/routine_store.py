@@ -26,6 +26,7 @@ from routines.base import (
     normalize_result,
 )
 from condor.routine_runner import (
+    RUNS_DIR,
     RoutineJob,
     RoutineRunOutcome,
     get_routine_worker_pool,
@@ -201,20 +202,28 @@ class RoutineStore:
         out = []
         for name, info in all_routines.items():
             groups_fn = getattr(info.config_class, "get_routine_groups", None)
+            try:
+                fields = info.get_routine_field_metadata()
+                overrides = info.resolved_preset_overrides()
+            except Exception as exc:
+                logger.error("Failed to build routine metadata for %s: %s", name, exc)
+                continue
             entry = {
                 "name": name,
                 "description": info.description,
                 "is_continuous": info.is_continuous,
                 "category": info.category,
                 "source": info.source,
-                "fields": info.get_routine_field_metadata(),
+                "fields": fields,
                 "last_modified": info.last_modified,
                 "report_count": report_counts.get(name, 0)
                 or report_counts.get(name.split("/")[-1], 0),
             }
             if callable(groups_fn):
-                entry["groups"] = groups_fn()
-            overrides = info.resolved_preset_overrides()
+                try:
+                    entry["groups"] = groups_fn()
+                except Exception as exc:
+                    logger.error("Failed to build routine groups for %s: %s", name, exc)
             if overrides:
                 entry["preset_overrides"] = overrides
             out.append(entry)
@@ -384,6 +393,28 @@ class RoutineStore:
                 }
             )
 
+        status = (failed_status or status_after) if failed else status_after
+        if failed:
+            logger.error(
+                "Routine %s[%s] finished status=%s duration=%.1fs error=%s report_id=%s",
+                routine.name,
+                instance_id,
+                status,
+                duration,
+                error_msg,
+                report_id or "none",
+            )
+        else:
+            logger.info(
+                "Routine %s[%s] finished status=%s duration=%.1fs report_id=%s result=%s",
+                routine.name,
+                instance_id,
+                status,
+                duration,
+                report_id or "none",
+                (result.text[:120] + "…") if len(result.text) > 120 else result.text,
+            )
+
         if fire_hooks:
             await self._fire_hooks(instance_id, result, report_id, failed)
 
@@ -416,6 +447,14 @@ class RoutineStore:
             raise ValueError(f"Routine '{routine_name}' not found")
 
         instance_id = self._gen_id()
+        log_path = str(RUNS_DIR / f"{instance_id}.log")
+        logger.info(
+            "Routine execute: %s[%s] server=%s subprocess=%s",
+            routine_name,
+            instance_id,
+            server_name,
+            routine.run_in_subprocess,
+        )
         if routine.run_in_subprocess:
             self._instances[instance_id] = self._new_instance_meta(
                 routine_name,
@@ -427,6 +466,7 @@ class RoutineStore:
                 execution_mode="subprocess",
                 worker_pid=None,
                 queue_position=1,
+                log_path=log_path,
             )
         else:
             self._instances[instance_id] = self._new_instance_meta(
@@ -474,6 +514,37 @@ class RoutineStore:
                     "worker_pid": None,
                     "queue_position": None,
                 }
+            )
+
+        log_path = self._instances.get(instance_id, {}).get("log_path")
+        if outcome.ok:
+            logger.info(
+                "Subprocess routine %s[%s] finished status=%s duration=%.1fs report_id=%s log=%s",
+                routine_name,
+                instance_id,
+                status,
+                outcome.duration_sec,
+                outcome.report_id or "none",
+                log_path or "unknown",
+            )
+        elif outcome.stopped:
+            logger.info(
+                "Subprocess routine %s[%s] stopped log=%s",
+                routine_name,
+                instance_id,
+                log_path or "unknown",
+            )
+        else:
+            logger.error(
+                "Subprocess routine %s[%s] finished status=%s error=%s log=%s result=%s",
+                routine_name,
+                instance_id,
+                status,
+                outcome.error or "unknown",
+                log_path or "unknown",
+                (outcome.result.text[:200] + "…")
+                if len(outcome.result.text) > 200
+                else outcome.result.text,
             )
 
         if not outcome.stopped:

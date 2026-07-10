@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
     configure_snapshot_dir,
+    reload_snapshot_caches,
     warm_snapshot_caches,
 )
 
@@ -44,3 +45,18 @@ def configure_replay_data_sources(config: ReplayConfigBase) -> None:
             warm_snapshot_caches(snapshot_dir)
     else:
         configure_snapshot_dir(None)
+
+
+def refresh_snapshot_caches(config: ReplayConfigBase) -> None:
+    """Rebind snapshot dir and reload parquet indexes (after incremental builds)."""
+    if not uses_snapshot_store(config):
+        configure_snapshot_dir(None)
+        return
+    snapshot_dir = getattr(config, "snapshot_dir", None)
+    if snapshot_dir:
+        configure_snapshot_dir(Path(snapshot_dir))
+    else:
+        from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import DEFAULT_SNAPSHOT_DIR
+
+        configure_snapshot_dir(DEFAULT_SNAPSHOT_DIR)
+    reload_snapshot_caches(snapshot_dir)

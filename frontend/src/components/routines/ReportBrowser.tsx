@@ -24,6 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AgentToggleButton } from "@/components/layout/AgentToggleButton";
 import { type RoutineInstance, api } from "@/lib/api";
+import { filterRoutinesBySourceType } from "@/lib/routineFilters";
 import { buildConfigValues, formatAgo, formatInterval, invalidateRoutineQueries, saveConfig, updateConfigValues } from "@/lib/routineUtils";
 import { setViewContext } from "@/lib/viewContext";
 import { useServer } from "@/hooks/useServer";
@@ -80,13 +81,10 @@ export function ReportBrowser({
   const [activeSource, setActiveSource] = useState(initialSource ?? "");
 
   // Filter routines by source type
-  const filteredRoutines = useMemo(() => {
-    if (sourceTypeFilter === "all") return routines;
-    if (sourceTypeFilter === "routine") return routines.filter((r) => !r.source.startsWith("agent:"));
-    if (sourceTypeFilter === "agent") return routines.filter((r) => r.source.startsWith("agent:"));
-    // Specific agent name
-    return routines.filter((r) => r.source === `agent:${sourceTypeFilter}`);
-  }, [routines, sourceTypeFilter]);
+  const filteredRoutines = useMemo(
+    () => filterRoutinesBySourceType(routines, sourceTypeFilter),
+    [routines, sourceTypeFilter],
+  );
 
   // Set initial source once routines load if not set — pick from filtered list
   useEffect(() => {
@@ -141,9 +139,14 @@ export function ReportBrowser({
     setSelectedReportIdx(0);
   }, [activeSource]);
 
-  // Active instances for current source
+  // Active instances for current source (include queued — otherwise runs flash invisible)
   const sourceInstances = useMemo(
-    () => instances.filter((i) => i.routine_name === activeSource && (i.status === "running" || i.status === "scheduled")),
+    () =>
+      instances.filter(
+        (i) =>
+          i.routine_name === activeSource &&
+          (i.status === "running" || i.status === "scheduled" || i.status === "queued"),
+      ),
     [instances, activeSource],
   );
 
@@ -174,25 +177,36 @@ export function ReportBrowser({
 
   // Track running instance to poll for completion
   const [pollingInstanceId, setPollingInstanceId] = useState<string | null>(null);
+  const [lastFinishedInstance, setLastFinishedInstance] = useState<RoutineInstance | null>(null);
 
   const { data: polledInstance } = useQuery({
     queryKey: ["routine-instance", pollingInstanceId],
     queryFn: () => api.getRoutineInstance(pollingInstanceId!),
     enabled: !!pollingInstanceId,
-    refetchInterval: 2000,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (!status || status === "running" || status === "queued") return 2000;
+      return false;
+    },
   });
 
-  // When polled instance completes, refresh reports
+  // When polled instance completes, refresh reports and keep outcome visible
   useEffect(() => {
-    if (polledInstance && polledInstance.status !== "running") {
-      setPollingInstanceId(null);
-      invalidateRoutineQueries(qc, activeSource);
-    }
+    if (!polledInstance) return;
+    if (polledInstance.status === "running" || polledInstance.status === "queued") return;
+    setLastFinishedInstance(polledInstance);
+    setPollingInstanceId(null);
+    invalidateRoutineQueries(qc, activeSource);
   }, [polledInstance, activeSource, qc]);
+
+  useEffect(() => {
+    setLastFinishedInstance(null);
+  }, [activeSource]);
 
   const runMutation = useMutation({
     mutationFn: () => api.runRoutine(server!, activeSource, configValues),
     onSuccess: (data) => {
+      setLastFinishedInstance(null);
       setPollingInstanceId(data.instance_id);
       qc.invalidateQueries({ queryKey: ["routine-instances"] });
       setShowConfigPanel(false);
@@ -568,9 +582,27 @@ export function ReportBrowser({
             {sourceInstances.length > 0 && (
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 {sourceInstances.map((inst) => (
-                  <div key={inst.instance_id} className="flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px]">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    <span className="text-emerald-400 capitalize">{inst.status}</span>
+                  <div
+                    key={inst.instance_id}
+                    className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] ${
+                      inst.status === "queued"
+                        ? "bg-amber-500/10"
+                        : "bg-emerald-500/10"
+                    }`}
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full animate-pulse ${
+                        inst.status === "queued" ? "bg-amber-400" : "bg-emerald-400"
+                      }`}
+                    />
+                    <span
+                      className={`capitalize ${
+                        inst.status === "queued" ? "text-amber-400" : "text-emerald-400"
+                      }`}
+                    >
+                      {inst.status}
+                      {inst.queue_position ? ` #${inst.queue_position}` : ""}
+                    </span>
                     {inst.schedule?.type === "interval" && (
                       <span className="text-[var(--color-text-muted)]">
                         <Clock className="inline h-2.5 w-2.5" /> {formatInterval(inst.schedule.interval_sec as number)}
@@ -896,6 +928,51 @@ export function ReportBrowser({
                 ))}
               </select>
               <ChevronDown className="pointer-events-none absolute right-3.5 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--color-text-muted)]" />
+            </div>
+          </div>
+        )}
+
+        {/* Last run outcome — visible even when older reports exist */}
+        {lastFinishedInstance && (
+          <div
+            className={`mx-4 mt-2 shrink-0 rounded-lg border px-4 py-3 ${
+              lastFinishedInstance.status === "failed"
+                ? "border-[var(--color-red)]/30 bg-[var(--color-red)]/5"
+                : "border-[var(--color-border)] bg-[var(--color-surface-hover)]"
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p
+                  className={`text-xs font-semibold ${
+                    lastFinishedInstance.status === "failed"
+                      ? "text-[var(--color-red)]"
+                      : "text-[var(--color-text)]"
+                  }`}
+                >
+                  Run {lastFinishedInstance.status}
+                  {lastFinishedInstance.last_duration != null
+                    ? ` · ${lastFinishedInstance.last_duration.toFixed(1)}s`
+                    : ""}
+                </p>
+                {(lastFinishedInstance.error || lastFinishedInstance.result_text) && (
+                  <pre className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10px] text-[var(--color-text-muted)]">
+                    {lastFinishedInstance.error || lastFinishedInstance.result_text}
+                  </pre>
+                )}
+                {lastFinishedInstance.log_path && (
+                  <p className="mt-2 font-mono text-[10px] text-[var(--color-text-muted)]">
+                    Worker log: {lastFinishedInstance.log_path}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => setLastFinishedInstance(null)}
+                className="shrink-0 rounded p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-surface)]"
+                title="Dismiss"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
           </div>
         )}

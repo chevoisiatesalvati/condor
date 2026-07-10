@@ -92,6 +92,16 @@ def warm_snapshot_caches(snapshot_dir: Path | str | None = None) -> None:
     _ensure_parsed_macdbb_cache(root)
 
 
+def reload_snapshot_caches(snapshot_dir: Path | str | None = None) -> None:
+    """Drop in-memory snapshot indexes and reload parquet from disk."""
+    global _active_snapshot_dir
+    root = snapshot_dir_or_default(snapshot_dir).resolve()
+    _active_snapshot_dir = root
+    _invalidate_indexes()
+    _ensure_parsed_scanner_cache(root)
+    _ensure_parsed_macdbb_cache(root)
+
+
 def _tick_id(tick_time: dt.datetime) -> str:
     return tick_time.astimezone(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
 
@@ -261,7 +271,8 @@ def append_states(
 
 
 def _invalidate_indexes() -> None:
-    global _scanner_index, _macdbb_index, _scanner_frame, _macdbb_frame, _parsed_scanner_by_tick
+    global _scanner_index, _macdbb_index, _scanner_frame, _macdbb_frame
+    global _parsed_scanner_by_tick, _parsed_macdbb_by_id
     _scanner_index = None
     _macdbb_index = None
     _scanner_frame = None

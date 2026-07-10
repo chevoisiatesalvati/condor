@@ -22,3 +22,16 @@ export function addDaysToDateInput(date: string, days: number): string {
 export function todayDateInput(): string {
   return new Date().toISOString().slice(0, 10);
 }
+
+/** Compute UTC ISO range for the last N days ending at anchorEnd or today. */
+export function lastDaysRangeIso(
+  days: number,
+  anchorEndIso?: string | null,
+): { start: string; end: string } {
+  const end = anchorEndIso ? isoToDateInput(anchorEndIso) : todayDateInput();
+  const start = addDaysToDateInput(end, -days);
+  return {
+    start: dateInputToIso(start, false),
+    end: anchorEndIso ?? dateInputToIso(end, true),
+  };
+}

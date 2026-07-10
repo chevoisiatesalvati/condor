@@ -105,16 +105,18 @@ class TestDiscoverRoutinesFromPath:
         discover_routines_from_path(routines_dir, force_reload=True)
         assert _exec_count(sentinel) == 2
 
-    def test_broken_routine_not_retried_until_edited(self, tmp_path):
+    def test_broken_routine_retried_on_next_scan(self, tmp_path):
         routines_dir = tmp_path / "r"
         routines_dir.mkdir()
         file_path = routines_dir / "broken.py"
         file_path.write_text("raise RuntimeError('boom')\n")
 
         assert "broken" not in discover_routines_from_path(routines_dir)
+
+        # Same mtime — should retry (not stay permanently hidden).
         assert "broken" not in discover_routines_from_path(routines_dir)
 
-        # Fixing the file (mtime change) picks it up again
+        # Fixing the file (mtime change) picks it up.
         sentinel = tmp_path / "execs.txt"
         _write_routine(routines_dir, "broken", sentinel)
         _bump_mtime(file_path)
@@ -162,6 +164,19 @@ class TestDiscoverRoutines:
         discover_routines(force_reload=True)
 
         assert len(calls) == len(warm)
+
+    def test_cached_import_failure_is_retried(self):
+        stem = "macdbb_scanner_aggressive_hl_backtest"
+        file_path = base._PROJECT_ROOT / "routines" / f"{stem}.py"
+        if not file_path.is_file():
+            return
+
+        mtime = file_path.stat().st_mtime
+        base._routines_cache = {}
+        base._routines_mtimes = {stem: mtime}
+
+        result = discover_routines(force_reload=False)
+        assert stem in result
 
 
 class TestRoutineStoreResolve:

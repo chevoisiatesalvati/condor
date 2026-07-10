@@ -17,6 +17,7 @@ from condor.trading_agent.policies.macdbb_dynamic import (
     SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,
     SCANNER_NATR_MIN_BARS,
 )
+from routines.macdbb_scanner_aggressive_hl_replay.replay_range import iso_utc
 
 if TYPE_CHECKING:
     from routines.macdbb_scanner_aggressive_hl_replay.models import TickMeta
@@ -62,7 +63,10 @@ class HlPrefetchSettings:
 
 def _needs_session_price_cache(config: object) -> bool:
     price_source = getattr(config, "price_source", "auto")
-    return price_source in ("auto", "hl_candles", "binance_candles")
+    if price_source in ("auto", "hl_candles", "binance_candles"):
+        return True
+    # Intrabar SL/TP scans 1m OHLC; snapshot MACD entry prices cause bogus instant exits.
+    return bool(getattr(config, "enable_dynamic_barriers", False))
 
 
 def hl_prefetch_settings_from_config(config: object) -> HlPrefetchSettings:
@@ -171,6 +175,26 @@ def _max_nearest_delta_ms(interval: str, interval_ms: int | None) -> int:
     if interval_ms is None:
         return 45 * 60 * 1000
     return _INTERVAL_MAX_DELTA_MS.get(interval, interval_ms * 3)
+
+
+def _price_series_covers_ticks(
+    candles: list[dict[str, float]],
+    tick_times: list[dt.datetime],
+    max_delta_ms: int,
+) -> bool:
+    """True when candle timestamps span all replay ticks (± nearest-close tolerance)."""
+    if not candles or not tick_times:
+        return False
+    ts_values = [
+        int(candle["timestamp_ms"])
+        for candle in candles
+        if "timestamp_ms" in candle
+    ]
+    if not ts_values:
+        return False
+    earliest_tick_ms = int(_ensure_utc(min(tick_times)).timestamp() * 1000)
+    latest_tick_ms = int(_ensure_utc(max(tick_times)).timestamp() * 1000)
+    return min(ts_values) <= earliest_tick_ms + max_delta_ms and max(ts_values) >= latest_tick_ms - max_delta_ms
 
 
 def _canonical_trading_pair(pair: str) -> str:
@@ -288,8 +312,8 @@ def scan_barriers_between(
     entry_price: float,
     sl_pct: float,
     tp_pct: float,
-) -> tuple[str, float] | None:
-    """Return (exit_reason, barrier_price) for the first SL/TP hit in (start, end]."""
+) -> tuple[str, float, dt.datetime] | None:
+    """Return (exit_reason, barrier_price, hit_time) for the first SL/TP hit in (start, end]."""
     if entry_price <= 0 or not candles:
         return None
 
@@ -320,16 +344,18 @@ def scan_barriers_between(
     for index in range(len(window)):
         low = lows[index]
         high = highs[index]
+        hit_ms = int(window[index]["timestamp_ms"])
+        hit_time = dt.datetime.fromtimestamp(hit_ms / 1000, tz=dt.timezone.utc)
         if side == "long":
             if low <= sl_price:
-                return ("stop_loss_close_proxy", sl_price)
+                return ("stop_loss_close_proxy", sl_price, hit_time)
             if high >= tp_price:
-                return ("take_profit_close_proxy", tp_price)
+                return ("take_profit_close_proxy", tp_price, hit_time)
         else:
             if high >= sl_price:
-                return ("stop_loss_close_proxy", sl_price)
+                return ("stop_loss_close_proxy", sl_price, hit_time)
             if low <= tp_price:
-                return ("take_profit_close_proxy", tp_price)
+                return ("take_profit_close_proxy", tp_price, hit_time)
     return None
 
 
@@ -405,6 +431,7 @@ async def prefetch_replay_hl_prices(
     pair_candles: HlCandleCache = {}
     pair_barrier_candles: HlCandleCache = {}
     pair_vol_candles: HlCandleCache = {}
+    pair_price_intervals: dict[str, str] = {}
     semaphore = asyncio.Semaphore(max(1, opts.max_concurrent))
     pairs_sorted = sorted(pair_requests)
     load_barrier_series = opts.barrier_interval != opts.interval
@@ -571,17 +598,35 @@ async def prefetch_replay_hl_prices(
             tick_times = [tick_time for _, _, tick_time, _ in requests]
             latest_tick_ms = int(max(tick_times).timestamp() * 1000)
             price_coverage_end_ms = latest_tick_ms + (interval_ms or 300_000)
-            candles = await _fetch_series(pair, opts.interval, price_coverage_end_ms)
-            if not candles:
-                logger.warning("HL price prefetch empty for %s %s", pair, opts.interval)
-                return
-            pair_candles[pair] = candles
-
             vol_history_hours = max(opts.buffer_hours, opts.vol_lookback_hours)
+            price_delta_ms = _max_nearest_delta_ms(opts.interval, interval_ms)
+            candles = await _fetch_series(pair, opts.interval, price_coverage_end_ms)
+            if candles and _price_series_covers_ticks(candles, tick_times, price_delta_ms):
+                pair_candles[pair] = candles
+                pair_price_intervals[pair] = opts.interval
+            elif candles:
+                logger.info(
+                    "%s %s candles for %s do not cover replay ticks (%d bars, "
+                    "ticks %s → %s); using barrier interval for entry prices",
+                    source_label,
+                    opts.interval,
+                    pair,
+                    len(candles),
+                    iso_utc(min(tick_times)),
+                    iso_utc(max(tick_times)),
+                )
+            else:
+                logger.warning(
+                    "%s price prefetch empty for %s %s",
+                    source_label,
+                    pair,
+                    opts.interval,
+                )
+
             vol_candles, vol_interval = await _resolve_vol_candles(
                 pair,
                 tick_times,
-                candles,
+                candles or [],
                 vol_history_hours=vol_history_hours,
                 price_coverage_end_ms=price_coverage_end_ms,
             )
@@ -589,34 +634,44 @@ async def prefetch_replay_hl_prices(
 
             if not load_barrier_series:
                 pair_barrier_candles[pair] = vol_candles
-                return
-
-            if vol_interval == opts.barrier_interval:
+            elif vol_interval == opts.barrier_interval:
                 pair_barrier_candles[pair] = vol_candles
-                return
-
-            skip_1m_api = (
-                not _within_1m_api_window(tick_times, candle_source=opts.candle_source)
-                or candle_cache_mod.is_api_fetch_skipped(
-                    _cache_pair_for_source(pair, opts.candle_source),
-                    opts.barrier_interval,
-                    cache_dir=opts.cache_dir,
+            else:
+                skip_1m_api = (
+                    not _within_1m_api_window(tick_times, candle_source=opts.candle_source)
+                    or candle_cache_mod.is_api_fetch_skipped(
+                        _cache_pair_for_source(pair, opts.candle_source),
+                        opts.barrier_interval,
+                        cache_dir=opts.cache_dir,
+                    )
                 )
-            )
-            if skip_1m_api:
-                pair_barrier_candles[pair] = vol_candles
-                return
+                if skip_1m_api:
+                    pair_barrier_candles[pair] = vol_candles
+                else:
+                    barrier_coverage_end_ms = latest_tick_ms + (barrier_interval_ms or 60_000)
+                    barrier_1m = await _fetch_series(
+                        pair,
+                        opts.barrier_interval,
+                        barrier_coverage_end_ms,
+                        fill_gaps=False,
+                        history_hours=vol_history_hours,
+                        ignore_api_skip=False,
+                    )
+                    pair_barrier_candles[pair] = barrier_1m or vol_candles
 
-            barrier_coverage_end_ms = latest_tick_ms + (barrier_interval_ms or 60_000)
-            barrier_1m = await _fetch_series(
-                pair,
-                opts.barrier_interval,
-                barrier_coverage_end_ms,
-                fill_gaps=False,
-                history_hours=vol_history_hours,
-                ignore_api_skip=False,
-            )
-            pair_barrier_candles[pair] = barrier_1m or vol_candles
+            if opts.build_session_prices and pair not in pair_candles:
+                barrier_for_entry = pair_barrier_candles.get(pair)
+                if barrier_for_entry:
+                    pair_candles[pair] = barrier_for_entry
+                    pair_price_intervals[pair] = opts.barrier_interval
+                    logger.info(
+                        "%s entry prices for %s: falling back to %s candles "
+                        "(%s series empty or stale for replay range)",
+                        source_label,
+                        pair,
+                        opts.barrier_interval,
+                        opts.interval,
+                    )
 
         total_pairs = len(pairs_sorted)
         logger.info(
@@ -642,11 +697,14 @@ async def prefetch_replay_hl_prices(
             continue
         if not opts.build_session_prices:
             continue
+        price_interval = pair_price_intervals.get(pair, opts.interval)
+        price_interval_ms = candle_mod._INTERVAL_MS.get(price_interval)
+        fill_delta_ms = _max_nearest_delta_ms(price_interval, price_interval_ms)
         _fill_session_prices_for_pair(
             candles,
             requests,
             session_caches,
-            max_delta_ms=max_delta_ms,
+            max_delta_ms=fill_delta_ms,
         )
 
     if not opts.build_session_prices:

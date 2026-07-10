@@ -220,10 +220,10 @@ def discover_routines(force_reload: bool = False) -> dict[str, RoutineInfo]:
         mtime = _safe_mtime(file_path)
         scanned_mtimes[stem] = mtime
         if mtime is not None and stem in prev_mtimes and prev_mtimes[stem] == mtime:
-            # Unchanged since last scan: reuse cached info (or cached failure).
             if stem in prev_routines:
                 routines[stem] = prev_routines[stem]
-            continue
+                continue
+            # Same mtime but not cached — prior import failed; retry below.
 
         try:
             module_name = f"routines.{stem}"
@@ -394,10 +394,10 @@ def discover_routines_from_path(
         mtime = _safe_mtime(file_path)
         scanned_mtimes[stem] = mtime
         if mtime is not None and stem in prev_mtimes and prev_mtimes[stem] == mtime:
-            # Unchanged since last scan: reuse cached info (or cached failure).
             if stem in prev_routines:
                 routines[stem] = prev_routines[stem]
-            continue
+                continue
+            # Same mtime but not cached — prior import failed; retry below.
 
         try:
             module_name = (

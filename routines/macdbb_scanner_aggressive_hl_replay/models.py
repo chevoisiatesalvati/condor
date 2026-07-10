@@ -192,6 +192,8 @@ class SimTrade:
     tp_pct_used: float = 0.0
     volatility_proxy_pct: float = 0.0
     sizing_multiplier: float = 1.0
+    entry_time_utc: dt.datetime | None = None
+    exit_time_utc: dt.datetime | None = None
 
 
 class ReplayConfigBase(BaseModel):
@@ -335,6 +337,14 @@ class ReplayConfigBase(BaseModel):
     snapshot_dir: str | None = Field(
         default=None,
         description="Parquet snapshot directory",
+    )
+    auto_update_snapshots: bool = Field(
+        default=True,
+        description="Build missing snapshot ticks before timeline replay",
+    )
+    max_auto_snapshot_days: int = Field(
+        default=14,
+        description="Max gap (days) for automatic snapshot builds",
     )
     require_price_data: bool = Field(
         default=True,

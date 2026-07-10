@@ -48,9 +48,36 @@ export function colorizeReportDocument(doc: Document): void {
     style.textContent = `
       .${POSITIVE_CLASS} { color: var(--green, #3fb950) !important; }
       .${NEGATIVE_CLASS} { color: var(--red, #f85149) !important; }
+      .condor-datetime .condor-datetime-local {
+        display: block;
+        font-size: 0.85em;
+        color: var(--color-text-muted, #8b949e);
+      }
     `;
     doc.head.appendChild(style);
   }
+
+  doc.querySelectorAll(".condor-datetime[data-datetime-utc]").forEach((cell) => {
+    const utcRaw = cell.getAttribute("data-datetime-utc");
+    if (!utcRaw) return;
+    const parsed = new Date(utcRaw);
+    if (Number.isNaN(parsed.getTime())) return;
+    const localLine = parsed.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    if (cell.querySelector(".condor-datetime-local")) return;
+    const localEl = doc.createElement("span");
+    localEl.className = "condor-datetime-local";
+    localEl.textContent = localLine;
+    cell.appendChild(localEl);
+    cell.setAttribute(
+      "title",
+      `${parsed.toLocaleString(undefined, { timeZoneName: "short" })} (browser local)`,
+    );
+  });
 
   doc.querySelectorAll(".section-table table, table").forEach((table) => {
     colorizeTableCells(table as HTMLTableElement);

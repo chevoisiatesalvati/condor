@@ -95,7 +95,7 @@ _HTML_TEMPLATE = """\
   body {{
     background: var(--bg); color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-    font-size: 14px; line-height: 1.6; padding: 24px; max-width: 1400px; margin: 0 auto;
+    font-size: 14px; line-height: 1.6; padding: 16px 24px; max-width: none; margin: 0 auto;
   }}
   .report-header {{
     display: flex; justify-content: space-between; align-items: baseline;
@@ -129,6 +129,19 @@ _HTML_TEMPLATE = """\
   .section-md ul, .section-md ol {{ padding-left: 20px; }}
   .section-md a {{ color: var(--blue); }}
   .section-table {{ overflow-x: auto; }}
+  .section-table-wide {{ overflow-x: auto; margin-bottom: 24px; }}
+  .section-table-wide table {{
+    width: 100%; table-layout: auto; border-collapse: collapse; font-size: 12px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  }}
+  .section-table-wide th {{
+    background: var(--bg); text-align: left; padding: 6px 8px; white-space: nowrap;
+    font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-muted); border-bottom: 1px solid var(--border);
+  }}
+  .section-table-wide td {{ padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }}
+  .section-table-wide tr:nth-child(even) td {{ background: rgba(255,255,255,0.02); }}
+  .section-table-wide tr:last-child td {{ border-bottom: none; }}
   .section-table table {{
     width: 100%; border-collapse: collapse; font-size: 13px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
@@ -409,6 +422,10 @@ _NO_SENTIMENT_COLUMNS = frozenset(
         "hold",
         "created",
         "volume $",
+        "entry time",
+        "exit time",
+        "entry price",
+        "exit price",
     }
 )
 
@@ -531,11 +548,22 @@ class ReportBuilder:
         return self
 
     def table(
-        self, rows: list[dict], columns: list[str] | None = None
+        self,
+        rows: list[dict],
+        columns: list[str] | None = None,
+        *,
+        wide: bool = False,
     ) -> ReportBuilder:
         if not columns and rows:
             columns = list(rows[0].keys())
-        self._sections.append({"type": "table", "columns": columns or [], "rows": rows})
+        self._sections.append(
+            {
+                "type": "table",
+                "columns": columns or [],
+                "rows": rows,
+                "wide": wide,
+            }
+        )
         return self
 
     def params(
@@ -671,7 +699,13 @@ class ReportBuilder:
                 )
                 i += 1
             elif sec["type"] == "table":
-                parts.append(ReportBuilder._render_table(sec["columns"], sec["rows"]))
+                parts.append(
+                    ReportBuilder._render_table(
+                        sec["columns"],
+                        sec["rows"],
+                        wide=bool(sec.get("wide")),
+                    )
+                )
                 i += 1
             else:
                 i += 1
@@ -715,13 +749,37 @@ class ReportBuilder:
         )
 
     @staticmethod
-    def _render_table(columns: list[str], rows: list[dict]) -> str:
+    def datetime_cell(value: Any) -> dict[str, str]:
+        """Table cell value that renders UTC with a data attribute for local-time UI."""
+        if value is None or value == "":
+            return {"_type": "datetime", "utc": "", "display": ""}
+        if isinstance(value, str):
+            parsed_dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            utc = parsed_dt.astimezone(timezone.utc)
+        else:
+            utc = value.astimezone(timezone.utc)
+        utc_iso = utc.isoformat()
+        display = utc.strftime("%Y-%m-%d %H:%M UTC")
+        return {"_type": "datetime", "utc": utc_iso, "display": display}
+
+    @staticmethod
+    def _render_table(columns: list[str], rows: list[dict], *, wide: bool = False) -> str:
         header = "".join(f"<th>{html.escape(str(c))}</th>" for c in columns)
         body_rows = []
         for row in rows:
             cells = []
             for c in columns:
                 val = row.get(c, "")
+                if isinstance(val, dict) and val.get("_type") == "datetime":
+                    utc_attr = html.escape(str(val.get("utc", "")))
+                    display = html.escape(str(val.get("display", "")))
+                    if utc_attr:
+                        cells.append(
+                            f'<td class="condor-datetime" data-datetime-utc="{utc_attr}">{display}</td>'
+                        )
+                    else:
+                        cells.append(f"<td>{display}</td>")
+                    continue
                 skip_sentiment = c.strip().lower() in _NO_SENTIMENT_COLUMNS
                 cls = "" if skip_sentiment else _sentiment_class(val)
                 if cls:
@@ -730,7 +788,8 @@ class ReportBuilder:
                     cells.append(f"<td>{html.escape(str(val))}</td>")
             body_rows.append(f"<tr>{''.join(cells)}</tr>")
         body = "\n".join(body_rows)
-        return f'<div class="section section-table"><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></div>'
+        section_class = "section section-table-wide" if wide else "section section-table"
+        return f'<div class="{section_class}"><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
 # ── LiveReport ──

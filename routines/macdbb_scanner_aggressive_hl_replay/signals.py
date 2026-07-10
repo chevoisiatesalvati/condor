@@ -35,6 +35,25 @@ def _journal_price_is_plausible(journal_signal: JournalSignal1h, price: float) -
     return True
 
 
+def _timeline_prefers_candle_price(
+    config: ReplayConfigBase,
+    hl_price_cache: HlPriceCache | None,
+    pair: str,
+    tick: int,
+) -> float | None:
+    """Timeline snapshot replays prefetch barrier candles; align tick price with that source."""
+    if getattr(config, "replay_mode", None) != "timeline_backtest":
+        return None
+    if not is_report_driven_data_source(config.data_source):
+        return None
+    if not hl_price_cache:
+        return None
+    candle_price = hl_price_cache.get((pair, tick))
+    if candle_price and candle_price > 0:
+        return candle_price
+    return None
+
+
 def _resolve_price(
     pair: str,
     meta: TickMeta,
@@ -46,6 +65,22 @@ def _resolve_price(
     price = 0.0
     price_trusted = False
     price_tag = ""
+
+    timeline_candle_price = _timeline_prefers_candle_price(
+        config,
+        hl_price_cache,
+        pair,
+        meta.tick,
+    )
+    if timeline_candle_price is not None and config.price_source in ("auto", "reports"):
+        price = timeline_candle_price
+        price_trusted = True
+        if getattr(config, "candle_source", "hyperliquid") == "binance_perpetual":
+            price_tag = "binance"
+        else:
+            price_tag = "hl"
+        last_price_by_pair[pair] = price
+        return price, price_trusted, price_tag
 
     if config.price_source in ("auto", "reports") and parsed_html is not None:
         if parsed_html.price > 0:
