@@ -9,6 +9,10 @@ import json
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     ENTRY_SLTP_SWEEP_SAMPLE_MODES,
     SWEEP_GRID_CHOICES,
@@ -122,6 +126,27 @@ def _parse_args() -> argparse.Namespace:
         "--no-auto-resume",
         action="store_true",
         help="Ignore progress.json and start from config 0",
+    )
+    sweep.add_argument(
+        "--auto-promote",
+        action="store_true",
+        help="On new cap-norm leader (after first positive anchor): preset + backtest + TG + refine",
+    )
+    sweep.add_argument(
+        "--telegram-chat-id",
+        default="",
+        help="Telegram chat id for promote notifications (default: ADMIN_USER_ID env)",
+    )
+    sweep.add_argument(
+        "--refine-workers",
+        type=int,
+        default=2,
+        help="Workers for auto-spawned refine subprocess (default 2)",
+    )
+    sweep.add_argument(
+        "--no-refine",
+        action="store_true",
+        help="With --auto-promote: preset + backtest + TG only, skip refine subprocess",
     )
 
     sweep_all = sub.add_parser(
@@ -288,6 +313,12 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         sample_mode=getattr(args, "sample_mode", "random"),
         start_index=start_index,
         resume_results=resume_results,
+        auto_promote=getattr(args, "auto_promote", False),
+        telegram_chat_id=args.telegram_chat_id or None,
+        run_refine=not getattr(args, "no_refine", False),
+        refine_workers=getattr(args, "refine_workers", 2),
+        automation_state_path=args.output_dir / f"{output_stem}.automation.json",
+        repo_root=Path(__file__).resolve().parent.parent,
     )
     csv_path = args.output_dir / f"{output_stem}.csv"
     if results:

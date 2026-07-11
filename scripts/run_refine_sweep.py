@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -70,6 +71,18 @@ def _parse_args() -> argparse.Namespace:
         "--output-tag",
         default="",
         help="Optional short tag for output filenames (default: derived from parent preset)",
+    )
+    parser.add_argument(
+        "--parent-overrides-json",
+        type=Path,
+        default=None,
+        help="JSON file with full merged parent config (alternative to --parent-preset)",
+    )
+    parser.add_argument(
+        "--automation-state-path",
+        type=Path,
+        default=None,
+        help="Automation state JSON for cancel-between-phases checks",
     )
     parser.add_argument(
         "--legacy-staged-parent",
@@ -205,7 +218,37 @@ def _load_legacy_staged_parent(args: argparse.Namespace) -> tuple[str, dict]:
     return name, full
 
 
+def _load_json_parent(path: Path) -> tuple[str, dict]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"Parent overrides JSON must be an object: {path}")
+    full = dict(raw)
+    full["preset"] = "custom"
+    label = path.stem
+    print(f"Refine root parent from JSON: {path}")
+    return label, full
+
+
+def _check_refine_cancel(args: argparse.Namespace) -> bool:
+    if args.automation_state_path is None:
+        return False
+    from routines.macdbb_scanner_aggressive_hl_replay.sweep_automation import (
+        is_refine_cancel_requested,
+    )
+
+    if is_refine_cancel_requested(args.automation_state_path):
+        print("Refine cancel requested — exiting between phases")
+        return True
+    return False
+
+
 def _load_root_parent(args: argparse.Namespace) -> tuple[str, dict]:
+    if args.parent_overrides_json is not None:
+        if not args.parent_overrides_json.is_file():
+            raise FileNotFoundError(
+                f"Parent overrides JSON not found: {args.parent_overrides_json}"
+            )
+        return _load_json_parent(args.parent_overrides_json)
     if args.legacy_staged_parent:
         return _load_legacy_staged_parent(args)
     return _load_preset_parent(args.parent_preset)
@@ -294,12 +337,18 @@ async def _run_bcd(args: argparse.Namespace, root_parent: dict) -> None:
         raise FileNotFoundError(f"Refine phase A CSV not found: {refine_a_csv}")
     _name_a, parent_a = _load_refine_parent(refine_a_csv, parent_overrides=root_parent)
 
+    if _check_refine_cancel(args):
+        return
     refine_b_csv = await _run_refine_phase(args, "B", parent_overrides=parent_a)
     _name_b, parent_b = _load_refine_parent(refine_b_csv, parent_overrides=parent_a)
 
+    if _check_refine_cancel(args):
+        return
     refine_c_csv = await _run_refine_phase(args, "C", parent_overrides=parent_b)
     _name_c, parent_c = _load_refine_parent(refine_c_csv, parent_overrides=parent_b)
 
+    if _check_refine_cancel(args):
+        return
     await _run_refine_phase(args, "D", parent_overrides=parent_c)
 
 
@@ -310,6 +359,8 @@ async def _run_all(args: argparse.Namespace, root_parent: dict, root_label: str)
         parent_overrides=root_parent,
         root_parent_label=root_label,
     )
+    if _check_refine_cancel(args):
+        return
     args.refine_a_csv = refine_a_csv
     await _run_bcd(args, root_parent)
 
@@ -318,9 +369,13 @@ async def main() -> int:
     args = _parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.parent_overrides_json and args.legacy_staged_parent:
+        print("Use only one of --parent-overrides-json or --legacy-staged-parent", file=sys.stderr)
+        return 1
+
     try:
         root_label, root_parent = _load_root_parent(args)
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 

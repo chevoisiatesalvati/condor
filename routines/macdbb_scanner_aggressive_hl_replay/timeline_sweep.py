@@ -192,6 +192,12 @@ async def run_timeline_dynamic_sweep(
     allow_non_fork: bool = False,
     start_index: int = 0,
     resume_results: list[SweepResult] | None = None,
+    auto_promote: bool = False,
+    telegram_chat_id: str | None = None,
+    run_refine: bool = True,
+    refine_workers: int = 2,
+    automation_state_path: Path | None = None,
+    repo_root: Path | None = None,
 ) -> tuple[list[SweepResult], str, float, str, str]:
     timeline_fields = timeline_sweep_overrides(
         range_start_utc=range_start_utc,
@@ -309,6 +315,45 @@ async def run_timeline_dynamic_sweep(
     if results:
         print(f"Loaded {len(results)} prior sweep result(s) from checkpoint")
 
+    promote_queue = None
+    leader_tracker = None
+    if auto_promote:
+        from routines.macdbb_scanner_aggressive_hl_replay.sweep_automation import (
+            LeaderTracker,
+            PromoteAutomationConfig,
+            PromoteQueue,
+            default_telegram_chat_id,
+        )
+
+        resolved_output_dir = output_dir or Path("data/strategy_replay_sweeps")
+        state_path = automation_state_path or (resolved_output_dir / f"{stem}.automation.json")
+        leader_tracker = LeaderTracker(state_path)
+        promote_queue = PromoteQueue(
+            leader_tracker,
+            PromoteAutomationConfig(
+                enabled=True,
+                telegram_chat_id=telegram_chat_id or default_telegram_chat_id(),
+                run_refine=run_refine,
+                refine_workers=refine_workers,
+                dynamic_mode=dynamic_mode,
+                sweep_grid=sweep_grid,
+                frequency_sec=frequency_sec,
+                time_window_min=time_window_min,
+                range_start_utc=str(timeline_fields.get("range_start_utc") or ""),
+                range_end_utc=str(timeline_fields.get("range_end_utc") or ""),
+                snapshot_dir=str(snapshot_dir or ""),
+                output_dir=resolved_output_dir,
+                automation_state_path=state_path,
+                repo_root=repo_root or Path(".").resolve(),
+            ),
+        )
+        promote_queue.start()
+        print(
+            f"Auto-promote enabled | state={state_path} | "
+            f"telegram={'yes' if (telegram_chat_id or default_telegram_chat_id()) else 'no'} | "
+            f"refine={'yes' if run_refine else 'no'}"
+        )
+
     def _record_progress(done: int, result: SweepResult) -> None:
         result.snapshot_dir = snap_label
         elapsed = time.monotonic() - sweep_started
@@ -379,6 +424,9 @@ async def run_timeline_dynamic_sweep(
 
     def _on_batch_result(local_done: int, result: SweepResult) -> None:
         results.append(result)
+        if promote_queue is not None and leader_tracker is not None:
+            job = leader_tracker.consider(result)
+            promote_queue.submit(job)
         _record_progress(start_index + local_done, result)
 
     run_sweep_config_batch(
@@ -389,6 +437,9 @@ async def run_timeline_dynamic_sweep(
         allow_non_fork=allow_non_fork,
         on_result=_on_batch_result,
     )
+
+    if promote_queue is not None:
+        await promote_queue.shutdown()
 
     results.sort(key=lambda row: row.capital_normalized_pnl, reverse=True)
 
