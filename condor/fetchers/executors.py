@@ -13,6 +13,57 @@ MAX_EXECUTORS_FETCH = 5000
 EXECUTORS_PAGE_SIZE = 500
 DETAIL_HYDRATE_CONCURRENCY = 25
 
+# Persist get_executor enrichment across fresh search_executors / WS list rows.
+_EXECUTOR_ENRICHMENT_CACHE: dict[str, dict] = {}
+# Ids already sent to get_executor once (side may still be absent on terminated rows).
+_SIDE_HYDRATION_ATTEMPTED_IDS: set[str] = set()
+
+
+def reset_executor_list_enrichment_state() -> None:
+    """Clear in-process enrichment caches (tests / server reconnect)."""
+    _EXECUTOR_ENRICHMENT_CACHE.clear()
+    _SIDE_HYDRATION_ATTEMPTED_IDS.clear()
+
+
+def _enrichment_snapshot(executor: dict) -> dict:
+    """Fields to re-apply when list payloads omit terminated-executor detail."""
+    snap: dict = {}
+    config = executor.get("config")
+    if isinstance(config, dict) and config:
+        snap["config"] = dict(config)
+    custom_info = executor.get("custom_info")
+    if isinstance(custom_info, dict) and custom_info:
+        snap["custom_info"] = dict(custom_info)
+    for key in (
+        "side",
+        "connector_name",
+        "connector",
+        "trading_pair",
+        "type",
+        "controller_id",
+        "executor_type",
+    ):
+        val = executor.get(key)
+        if val not in (None, ""):
+            snap[key] = val
+    return snap
+
+
+def remember_executor_enrichment(executor: dict) -> None:
+    ex_id = str(executor.get("id") or executor.get("executor_id") or "")
+    if not ex_id:
+        return
+    snap = _enrichment_snapshot(executor)
+    if snap:
+        _EXECUTOR_ENRICHMENT_CACHE[ex_id] = snap
+
+
+def _reserve_side_hydration(ex_id: str) -> bool:
+    if not ex_id or ex_id in _SIDE_HYDRATION_ATTEMPTED_IDS:
+        return False
+    _SIDE_HYDRATION_ATTEMPTED_IDS.add(ex_id)
+    return True
+
 
 # ============================================
 # EXTRACTION / PARSING HELPERS
@@ -240,9 +291,13 @@ def get_executor_side(executor: Dict[str, Any]) -> str:
 
 
 def executor_list_payload_needs_detail(executor: Dict[str, Any]) -> bool:
-    """True when search_executors list row lacks side and needs get_executor."""
-    ex_id = executor.get("id") or executor.get("executor_id")
-    return bool(ex_id) and not resolve_executor_side(executor)
+    """True when search_executors list row lacks side and still needs get_executor."""
+    ex_id = str(executor.get("id") or executor.get("executor_id") or "")
+    if not ex_id:
+        return False
+    if ex_id in _SIDE_HYDRATION_ATTEMPTED_IDS:
+        return False
+    return not resolve_executor_side(executor)
 
 
 def merge_executor_summary_with_detail(summary: dict, detail: dict) -> dict:
@@ -272,6 +327,21 @@ def merge_executor_summary_with_detail(summary: dict, detail: dict) -> dict:
     return merged
 
 
+def apply_executor_enrichment_cache(executors: list[dict]) -> list[dict]:
+    """Re-apply cached get_executor fields onto fresh stripped list rows."""
+    if not _EXECUTOR_ENRICHMENT_CACHE:
+        return executors
+    out: list[dict] = []
+    for ex in executors:
+        ex_id = str(ex.get("id") or ex.get("executor_id") or "")
+        cached = _EXECUTOR_ENRICHMENT_CACHE.get(ex_id)
+        if cached:
+            out.append(merge_executor_summary_with_detail(ex, cached))
+        else:
+            out.append(ex)
+    return out
+
+
 async def hydrate_executor_list_details(
     client,
     executors: list[dict],
@@ -282,8 +352,20 @@ async def hydrate_executor_list_details(
     if not executors:
         return executors
 
-    needs = [(i, ex) for i, ex in enumerate(executors) if executor_list_payload_needs_detail(ex)]
+    executors = apply_executor_enrichment_cache(executors)
+
+    needs: list[tuple[int, dict]] = []
+    for i, ex in enumerate(executors):
+        if not executor_list_payload_needs_detail(ex):
+            continue
+        ex_id = str(ex.get("id") or ex.get("executor_id") or "")
+        if not _reserve_side_hydration(ex_id):
+            continue
+        needs.append((i, ex))
+
     if not needs:
+        for ex in executors:
+            remember_executor_enrichment(ex)
         return executors
 
     result = list(executors)
@@ -294,10 +376,20 @@ async def hydrate_executor_list_details(
         async with sem:
             detail = await get_executor_detail(client, ex_id)
         if detail:
-            result[idx] = merge_executor_summary_with_detail(summary, detail)
+            merged = merge_executor_summary_with_detail(summary, detail)
+            result[idx] = merged
+            remember_executor_enrichment(merged)
+        else:
+            remember_executor_enrichment(summary)
 
     await asyncio.gather(*(_hydrate_one(i, ex) for i, ex in needs))
-    logger.info("Hydrated executor details for %d/%d list rows missing side", len(needs), len(executors))
+    for ex in result:
+        remember_executor_enrichment(ex)
+    logger.info(
+        "Hydrated executor details for %d/%d list rows missing side",
+        len(needs),
+        len(executors),
+    )
     return result
 
 

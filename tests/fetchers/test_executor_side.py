@@ -7,13 +7,22 @@ from unittest.mock import AsyncMock
 import pytest
 
 from condor.fetchers.executors import (
+    apply_executor_enrichment_cache,
     executor_list_payload_needs_detail,
     hydrate_executor_list_details,
     merge_executor_summary_with_detail,
     normalize_executor_side,
+    reset_executor_list_enrichment_state,
     resolve_executor_side,
     get_executor_side,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_executor_enrichment_state():
+    reset_executor_list_enrichment_state()
+    yield
+    reset_executor_list_enrichment_state()
 from condor.web.routes.executors import _build_executor_info
 
 
@@ -74,6 +83,46 @@ async def test_hydrate_executor_list_details_fetches_missing_side(monkeypatch):
 
     assert resolve_executor_side(hydrated[0]) == "BUY"
     assert not executor_list_payload_needs_detail(hydrated[0])
+
+
+@pytest.mark.asyncio
+async def test_hydrate_skips_repeat_fetch_but_keeps_enrichment(monkeypatch):
+    summary = {"id": "term-2", "status": "TERMINATED", "config": {}}
+    detail = {
+        "id": "term-2",
+        "config": {"side": 1, "stop_loss": 0.02, "take_profit": 0.04},
+        "custom_info": {"side": "BUY"},
+    }
+    client = AsyncMock()
+    fetch = AsyncMock(return_value=detail)
+    monkeypatch.setattr("condor.fetchers.executors.get_executor_detail", fetch)
+
+    await hydrate_executor_list_details(client, [summary])
+    fresh = {"id": "term-2", "status": "TERMINATED", "config": {}, "pnl": 12.5}
+    second = await hydrate_executor_list_details(client, [fresh])
+
+    fetch.assert_awaited_once()
+    assert resolve_executor_side(second[0]) == "BUY"
+    assert second[0]["config"]["stop_loss"] == 0.02
+    assert second[0]["config"]["take_profit"] == 0.04
+    assert second[0]["pnl"] == 12.5
+    assert not executor_list_payload_needs_detail(second[0])
+
+
+def test_apply_enrichment_cache_restores_side_without_fetch():
+    enriched = {
+        "id": "term-3",
+        "config": {"side": 2, "stop_loss": 0.01},
+        "custom_info": {"side": "SELL"},
+    }
+    from condor.fetchers.executors import remember_executor_enrichment
+
+    remember_executor_enrichment(enriched)
+    fresh = {"id": "term-3", "status": "TERMINATED", "config": {}}
+    restored = apply_executor_enrichment_cache([fresh])[0]
+
+    assert resolve_executor_side(restored) == "SELL"
+    assert restored["config"]["stop_loss"] == 0.01
 
 
 def test_build_executor_info_uses_resolve_executor_side():
