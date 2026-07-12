@@ -1,4 +1,6 @@
 import type { ExecutorInfo } from "./api";
+import { resolveExecutorConfig } from "./executors";
+import { resolveExecutorCloseTimestamp, resolveExecutorSide, resolveExecutorTimestamp } from "./formatters";
 import { getThemeColors, pnlHexColor, sideColor } from "./theme-colors";
 
 // ── Overlay Model ──
@@ -67,9 +69,10 @@ export interface ExecutorOverlay {
 
 // ── Helpers ──
 
-function normSide(side: string): "buy" | "sell" {
-  const s = side.toLowerCase();
-  return s === "buy" || s === "1" ? "buy" : "sell";
+function normSide(executor: ExecutorInfo): "buy" | "sell" {
+  const label = resolveExecutorSide(executor);
+  if (label === "SELL") return "sell";
+  return "buy";
 }
 
 function closeTypeLabel(closeType: string): string {
@@ -87,12 +90,35 @@ function isActiveStatus(status: string): boolean {
   return s === "running" || s === "active_position" || s === "active";
 }
 
+function executorOpenTime(executor: ExecutorInfo): number {
+  return resolveExecutorTimestamp(executor);
+}
+
+function executorCloseTime(executor: ExecutorInfo): number {
+  return resolveExecutorCloseTimestamp(executor);
+}
+
 // ── Position Executor Overlay ──
 
 function computePositionOverlay(executor: ExecutorInfo): ExecutorOverlay {
   const customInfo = executor.custom_info || {};
-  const side = normSide(String(customInfo.side || executor.side));
-  const config = executor.config || {};
+  const side = normSide(executor);
+  const config = resolveExecutorConfig(executor);
+  const tripleBarrier = (() => {
+    const raw = config.triple_barrier_config;
+    if (!raw) return config;
+    if (typeof raw === "string") {
+      try {
+        const parsed = JSON.parse(raw);
+        return typeof parsed === "object" && parsed
+          ? { ...config, ...(parsed as Record<string, unknown>) }
+          : config;
+      } catch {
+        return config;
+      }
+    }
+    return typeof raw === "object" ? { ...config, ...(raw as Record<string, unknown>) } : config;
+  })();
   const entry =
     Number(customInfo.current_position_average_price) ||
     executor.entry_price ||
@@ -116,7 +142,7 @@ function computePositionOverlay(executor: ExecutorInfo): ExecutorOverlay {
   }
 
   // Stop Loss
-  const slPct = Number(config.stop_loss);
+  const slPct = Number(tripleBarrier.stop_loss ?? config.stop_loss);
   if (entry > 0 && slPct > 0 && slPct !== -1) {
     const slPrice = side === "buy" ? entry * (1 - slPct) : entry * (1 + slPct);
     lines.push({
@@ -128,7 +154,7 @@ function computePositionOverlay(executor: ExecutorInfo): ExecutorOverlay {
   }
 
   // Take Profit
-  const tpPct = Number(config.take_profit);
+  const tpPct = Number(tripleBarrier.take_profit ?? config.take_profit);
   if (entry > 0 && tpPct > 0 && tpPct !== -1) {
     const tpPrice = side === "buy" ? entry * (1 + tpPct) : entry * (1 - tpPct);
     lines.push({
@@ -176,11 +202,13 @@ function computePositionOverlay(executor: ExecutorInfo): ExecutorOverlay {
 
   // Segment: entry → exit
   let segment: ExecutorSegment | undefined;
-  if (entry > 0 && executor.timestamp > 0) {
+  const openTime = executorOpenTime(executor);
+  if (entry > 0 && openTime > 0) {
     const exitP = closePrice > 0 ? closePrice : entry;
-    const exitT = executor.close_timestamp > 0 ? executor.close_timestamp : Math.floor(Date.now() / 1000);
+    const closeTime = executorCloseTime(executor);
+    const exitT = closeTime > 0 ? closeTime : Math.floor(Date.now() / 1000);
     segment = {
-      entryTime: executor.timestamp,
+      entryTime: openTime,
       entryPrice: entry,
       exitTime: exitT,
       exitPrice: exitP,
@@ -189,9 +217,9 @@ function computePositionOverlay(executor: ExecutorInfo): ExecutorOverlay {
   }
 
   // Entry marker
-  if (entry > 0 && executor.timestamp > 0) {
+  if (entry > 0 && openTime > 0) {
     markers.push({
-      time: executor.timestamp,
+      time: openTime,
       price: entry,
       position: side === "buy" ? "belowBar" : "aboveBar",
       shape: side === "buy" ? "arrowUp" : "arrowDown",
@@ -201,10 +229,11 @@ function computePositionOverlay(executor: ExecutorInfo): ExecutorOverlay {
   }
 
   // Close marker
-  if (executor.close_timestamp > 0 && (entry > 0 || closePrice > 0)) {
+  const closeTime = executorCloseTime(executor);
+  if (closeTime > 0 && (entry > 0 || closePrice > 0)) {
     const markerPrice = closePrice > 0 ? closePrice : entry;
     markers.push({
-      time: executor.close_timestamp,
+      time: closeTime,
       price: markerPrice,
       position: side === "buy" ? "aboveBar" : "belowBar",
       shape: "circle",
@@ -213,8 +242,8 @@ function computePositionOverlay(executor: ExecutorInfo): ExecutorOverlay {
     });
   }
 
-  const start = executor.timestamp > 0 ? executor.timestamp : Math.floor(Date.now() / 1000);
-  const end = executor.close_timestamp > 0 ? executor.close_timestamp : Math.floor(Date.now() / 1000);
+  const start = openTime > 0 ? openTime : Math.floor(Date.now() / 1000);
+  const end = closeTime > 0 ? closeTime : Math.floor(Date.now() / 1000);
 
   return {
     executorId: executor.id,
@@ -230,7 +259,7 @@ function computePositionOverlay(executor: ExecutorInfo): ExecutorOverlay {
     markers,
     segment,
     timeRange: { start, end },
-    config: executor.config,
+    config,
     entryPrice: entry,
     exitPrice: closePrice,
   };
@@ -239,15 +268,17 @@ function computePositionOverlay(executor: ExecutorInfo): ExecutorOverlay {
 // ── Grid Executor Overlay ──
 
 function computeGridOverlay(executor: ExecutorInfo): ExecutorOverlay {
-  const side = normSide(executor.side);
+  const side = normSide(executor);
   const config = executor.config || {};
 
   const startPrice = Number(config.start_price);
   const endPrice = Number(config.end_price);
   const limitPrice = Number(config.limit_price);
 
-  const start = executor.timestamp > 0 ? executor.timestamp : Math.floor(Date.now() / 1000);
-  const end = executor.close_timestamp > 0 ? executor.close_timestamp : Math.floor(Date.now() / 1000);
+  const openTime = executorOpenTime(executor);
+  const closeTime = executorCloseTime(executor);
+  const start = openTime > 0 ? openTime : Math.floor(Date.now() / 1000);
+  const end = closeTime > 0 ? closeTime : Math.floor(Date.now() / 1000);
 
   // Grid box: rectangle from start_price to end_price over the executor lifetime
   let gridBox: GridBox | undefined;
@@ -288,7 +319,7 @@ function computeGridOverlay(executor: ExecutorInfo): ExecutorOverlay {
 function computeOrderOverlay(executor: ExecutorInfo): ExecutorOverlay {
   const customInfo = executor.custom_info || {};
   const config = executor.config || {};
-  const side = normSide(String(customInfo.side || executor.side || config.side));
+  const side = normSide(executor);
   const lines: PriceLine[] = [];
   const markers: ChartMarker[] = [];
 
@@ -312,8 +343,10 @@ function computeOrderOverlay(executor: ExecutorInfo): ExecutorOverlay {
   const descriptiveLabel = `${sideLabel}${amountStr}${chaserSuffix}`;
 
   const active = isActiveStatus(executor.status);
-  const start = executor.timestamp > 0 ? executor.timestamp : Math.floor(Date.now() / 1000);
-  const end = executor.close_timestamp > 0 ? executor.close_timestamp : Math.floor(Date.now() / 1000);
+  const openTime = executorOpenTime(executor);
+  const closeTime = executorCloseTime(executor);
+  const start = openTime > 0 ? openTime : Math.floor(Date.now() / 1000);
+  const end = closeTime > 0 ? closeTime : Math.floor(Date.now() / 1000);
 
   let segment: ExecutorSegment | undefined;
 
@@ -351,9 +384,9 @@ function computeOrderOverlay(executor: ExecutorInfo): ExecutorOverlay {
     });
 
     // Close marker (triangle)
-    if (executor.close_timestamp > 0) {
+    if (closeTime > 0) {
       markers.push({
-        time: executor.close_timestamp,
+        time: closeTime,
         price: fillPrice,
         position: side === "buy" ? "aboveBar" : "belowBar",
         shape: side === "buy" ? "arrowDown" : "arrowUp",
@@ -363,11 +396,11 @@ function computeOrderOverlay(executor: ExecutorInfo): ExecutorOverlay {
     }
 
     // Short segment from entry to close
-    if (executor.close_timestamp > 0) {
+    if (closeTime > 0) {
       segment = {
         entryTime: start,
         entryPrice: orderPrice,
-        exitTime: executor.close_timestamp,
+        exitTime: closeTime,
         exitPrice: fillPrice,
         color: pnlHexColor(executor.pnl),
       };
@@ -398,7 +431,7 @@ function computeOrderOverlay(executor: ExecutorInfo): ExecutorOverlay {
 
 function computeGenericOverlay(executor: ExecutorInfo): ExecutorOverlay {
   const customInfo = executor.custom_info || {};
-  const side = normSide(String(customInfo.side || executor.side));
+  const side = normSide(executor);
   const lines: PriceLine[] = [];
   const markers: ChartMarker[] = [];
   const entryPrice =
@@ -420,11 +453,13 @@ function computeGenericOverlay(executor: ExecutorInfo): ExecutorOverlay {
 
   // Segment
   let segment: ExecutorSegment | undefined;
-  if (entryPrice > 0 && executor.timestamp > 0) {
+  const openTime = executorOpenTime(executor);
+  const closeTime = executorCloseTime(executor);
+  if (entryPrice > 0 && openTime > 0) {
     const exitP = closePrice > 0 ? closePrice : entryPrice;
-    const exitT = executor.close_timestamp > 0 ? executor.close_timestamp : Math.floor(Date.now() / 1000);
+    const exitT = closeTime > 0 ? closeTime : Math.floor(Date.now() / 1000);
     segment = {
-      entryTime: executor.timestamp,
+      entryTime: openTime,
       entryPrice: entryPrice,
       exitTime: exitT,
       exitPrice: exitP,
@@ -432,9 +467,9 @@ function computeGenericOverlay(executor: ExecutorInfo): ExecutorOverlay {
     };
   }
 
-  if (entryPrice > 0 && executor.timestamp > 0) {
+  if (entryPrice > 0 && openTime > 0) {
     markers.push({
-      time: executor.timestamp,
+      time: openTime,
       price: entryPrice,
       position: side === "buy" ? "belowBar" : "aboveBar",
       shape: side === "buy" ? "arrowUp" : "arrowDown",
@@ -443,9 +478,9 @@ function computeGenericOverlay(executor: ExecutorInfo): ExecutorOverlay {
     });
   }
 
-  if (executor.close_timestamp > 0 && (entryPrice > 0 || closePrice > 0)) {
+  if (closeTime > 0 && (entryPrice > 0 || closePrice > 0)) {
     markers.push({
-      time: executor.close_timestamp,
+      time: closeTime,
       price: closePrice > 0 ? closePrice : entryPrice,
       position: side === "buy" ? "aboveBar" : "belowBar",
       shape: "circle",
@@ -454,8 +489,8 @@ function computeGenericOverlay(executor: ExecutorInfo): ExecutorOverlay {
     });
   }
 
-  const start = executor.timestamp > 0 ? executor.timestamp : Math.floor(Date.now() / 1000);
-  const end = executor.close_timestamp > 0 ? executor.close_timestamp : Math.floor(Date.now() / 1000);
+  const start = openTime > 0 ? openTime : Math.floor(Date.now() / 1000);
+  const end = closeTime > 0 ? closeTime : Math.floor(Date.now() / 1000);
 
   return {
     executorId: executor.id,
@@ -498,7 +533,39 @@ export function getExecutorColor(_index: number, pnl?: number): string {
 }
 
 export function computeMultiOverlays(executors: ExecutorInfo[]): ExecutorOverlay[] {
-  return executors.map((ex) => computeExecutorOverlay(ex));
+  const result = executors.map((ex) => computeExecutorOverlay(ex));
+  // #region agent log
+  for (const o of result) {
+    fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
+      body: JSON.stringify({
+        sessionId: "644d7b",
+        hypothesisId: "H1-H3",
+        location: "executor-overlays.ts:computeMultiOverlays",
+        message: "Overlay segment computed",
+        data: {
+          executorId: o.executorId,
+          type: o.type,
+          status: o.status,
+          hasSegment: !!o.segment,
+          segment: o.segment
+            ? {
+                entryTime: o.segment.entryTime,
+                exitTime: o.segment.exitTime,
+                entryPrice: o.segment.entryPrice,
+                exitPrice: o.segment.exitPrice,
+              }
+            : null,
+          entryPrice: o.entryPrice,
+          exitPrice: o.exitPrice,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }
+  // #endregion
+  return result;
 }
 
 function toSeconds(ts: number): number {

@@ -10,13 +10,22 @@ logger = logging.getLogger(__name__)
 from config_manager import get_config_manager
 from condor.web.auth import get_current_user
 from condor.web.models import CreateExecutorRequest, ExecutorInfo, WebUser
+from condor.web.routes.positions import _normalize_position
 from condor.fetchers.executors import (
     fetch_all_executors,
     extract_executors_list as _extract_executors_list,
+    get_executor_close_timestamp,
+    get_executor_config,
+    get_executor_display_config,
+    get_executor_custom_info,
+    get_executor_entry_price,
     get_executor_pnl,
+    get_executor_timestamp,
     get_executor_volume,
-    get_executor_type,
     get_executor_fees,
+    get_executor_side,
+    get_executor_type,
+    parse_executor_json_field,
     MAX_EXECUTORS_FETCH,
 )
 
@@ -38,17 +47,38 @@ def _build_executor_info(ex: dict) -> ExecutorInfo | None:
     """
     if not isinstance(ex, dict):
         return None
-    config = ex.get("config", ex)
-    custom_info = ex.get("custom_info") or {}
+    config = get_executor_config(ex)
+    custom_info = get_executor_custom_info(ex)
 
-    # Entry price is display-only (PnL comes from get_executor_pnl(), independent of it).
-    # Only position executors carry a real entry_price (config > top-level > custom_info);
-    # grid/DCA executors expose break_even_price instead, so fall back to it for display.
-    _cfg_entry = float(config.get("entry_price") or 0)
-    _top_entry = float(ex.get("entry_price") or 0)
-    _ci_entry = float(custom_info.get("current_position_average_price") or 0)
-    _be_price = float(custom_info.get("break_even_price") or 0)
-    entry_price = _cfg_entry or _top_entry or _ci_entry or _be_price or 0.0
+    entry_price = get_executor_entry_price(ex)
+
+    # #region agent log
+    if entry_price == 0.0 and get_executor_type(ex) == "position":
+        import json
+        import time
+
+        _raw_ci = ex.get("custom_info")
+        _log = {
+            "sessionId": "644d7b",
+            "runId": "post-fix-v2",
+            "hypothesisId": "H8",
+            "location": "executors.py:_build_executor_info",
+            "message": "Position executor missing entry_price",
+            "data": {
+                "id": str(ex.get("id") or ex.get("executor_id") or ""),
+                "custom_info_type": type(_raw_ci).__name__,
+                "custom_info_preview": str(_raw_ci)[:120] if _raw_ci else None,
+                "config_type": type(ex.get("config")).__name__,
+                "parsed_custom_keys": list(get_executor_custom_info(ex).keys())[:10],
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        try:
+            with open("/home/saul/projects/Hummingbot/condor/.cursor/debug-644d7b.log", "a") as _f:
+                _f.write(json.dumps(_log) + "\n")
+        except Exception:
+            pass
+    # #endregion
 
     # Current/close price: top-level > custom_info.close_price > held_position_orders fill price
     _top_cur = float(ex.get("current_price") or 0)
@@ -68,20 +98,20 @@ def _build_executor_info(ex: dict) -> ExecutorInfo | None:
         type=get_executor_type(ex),
         connector=config.get("connector_name") or ex.get("connector_name") or ex.get("connector") or "",
         trading_pair=config.get("trading_pair") or ex.get("trading_pair") or "",
-        side=_normalize_side(str(custom_info.get("side") or config.get("side") or ex.get("side") or "")),
+        side=get_executor_side(ex),
         status=(ex.get("status") or "").lower(),
         close_type=str(ex.get("close_type") or "").lower(),
         pnl=get_executor_pnl(ex),
         volume=get_executor_volume(ex),
-        timestamp=float(config.get("timestamp") or ex.get("timestamp") or 0),
+        timestamp=get_executor_timestamp(ex),
         controller_id=str(config.get("controller_id") or ex.get("controller_id") or ""),
         cum_fees_quote=get_executor_fees(ex),
         net_pnl_pct=float(ex.get("net_pnl_pct") or 0),
         entry_price=entry_price,
         current_price=current_price,
-        close_timestamp=float(ex.get("close_timestamp") or 0),
+        close_timestamp=get_executor_close_timestamp(ex),
         custom_info=custom_info,
-        config=ex.get("config", {}),
+        config=get_executor_display_config(ex),
     )
 
 
@@ -334,7 +364,12 @@ async def get_positions_held(
     else:
         positions = []
 
-    return {"positions": positions, "summary": result if isinstance(result, dict) else {}}
+    normalized = [
+        _normalize_position(pos, "executor", "Executor")
+        for pos in positions
+        if isinstance(pos, dict)
+    ]
+    return {"positions": normalized, "summary": result if isinstance(result, dict) else {}}
 
 
 @router.delete("/servers/{name}/executors/positions/{connector}/{pair}")

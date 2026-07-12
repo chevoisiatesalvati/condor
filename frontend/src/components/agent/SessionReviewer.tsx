@@ -558,6 +558,7 @@ export function SessionReviewer({
                       controllerIds={sessionControllerIds}
                       sessionSummary={parsedJournal.summary}
                       liveSessionStatus={liveSessionStatus}
+                      journalExecutors={parsedJournal.executors}
                     />
                     <SessionOverview journal={parsedJournal} perf={sessionPerf} />
                   </div>

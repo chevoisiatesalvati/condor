@@ -28,6 +28,23 @@ def test_entry_price_uses_held_position_order_fill():
     assert get_executor_entry_price(ex) == 0.00123
 
 
+def test_entry_price_parses_json_string_custom_info():
+    ex = {
+        "custom_info": '{"current_position_average_price": 0.77}',
+    }
+    assert get_executor_entry_price(ex) == 0.77
+
+
+def test_custom_info_parses_json_string():
+    from condor.fetchers.executors import get_executor_custom_info
+
+    info = get_executor_custom_info(
+        {"custom_info": '{"current_position_average_price": 1.23, "side": "BUY"}'}
+    )
+    assert info["current_position_average_price"] == 1.23
+    assert info["side"] == "BUY"
+
+
 def test_entry_price_uses_buy_breakeven_price():
     ex = {
         "config": {},

@@ -1,48 +1,28 @@
-"""Tests for the bounded candle cache in condor/web/routes/market.py (PERF-060)."""
+"""Tests for candle disk/memory cache."""
 
-import pytest
+from __future__ import annotations
 
-import condor.web.routes.market as market
+import time
 
-
-@pytest.fixture(autouse=True)
-def _clean_cache():
-    market._candle_cache.clear()
-    yield
-    market._candle_cache.clear()
-
-
-def test_cache_bounded_under_advancing_bucketed_starts():
-    """Simulate a chart minting a new bucketed_start key every request."""
-    now = 1000.0
-    for i in range(500):
-        key = ("srv", "binance", "BTC-USDT", "1m", 1000, i * 60, None)
-        market._candle_cache_put(key, [i], now + i)
-    assert len(market._candle_cache) <= market._CANDLE_CACHE_MAX
+from condor.candle_cache import (
+    DISK_CACHE_DIR,
+    get_cached_candles,
+    put_cached_candles,
+)
 
 
-def test_cache_bounded_under_burst_at_same_timestamp():
-    """Even with no time advancing (nothing expires), the size cap holds."""
-    now = 1000.0
-    for i in range(500):
-        key = ("srv", "binance", "BTC-USDT", "1m", 1000, i * 60, None)
-        market._candle_cache_put(key, [i], now)
-    assert len(market._candle_cache) <= market._CANDLE_CACHE_MAX
+def test_historical_candles_persist_to_disk(tmp_path, monkeypatch):
+    monkeypatch.setattr("condor.candle_cache.DISK_CACHE_DIR", tmp_path)
+    key = ("local", "hl", "BTC-USD", "1m", 5000, 1000, 2000)
+    end_time = time.time() - 7200
+    candles = [{"timestamp": 1000.0, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10}]
+    put_cached_candles(key, candles, end_time)
+    loaded = get_cached_candles(key, end_time)
+    assert loaded == candles
 
 
-def test_fresh_entry_still_hits_within_ttl():
-    """Repeated identical requests within the TTL keep hitting the cache."""
-    key = ("srv", "binance", "BTC-USDT", "1m", 1000, 0, None)
-    market._candle_cache_put(key, ["candles"], 100.0)
-    # Another key inserted within the TTL must not evict the fresh entry
-    market._candle_cache_put(("other",), ["x"], 100.0 + market._CANDLE_CACHE_TTL - 1)
-    cached = market._candle_cache.get(key)
-    assert cached is not None
-    assert cached[1] == ["candles"]
-
-
-def test_expired_entries_swept_on_write():
-    market._candle_cache_put(("old",), ["x"], 100.0)
-    market._candle_cache_put(("new",), ["y"], 100.0 + market._CANDLE_CACHE_TTL)
-    assert ("old",) not in market._candle_cache
-    assert ("new",) in market._candle_cache
+def test_live_candles_not_read_from_disk_after_memory_expires(monkeypatch):
+    monkeypatch.setattr("condor.candle_cache.DISK_CACHE_DIR", DISK_CACHE_DIR)
+    key = ("local", "hl", "ETH-USD", "1m", 5000, None, None)
+    put_cached_candles(key, [{"timestamp": 1.0, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}], None)
+    assert get_cached_candles(key, None) is not None

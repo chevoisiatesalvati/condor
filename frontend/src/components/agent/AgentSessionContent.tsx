@@ -4,56 +4,35 @@ import {
   ChevronRight,
   Wrench,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AgentPnlChart, metricsToDataPoints } from "@/components/agent/AgentPnlChart";
 import { DetailPanel, ExecutorTable, type SortDir, type SortKey } from "@/components/executor/ExecutorTable";
 import { StopConfirmDialog } from "@/components/executor/StopConfirmDialog";
 import { useAgentExecutors } from "@/hooks/useAgentExecutors";
-import { type AgentExecutorRow, type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
-import { type ParsedJournal, type ParsedSnapshot, parseSnapshot } from "@/lib/parse-agent";
+import { type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
 import {
-  formatCompactUsd,
-  formatCurrencyPnl,
+  controllerIdsForLookup,
+  enrichExecutorFromJournal,
+  enrichExecutorFromPositions,
+  enrichExecutorWithSessionDefaults,
+  executorInfoFromAgentRow,
+  getCachedExecutorsById,
+  mergeExecutorOverlay,
+  normalizePositionHeld,
+  resolveExecutorConfig,
+  type ExecutorEnrichmentContext,
+} from "@/lib/executors";
+import { type ExecutorEntry, type ParsedJournal, type ParsedSnapshot, parseSnapshot } from "@/lib/parse-agent";
+import {
+  resolveExecutorSide,
   formatExecutorSide,
-  isExecutorActive,
-  normalizeExecutorType,
+  formatCurrencyPnl,
+  formatCompactUsd,
 } from "@/lib/formatters";
 import { useRates } from "@/hooks/useRates";
 
 // ── Helper ──
-
-function mergeExecutorOverlay(restEx: ExecutorInfo, wsEx: ExecutorInfo): ExecutorInfo {
-  // WS cache is built from paginated search/SDS and often omits in-memory running
-  // executors; never downgrade a REST running row to terminated via WS overlay.
-  if (isExecutorActive(restEx.status) && !isExecutorActive(wsEx.status)) {
-    return { ...wsEx, status: restEx.status, close_type: restEx.close_type };
-  }
-  return wsEx;
-}
-
-function agentRowToExecutorInfo(row: AgentExecutorRow): ExecutorInfo {
-  return {
-    id: row.id,
-    type: normalizeExecutorType(row.type),
-    connector: row.connector || "unknown",
-    trading_pair: row.pair,
-    side: row.side,
-    status: (row.status || "").toLowerCase(),
-    close_type: (row.close_type || "").toLowerCase(),
-    pnl: row.pnl,
-    volume: row.volume,
-    timestamp: row.timestamp,
-    controller_id: row.controller_id,
-    cum_fees_quote: row.fees,
-    net_pnl_pct: row.net_pnl_pct ?? 0,
-    entry_price: row.entry_price,
-    current_price: row.current_price,
-    close_timestamp: row.close_timestamp,
-    custom_info: row.custom_info ?? {},
-    config: row.config ?? {},
-  };
-}
 
 function detailPanelGridClass(count: number): string {
   const base = "grid gap-3";
@@ -138,6 +117,7 @@ export function SessionExecutors({
   controllerIds,
   sessionSummary,
   liveSessionStatus,
+  journalExecutors,
 }: {
   slug: string;
   sslug: string;
@@ -146,8 +126,26 @@ export function SessionExecutors({
   controllerIds?: string[];
   sessionSummary?: { status: string; lastTick: number; lastAction: string };
   liveSessionStatus?: string;
+  journalExecutors?: ExecutorEntry[];
 }) {
   const queryClient = useQueryClient();
+  const [executorCacheTick, setExecutorCacheTick] = useState(0);
+
+  useEffect(() => {
+    const unsub = queryClient.getQueryCache().subscribe((event) => {
+      const key = event.query?.queryKey;
+      if (!key || key[1] !== serverName) return;
+      if (key[0] === "executors-infinite" || (key[0] === "executors" && key[2] === "")) {
+        setExecutorCacheTick((n) => n + 1);
+      }
+    });
+    return unsub;
+  }, [queryClient, serverName]);
+
+  const cachedExecutorsById = useMemo(
+    () => getCachedExecutorsById((key) => queryClient.getQueryData(key), serverName),
+    [queryClient, serverName, executorCacheTick],
+  );
 
   const { data: sessionDetail } = useQuery({
     queryKey: ["strategy-session-executors", slug, sslug, sessionNum],
@@ -157,10 +155,24 @@ export function SessionExecutors({
   });
 
   const restExecutors = sessionDetail?.executors ?? [];
+  const sessionConfig = sessionDetail?.session_config;
+
+  const journalById = useMemo(() => {
+    const map = new Map<string, { id: string; side?: string; amount?: number }>();
+    for (const row of journalExecutors ?? []) {
+      if (row.id) map.set(row.id, { id: row.id, side: row.side, amount: row.amount });
+    }
+    return map;
+  }, [journalExecutors]);
 
   const sessionControllerIds = useMemo(() => {
-    const ids = new Set<string>([`${slug}.${sslug}_${sessionNum}`]);
-    for (const id of controllerIds ?? []) ids.add(id);
+    const ids = new Set<string>();
+    for (const id of controllerIdsForLookup(`${slug}.${sslug}_${sessionNum}`)) {
+      ids.add(id);
+    }
+    for (const id of controllerIds ?? []) {
+      for (const lookupId of controllerIdsForLookup(id)) ids.add(lookupId);
+    }
     return Array.from(ids);
   }, [slug, sslug, sessionNum, controllerIds]);
 
@@ -169,21 +181,128 @@ export function SessionExecutors({
     sessionControllerIds,
   );
 
-  const executorInfos = useMemo(() => {
-    const restInfos = restExecutors.map(agentRowToExecutorInfo);
-    if (wsExecutors.length === 0) return restInfos;
+  const { data: liveExecutorsCache } = useQuery({
+    queryKey: ["executors", serverName, ""],
+    queryFn: () => api.getExecutors(serverName),
+    enabled: !!serverName,
+    refetchInterval: 60000,
+  });
 
-    const wsMap = new Map(wsExecutors.map((ex) => [ex.id, ex]));
-    const merged = restInfos.map((ex) => {
-      const wsEx = wsMap.get(ex.id);
-      return wsEx ? mergeExecutorOverlay(ex, wsEx) : ex;
-    });
-    const restIds = new Set(restInfos.map((ex) => ex.id));
-    for (const ex of wsExecutors) {
-      if (!restIds.has(ex.id)) merged.push(ex);
+  const liveById = useMemo(
+    () => new Map((liveExecutorsCache ?? []).map((ex) => [ex.id, ex])),
+    [liveExecutorsCache],
+  );
+
+  const { data: positionsData } = useQuery({
+    queryKey: ["positions-held", serverName],
+    queryFn: () => api.getPositionsHeld(serverName),
+    enabled: !!serverName && sessionControllerIds.length > 0,
+    refetchInterval: 10000,
+  });
+
+  const { data: consolidatedPositions } = useQuery({
+    queryKey: ["consolidated-positions", serverName],
+    queryFn: () => api.getConsolidatedPositions(serverName),
+    enabled: !!serverName,
+    refetchInterval: 10000,
+  });
+
+  const normalizedPositions = useMemo(() => {
+    const raws = [
+      ...(positionsData?.positions ?? []),
+      ...(consolidatedPositions?.executor_positions ?? []),
+      ...(consolidatedPositions?.bot_positions ?? []),
+    ];
+    return raws.map((p) => normalizePositionHeld(p as unknown as Record<string, unknown>));
+  }, [positionsData, consolidatedPositions]);
+
+  const positions = useMemo(() => {
+    if (normalizedPositions.length === 0 || sessionControllerIds.length === 0) return [];
+    const cidSet = new Set(sessionControllerIds);
+    return normalizedPositions.filter((p) => p.controller_id && cidSet.has(p.controller_id));
+  }, [normalizedPositions, sessionControllerIds]);
+
+  const executorInfos = useMemo(() => {
+    const restInfos = restExecutors.map(executorInfoFromAgentRow);
+    let merged: ExecutorInfo[];
+    if (wsExecutors.length === 0) {
+      merged = restInfos;
+    } else {
+      const wsMap = new Map(wsExecutors.map((ex) => [ex.id, ex]));
+      merged = restInfos.map((ex) => {
+        const wsEx = wsMap.get(ex.id);
+        return wsEx ? mergeExecutorOverlay(ex, wsEx) : ex;
+      });
+      const restIds = new Set(restInfos.map((ex) => ex.id));
+      for (const ex of wsExecutors) {
+        if (!restIds.has(ex.id)) merged.push(ex);
+      }
     }
-    return merged;
-  }, [restExecutors, wsExecutors]);
+    const enrich = (ex: ExecutorInfo): ExecutorInfo => {
+      let row = ex;
+      const cached = cachedExecutorsById.get(ex.id);
+      if (cached) row = mergeExecutorOverlay(row, cached);
+      const live = liveById.get(ex.id);
+      if (live) row = mergeExecutorOverlay(row, live);
+      row = enrichExecutorFromJournal(row, journalById);
+      row = enrichExecutorWithSessionDefaults(row, sessionConfig);
+      if (normalizedPositions.length > 0) {
+        row = enrichExecutorFromPositions(row, normalizedPositions);
+      }
+      const side = resolveExecutorSide(row);
+      if (side) row = { ...row, side };
+      return row;
+    };
+    return merged.map(enrich);
+  }, [restExecutors, wsExecutors, normalizedPositions, liveById, cachedExecutorsById, journalById, sessionConfig]);
+
+  // #region agent log
+  useEffect(() => {
+    const sample = executorInfos.filter((ex) => {
+      const s = ex.status?.toLowerCase() ?? "";
+      const active = s === "running" || s === "active" || s === "active_position";
+      const terminated = s === "terminated" || s === "closed" || s === "completed";
+      return active || terminated;
+    }).slice(0, 4);
+    if (sample.length === 0) return;
+    fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
+      body: JSON.stringify({
+        sessionId: "644d7b",
+        runId: "post-fix-v6",
+        hypothesisId: "H11",
+        location: "AgentSessionContent.tsx:executorInfos",
+        message: "Session executor merge result",
+        data: {
+          sessionControllerIds,
+          cachedCount: cachedExecutorsById.size,
+          wsCount: wsExecutors.length,
+          restCount: restExecutors.length,
+          sample: sample.map((ex) => ({
+            id: ex.id,
+            status: ex.status,
+            entry_price: ex.entry_price,
+            current_price: ex.current_price,
+            close_timestamp: ex.close_timestamp,
+            configKeys: Object.keys(resolveExecutorConfig(ex)),
+            customInfoKeys: Object.keys(ex.custom_info || {}),
+            cachedHit: cachedExecutorsById.has(ex.id),
+          })),
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }, [executorInfos, wsExecutors, restExecutors, sessionControllerIds, cachedExecutorsById]);
+  // #endregion
+
+  const sessionEnrichment = useMemo<ExecutorEnrichmentContext>(
+    () => ({
+      sessionConfig,
+      journalById,
+    }),
+    [sessionConfig, journalById],
+  );
 
   const displaySessionStatus = liveSessionStatus ?? "closed";
 
@@ -248,19 +367,6 @@ export function SessionExecutors({
     () => executorInfos.filter((ex) => selectedIds.has(ex.id)),
     [executorInfos, selectedIds],
   );
-
-  const { data: positionsData } = useQuery({
-    queryKey: ["positions-held", serverName],
-    queryFn: () => api.getPositionsHeld(serverName),
-    enabled: !!serverName && sessionControllerIds.length > 0,
-    refetchInterval: 10000,
-  });
-
-  const positions = useMemo(() => {
-    if (!positionsData?.positions || sessionControllerIds.length === 0) return [];
-    const cidSet = new Set(sessionControllerIds);
-    return positionsData.positions.filter((p) => p.controller_id && cidSet.has(p.controller_id));
-  }, [positionsData, sessionControllerIds]);
 
   const handleSort = useCallback((key: SortKey) => {
     setSortDir((prev) => (sortKey === key ? (prev === "asc" ? "desc" : "asc") : "desc"));
@@ -424,6 +530,7 @@ export function SessionExecutors({
               variant="inline"
               executor={ex}
               server={serverName}
+              enrichmentContext={sessionEnrichment}
               onClose={() => toggleSelect(ex.id)}
               onStop={handleStopOne}
               stopping={stoppingIds.has(ex.id)}

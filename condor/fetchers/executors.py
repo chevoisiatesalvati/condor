@@ -33,7 +33,7 @@ def get_executor_type(executor: Dict[str, Any]) -> str:
 
     Returns the executor type label (e.g. 'grid', 'position', 'order', 'dca', 'lp').
     """
-    config = executor.get("config", executor)
+    config = get_executor_config(executor)
     for source in (config, executor):
         ex_type = source.get("type", "") or source.get("executor_type", "")
         if isinstance(ex_type, str) and ex_type:
@@ -85,12 +85,186 @@ def _positive_float(value: Any) -> float | None:
     return price if price > 0 else None
 
 
+def _timestamp_to_seconds(raw: Any) -> float | None:
+    """Parse HB executor timestamp fields to unix seconds."""
+    if raw is None or raw == "" or raw == 0:
+        return None
+    if isinstance(raw, (int, float)):
+        ts = float(raw)
+        return ts / 1000.0 if ts > 1e12 else ts
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(text)
+        return dt.timestamp()
+    except ValueError:
+        pass
+    try:
+        ts = float(text)
+        return ts / 1000.0 if ts > 1e12 else ts
+    except (TypeError, ValueError):
+        return None
+
+
+def get_executor_timestamp(executor: Dict[str, Any]) -> float:
+    """Resolve executor open time from API shapes (config, top-level, created_at)."""
+    config = get_executor_config(executor)
+    for source in (config, executor):
+        for key in ("timestamp", "created_at"):
+            ts = _timestamp_to_seconds(source.get(key))
+            if ts is not None and ts > 0:
+                return ts
+    return 0.0
+
+
+def get_executor_close_timestamp(executor: Dict[str, Any]) -> float:
+    """Resolve executor close time from API shapes."""
+    for key in ("close_timestamp", "closed_at"):
+        ts = _timestamp_to_seconds(executor.get(key))
+        if ts is not None and ts > 0:
+            return ts
+    return 0.0
+
+
+def parse_executor_json_field(val: Any) -> dict[str, Any]:
+    """Parse executor ``config`` / ``custom_info`` that may be JSON strings."""
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str) and val.strip().startswith("{"):
+        import json
+
+        try:
+            parsed = json.loads(val)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def get_executor_config(executor: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolved config dict (parsed JSON string or top-level fallback)."""
+    raw = executor.get("config")
+    if isinstance(raw, dict) and raw:
+        return raw
+    parsed = parse_executor_json_field(raw)
+    if parsed:
+        return parsed
+    return executor
+
+
+def get_executor_custom_info(executor: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolved custom_info dict (parsed JSON string)."""
+    return parse_executor_json_field(executor.get("custom_info"))
+
+
+_DISPLAY_CONFIG_KEYS = (
+    "leverage",
+    "total_amount_quote",
+    "amount",
+    "stop_loss",
+    "take_profit",
+    "triple_barrier_config",
+    "connector_name",
+    "trading_pair",
+    "side",
+    "controller_id",
+    "type",
+)
+
+
+def normalize_executor_side(
+    *sources: Any,
+) -> str:
+    """Map HB side encodings to BUY/SELL; empty when unknown."""
+    _map = {
+        "1": "BUY",
+        "2": "SELL",
+        "buy": "BUY",
+        "sell": "SELL",
+        "long": "BUY",
+        "short": "SELL",
+        "tradetype.buy": "BUY",
+        "tradetype.sell": "SELL",
+    }
+    for raw in sources:
+        if raw is None:
+            continue
+        if isinstance(raw, (int, float)) and raw in (1, 2):
+            return "BUY" if int(raw) == 1 else "SELL"
+        text = str(raw).strip()
+        if not text:
+            continue
+        mapped = _map.get(text.lower())
+        if mapped:
+            return mapped
+        upper = text.upper()
+        if upper in ("BUY", "SELL"):
+            return upper
+    return ""
+
+
+def get_executor_side(executor: Dict[str, Any]) -> str:
+    """Resolve side from config, custom_info, and held_position_orders fills."""
+    config = get_executor_config(executor)
+    custom_info = get_executor_custom_info(executor)
+    side = normalize_executor_side(
+        config.get("side"),
+        executor.get("side"),
+        custom_info.get("side"),
+        custom_info.get("position_side"),
+    )
+    if side:
+        return side
+
+    held_orders = custom_info.get("held_position_orders")
+    if isinstance(held_orders, list):
+        for order in held_orders:
+            if not isinstance(order, dict):
+                continue
+            side = normalize_executor_side(
+                order.get("side"),
+                order.get("trade_type"),
+                order.get("position_side"),
+                order.get("order_type"),
+            )
+            if side:
+                return side
+    return ""
+
+
+def get_executor_display_config(executor: Dict[str, Any]) -> Dict[str, Any]:
+    """Chart/tooltip config: nested config dict merged with top-level HB fields."""
+    raw = executor.get("config")
+    out: Dict[str, Any] = (
+        dict(raw)
+        if isinstance(raw, dict) and raw
+        else parse_executor_json_field(raw)
+    )
+    resolved = get_executor_config(executor)
+    for key in _DISPLAY_CONFIG_KEYS:
+        val = resolved.get(key)
+        if val is not None and val != "" and key not in out:
+            out[key] = val
+
+    tb = out.get("triple_barrier_config")
+    if isinstance(tb, str):
+        tb = parse_executor_json_field(tb)
+    if isinstance(tb, dict):
+        for key in ("stop_loss", "take_profit", "time_limit", "trailing_stop"):
+            if key in tb and key not in out:
+                out[key] = tb[key]
+    return out
+
+
 def get_executor_entry_price(executor: Dict[str, Any]) -> float:
     """Resolve entry/average fill price from executor API shapes."""
-    config = executor.get("config", executor) if isinstance(executor.get("config"), dict) else executor
-    custom_info = executor.get("custom_info") or {}
-    if not isinstance(custom_info, dict):
-        custom_info = {}
+    config = get_executor_config(executor)
+    custom_info = get_executor_custom_info(executor)
 
     candidates: list[Any] = [
         config.get("entry_price"),

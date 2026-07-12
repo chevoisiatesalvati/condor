@@ -24,6 +24,29 @@ export interface ChartCandle {
   close: number;
 }
 
+/** Close price from the candle nearest ``timestampSec`` (within 10 minutes). */
+export function candlePriceAt(
+  timestampSec: number,
+  candles: Array<{ timestamp?: number; time?: number; close: number }>,
+): number {
+  if (!timestampSec || !candles.length) return 0;
+  const target =
+    timestampSec > 1e12 ? Math.floor(timestampSec / 1000) : Math.floor(timestampSec);
+  let bestClose = 0;
+  let bestDist = Infinity;
+  for (const c of candles) {
+    const raw = c.timestamp ?? c.time ?? 0;
+    const t = raw > 1e12 ? Math.floor(raw / 1000) : Math.floor(raw);
+    if (!t) continue;
+    const dist = Math.abs(t - target);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestClose = c.close;
+    }
+  }
+  return bestDist <= 600 ? bestClose : 0;
+}
+
 /** Merge duplicate candle timestamps (keep open from first, close from last). */
 export function dedupCandlesByTime<T extends ChartCandle>(data: T[]): T[] {
   if (data.length <= 1) return data;

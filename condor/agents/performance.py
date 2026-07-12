@@ -86,23 +86,23 @@ _is_running_status = is_running_status
 
 def _executor_row(ex: dict) -> dict[str, Any]:
     from condor.fetchers.executors import (
+        get_executor_close_timestamp,
+        get_executor_config,
+        get_executor_custom_info,
+        get_executor_display_config,
         get_executor_entry_price,
         get_executor_fees,
         get_executor_pnl,
+        get_executor_timestamp,
         get_executor_type,
         get_executor_volume,
+        get_executor_side,
     )
 
-    cfg = ex.get("config", ex) if isinstance(ex.get("config"), dict) else ex
-    custom_info = ex.get("custom_info") or {}
-    if not isinstance(custom_info, dict):
-        custom_info = {}
+    cfg = get_executor_config(ex)
+    custom_info = get_executor_custom_info(ex)
 
-    _cfg_entry = float(cfg.get("entry_price") or 0)
-    _top_entry = float(ex.get("entry_price") or 0)
-    _ci_entry = float(custom_info.get("current_position_average_price") or 0)
-    _be_price = float(custom_info.get("break_even_price") or 0)
-    entry_price = _cfg_entry or _top_entry or _ci_entry or _be_price or 0.0
+    entry_price = get_executor_entry_price(ex)
     _ex_type = str(cfg.get("type") or ex.get("type") or "").lower()
     if entry_price == 0.0 and "position" in _ex_type:
         log.warning(
@@ -137,7 +137,7 @@ def _executor_row(ex: dict) -> dict[str, Any]:
         or ex.get("connector")
         or "",
         "pair": cfg.get("trading_pair") or ex.get("trading_pair") or "",
-        "side": str(cfg.get("side") or ex.get("side") or ""),
+        "side": get_executor_side(ex),
         "status": str(ex.get("status") or "").lower(),
         "close_type": str(ex.get("close_type") or "").lower(),
         "pnl": get_executor_pnl(ex),
@@ -148,13 +148,13 @@ def _executor_row(ex: dict) -> dict[str, Any]:
         "amount": amount,
         "entry_price": entry_price,
         "current_price": current_price,
-        "timestamp": float(cfg.get("timestamp") or ex.get("timestamp") or 0),
-        "close_timestamp": float(ex.get("close_timestamp") or 0),
+        "timestamp": get_executor_timestamp(ex),
+        "close_timestamp": get_executor_close_timestamp(ex),
         "created_at": str(ex.get("created_at") or ""),
         "closed_at": str(ex.get("closed_at") or ""),
         "controller_id": str(cfg.get("controller_id") or ex.get("controller_id") or ""),
         "custom_info": custom_info,
-        "config": ex.get("config") if isinstance(ex.get("config"), dict) else {},
+        "config": get_executor_display_config(ex),
     }
 
 

@@ -11,7 +11,8 @@ import {
   type ExecutorOverlay,
 } from "@/lib/executor-overlays";
 import { dedupCandlesByTime } from "@/lib/chart-utils";
-import { escapeHtml, formatCompactUsd, tsToSeconds } from "@/lib/formatters";
+import { enrichExecutorForChart, resolveExecutorConfig } from "@/lib/executors";
+import { escapeHtml, formatCompactUsd, resolveExecutorCloseTimestamp, tsToSeconds } from "@/lib/formatters";
 import { getThemeColors, pnlHexColor, sideColor } from "@/lib/theme-colors";
 
 export interface SnapshotBubble {
@@ -74,13 +75,13 @@ export function ExecutorChart({
   const segmentSeriesRef = useRef<import("lightweight-charts").ISeriesApi<"Line">[]>([]);
   const gridVerticalLinesRef = useRef<GridVerticalLine[]>([]);
   const overlaysRef = useRef<ExecutorOverlay[]>([]);
+  const chartExecutorsRef = useRef<ExecutorInfo[]>([]);
   const initializedRef = useRef(false);
   const [chartReady, setChartReady] = useState(false);
 
-  // Compute overlays
-  const overlays = useMemo(() => computeMultiOverlays(executors), [executors]);
-  overlaysRef.current = overlays;
-  const timeRange = useMemo(() => getOverlayTimeRange(overlays), [overlays]);
+  // Provisional overlays for candle time-window (entry may be filled after candles load)
+  const provisionalOverlays = useMemo(() => computeMultiOverlays(executors), [executors]);
+  const timeRange = useMemo(() => getOverlayTimeRange(provisionalOverlays), [provisionalOverlays]);
 
   // Determine if any executor is active (for WS subscription)
   const hasActive = executors.some((ex) => isActive(ex.status));
@@ -93,13 +94,62 @@ export function ExecutorChart({
   const paddingSeconds = 1800;
   const startTime = Math.floor(timeRange.start - paddingSeconds);
   const endTime = Math.ceil(timeRange.end + paddingSeconds);
+  const allTerminated = executors.length > 0 && executors.every((ex) => !isActive(ex.status));
 
   const { data: candles, isLoading, isError } = useQuery({
-    queryKey: ["candles", server, connector, tradingPair, interval],
+    queryKey: ["candles", server, connector, tradingPair, interval, startTime, endTime],
     queryFn: () => api.getCandles(server, connector, tradingPair, interval, 5000, startTime, endTime),
     enabled: !!server && !!connector && !!tradingPair,
     retry: 1,
+    staleTime: allTerminated ? 24 * 60 * 60 * 1000 : 60 * 1000,
+    gcTime: allTerminated ? 7 * 24 * 60 * 60 * 1000 : 5 * 60 * 1000,
   });
+
+  const chartExecutors = useMemo(
+    () => executors.map((ex) => enrichExecutorForChart(ex, candles)),
+    [executors, candles],
+  );
+
+  const overlays = useMemo(() => computeMultiOverlays(chartExecutors), [chartExecutors]);
+  overlaysRef.current = overlays;
+  chartExecutorsRef.current = chartExecutors;
+
+  // #region agent log
+  useEffect(() => {
+    const ex = chartExecutors[0];
+    if (!ex) return;
+    fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
+      body: JSON.stringify({
+        sessionId: "644d7b",
+        runId: "post-fix-v6",
+        hypothesisId: "H10",
+        location: "ExecutorChart.tsx:chartExecutors",
+        message: "Chart executor entry enrichment",
+        data: {
+          executorId: ex.id,
+          connector,
+          tradingPair,
+          rawEntry: executors[0]?.entry_price ?? 0,
+          chartEntry: ex.entry_price,
+          current: ex.current_price,
+          configKeys: Object.keys(resolveExecutorConfig(ex)),
+          closeTimestamp: resolveExecutorCloseTimestamp(ex),
+          chartReady,
+          candleCount: candles?.length ?? 0,
+          isLoading,
+          isError,
+          timeRange,
+          overlayCount: overlays.length,
+          hasSegment: overlays.some((o) => !!o.segment),
+          segments: overlays.map((o) => o.segment ?? null),
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }, [chartExecutors, executors, candles, overlays, chartReady, isLoading, isError, connector, tradingPair, timeRange]);
+  // #endregion
 
   // Initialize chart
   useEffect(() => {
@@ -225,8 +275,9 @@ export function ExecutorChart({
         const statusBg = isActive(o.status) ? "rgba(34,197,94,0.15)" : "rgba(156,163,175,0.15)";
         const statusClr = isActive(o.status) ? getThemeColors().green : textMuted;
 
-        // Build config detail rows
-        const cfg = o.config || {};
+        // Build config detail rows from enriched executor (not sparse overlay snapshot)
+        const chartEx = chartExecutorsRef.current.find((e) => e.id === o.executorId);
+        const cfg = chartEx ? resolveExecutorConfig(chartEx) : resolveExecutorConfig({ config: o.config ?? {} } as ExecutorInfo);
         const tripleBarrier: Record<string, unknown> = (() => {
           const raw = cfg.triple_barrier_config;
           if (!raw) return {};
@@ -262,7 +313,7 @@ export function ExecutorChart({
 
         const tp = Number(tripleBarrier.take_profit || cfg.take_profit);
         if (tp > 0 && tp !== -1) addRow("Take Profit", `${(tp * 100).toFixed(2)}%`, getThemeColors().green);
-        const sl = Number(cfg.stop_loss);
+        const sl = Number(tripleBarrier.stop_loss || cfg.stop_loss);
         if (sl > 0 && sl !== -1) addRow("Stop Loss", `${(sl * 100).toFixed(2)}%`, getThemeColors().red);
 
         tooltip.innerHTML = `
@@ -534,6 +585,29 @@ export function ExecutorChart({
       const segColor = color ?? seg.color;
       const entryT = tsToSeconds(seg.entryTime);
       const exitT = tsToSeconds(seg.exitTime);
+
+      // #region agent log
+      fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
+        body: JSON.stringify({
+          sessionId: "644d7b",
+          hypothesisId: "H4",
+          location: "ExecutorChart.tsx:applySegment",
+          message: "Drawing segment line",
+          data: {
+            executorId: overlay.executorId,
+            type: overlay.type,
+            entryT,
+            exitT,
+            entryPrice: seg.entryPrice,
+            exitPrice: seg.exitPrice,
+            chartReady,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
 
       // Order executors: solid line when active (horizontal), dashed otherwise
       const isOrderActive = overlay.type === "order" && isActive(overlay.status);

@@ -76,6 +76,58 @@ export function tsToSeconds(ts: number): number {
   return ts > 1e12 ? Math.floor(ts / 1000) : ts;
 }
 
+/** Resolve executor open time from REST/WS shapes (top-level, config, created_at). */
+export function resolveExecutorTimestamp(
+  executor: {
+    timestamp?: number;
+    created_at?: string | number;
+    config?: Record<string, unknown>;
+  },
+): number {
+  const direct = Number(executor.timestamp) || 0;
+  if (direct > 0) return tsToSeconds(direct);
+
+  const cfg = executor.config || {};
+  const cfgTs = Number(cfg.timestamp) || 0;
+  if (cfgTs > 0) return tsToSeconds(cfgTs);
+
+  for (const raw of [executor.created_at, cfg.created_at]) {
+    if (raw == null || raw === "") continue;
+    if (typeof raw === "number" && raw > 0) return tsToSeconds(raw);
+    if (typeof raw === "string") {
+      const ms = Date.parse(raw.replace(" ", "T"));
+      if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
+      const num = Number(raw);
+      if (num > 0) return tsToSeconds(num);
+    }
+  }
+  return 0;
+}
+
+/** Resolve executor close time from REST/WS shapes. */
+export function resolveExecutorCloseTimestamp(
+  executor: {
+    close_timestamp?: number;
+    closed_at?: string | number;
+    config?: Record<string, unknown>;
+  },
+): number {
+  const direct = Number(executor.close_timestamp) || 0;
+  if (direct > 0) return tsToSeconds(direct);
+
+  for (const raw of [executor.closed_at, executor.config?.closed_at]) {
+    if (raw == null || raw === "") continue;
+    if (typeof raw === "number" && raw > 0) return tsToSeconds(raw);
+    if (typeof raw === "string") {
+      const ms = Date.parse(raw.replace(" ", "T"));
+      if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
+      const num = Number(raw);
+      if (num > 0) return tsToSeconds(num);
+    }
+  }
+  return 0;
+}
+
 /** Normalize a timestamp (seconds or ms, number or ISO string) to epoch ms. */
 export function toMs(ts: string | number): number {
   if (typeof ts === "number") return ts > 1e12 ? ts : ts * 1000;
@@ -181,4 +233,21 @@ export function formatExecutorSide(side: unknown): "BUY" | "SELL" {
   if (label === "LONG") return "BUY";
   if (label === "SHORT") return "SELL";
   return label === "BUY" ? "BUY" : "SELL";
+}
+
+/** Resolve side from executor row, config, and custom_info (never guess SELL). */
+export function resolveExecutorSide(executor: {
+  side?: unknown;
+  config?: Record<string, unknown>;
+  custom_info?: Record<string, unknown>;
+}): "BUY" | "SELL" | "" {
+  for (const candidate of [
+    executor.side,
+    executor.config?.side,
+    executor.custom_info?.side,
+  ]) {
+    const label = formatExecutorSide(candidate);
+    if (label) return label;
+  }
+  return "";
 }
