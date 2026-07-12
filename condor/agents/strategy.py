@@ -144,15 +144,37 @@ def _merge_private_frontmatter(meta: dict, sslug: str) -> dict:
             val = private_meta.get(key)
             if val not in (None, "", []):
                 merged[key] = val
-        if private_meta.get("default_trading_context"):
-            merged["default_trading_context"] = private_meta["default_trading_context"]
-        elif private_meta.get("trading_context"):
-            merged["default_trading_context"] = private_meta["trading_context"]
+        public_tc = str(merged.get("default_trading_context") or "").strip()
+        private_tc = str(
+            private_meta.get("default_trading_context")
+            or private_meta.get("trading_context")
+            or ""
+        ).strip()
+        if public_tc:
+            merged["default_trading_context"] = public_tc
+        elif private_tc:
+            merged["default_trading_context"] = private_tc
+
+        public_cfg = merged.get("default_config") or {}
         private_cfg = private_meta.get("default_config")
         if isinstance(private_cfg, dict) and private_cfg:
-            base = dict(merged.get("default_config") or {})
-            base.update(private_cfg)
+            # Private agent.md fills gaps; strategy.md (UI saves) wins on overlap.
+            base = dict(private_cfg)
+            if isinstance(public_cfg, dict):
+                for key, value in public_cfg.items():
+                    if key == "strategy_params" and isinstance(value, dict):
+                        existing = base.get("strategy_params")
+                        if isinstance(existing, dict):
+                            merged_params = dict(existing)
+                            merged_params.update(value)
+                            base["strategy_params"] = merged_params
+                        else:
+                            base["strategy_params"] = dict(value)
+                    else:
+                        base[key] = value
             merged["default_config"] = base
+        elif isinstance(public_cfg, dict) and public_cfg:
+            merged["default_config"] = public_cfg
         if private_meta.get("name") and not merged.get("name"):
             merged["name"] = private_meta["name"]
         return merged

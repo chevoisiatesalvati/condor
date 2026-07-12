@@ -183,11 +183,10 @@ export function StartSessionDialog({
               value={strategyPreset}
               presets={strategyPresets}
               frequencySec={Number(frequencySec) || 60}
+              baseParams={strategyParams}
               onChange={(preset, params, riskLimits) => {
                 setStrategyPreset(preset);
-                if (Object.keys(params).length > 0) {
-                  setStrategyParams(params);
-                }
+                setStrategyParams(params);
                 const maxOpen = riskLimits?.max_open_executors;
                 if (maxOpen !== undefined && maxOpen !== null) {
                   setMaxOpenExecutors(String(maxOpen));

@@ -199,6 +199,53 @@ def test_strategy_slug_uses_directory_name(tmp_path, monkeypatch):
     assert s.dir == strat_dir
 
 
+def test_private_frontmatter_public_default_config_wins(tmp_path, monkeypatch):
+    """UI saves default_config to strategy.md; it must not be overwritten by private agent.md."""
+    import condor.agents.strategy_paths as strategy_paths_module
+
+    _patch_roots(monkeypatch, tmp_path)
+    strategies_root = tmp_path / "strategies"
+    strategies_root.mkdir()
+    monkeypatch.setattr(strategy_paths_module, "strategies_dir", lambda: strategies_root)
+
+    slug = "macdbb_scanner_aggressive_hl"
+    _write_agent(tmp_path, slug, name="MACD Agent")
+    strat_dir = tmp_path / slug / "strategies" / slug
+    strat_dir.mkdir(parents=True)
+    (strat_dir / "strategy.md").write_text(
+        "---\n"
+        "name: MACD Agent\n"
+        "default_config:\n"
+        "  strategy_preset: hl_dynamic_timeline_sweep_lead_013\n"
+        "  strategy_params:\n"
+        "    sl_pct: 3.8\n"
+        "---\n\n"
+        "Playbook.\n",
+        encoding="utf-8",
+    )
+    private_dir = strategies_root / slug
+    private_dir.mkdir(parents=True)
+    (private_dir / "agent.md").write_text(
+        "---\n"
+        "name: MACD Agent\n"
+        "default_config:\n"
+        "  strategy_preset: hl_dynamic_timeline_refine_v6_sltp_winner_binance_1y\n"
+        "  strategy_params:\n"
+        "    sl_pct: 3.4\n"
+        "    scanner_top_n: 30\n"
+        "---\n\n"
+        "Private playbook.\n",
+        encoding="utf-8",
+    )
+
+    loaded = StrategyStore().get(slug, slug)
+    assert loaded is not None
+    cfg = loaded.default_config
+    assert cfg["strategy_preset"] == "hl_dynamic_timeline_sweep_lead_013"
+    assert cfg["strategy_params"]["sl_pct"] == 3.8
+    assert cfg["strategy_params"]["scanner_top_n"] == 30
+
+
 def test_macdbb_agent_listed_in_repo():
     """Shipped macdbb tree is discoverable by AgentStore."""
     from pathlib import Path
