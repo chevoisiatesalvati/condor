@@ -45,6 +45,16 @@ const isActive = (status: string) => {
   return s === "running" || s === "active_position" || s === "active";
 };
 
+function inferPricePrecisionFromCandles(closes: number[]): number | undefined {
+  const sample = closes.find((c) => c > 0);
+  if (sample == null) return undefined;
+  if (sample >= 1000) return 2;
+  if (sample >= 1) return 4;
+  if (sample >= 0.01) return 4;
+  if (sample >= 0.0001) return 6;
+  return 8;
+}
+
 /** Vertical line definition for grid box edges drawn directly on the canvas */
 interface GridVerticalLine {
   time: number;
@@ -83,6 +93,8 @@ export function ExecutorChart({
   const overlaysRef = useRef<ExecutorOverlay[]>([]);
   const chartExecutorsRef = useRef<ExecutorInfo[]>([]);
   const initializedRef = useRef(false);
+  const viewportKeyRef = useRef("");
+  const overlayGeometrySigRef = useRef("");
   const [chartReady, setChartReady] = useState(false);
 
   const chartKind = useMemo(() => resolveExecutorChartKind(executors), [executors]);
@@ -114,24 +126,47 @@ export function ExecutorChart({
   const channels = useMemo(() => [] as string[], []);
   useCondorWebSocket(channels, server);
 
-  // Pad time range for candle fetch
+  // Pad time range for candle fetch. Live executor end uses Date.now() — keep out of queryKey.
   const paddingSeconds = 1800;
   const startTime = Math.floor(timeRange.start - paddingSeconds);
-  const endTime = Math.ceil(timeRange.end + paddingSeconds);
+  const fetchEndTime = Math.ceil(timeRange.end + paddingSeconds);
   const allTerminated = executors.length > 0 && executors.every((ex) => !isActive(ex.status));
   const intervalSec = intervalToSeconds(interval);
-  const spanSec = Math.max(endTime - startTime, intervalSec);
-  const candleLimit = Math.min(5000, Math.max(200, Math.ceil(spanSec / intervalSec) + 20));
+
+  const { data: tradingRules } = useQuery({
+    queryKey: ["trading-rules", server, connector],
+    queryFn: () => api.getTradingRules(server, connector),
+    enabled: !!server && !!connector,
+    staleTime: 5 * 60 * 1000,
+  });
 
   const { data: candles, isLoading, isError } = useQuery({
-    queryKey: ["candles", server, connector, tradingPair, interval, startTime, endTime, candleLimit],
-    queryFn: () =>
-      api.getCandles(server, connector, tradingPair, interval, candleLimit, startTime, endTime),
+    queryKey: ["candles", "executor-chart", server, connector, tradingPair, interval, startTime],
+    queryFn: () => {
+      const end = hasActive
+        ? Math.ceil(Date.now() / 1000 + paddingSeconds)
+        : fetchEndTime;
+      const span = Math.max(end - startTime, intervalSec);
+      const limit = Math.min(5000, Math.max(200, Math.ceil(span / intervalSec) + 20));
+      return api.getCandles(server, connector, tradingPair, interval, limit, startTime, end);
+    },
     enabled: !!server && !!connector && !!tradingPair,
     retry: 1,
     staleTime: allTerminated ? 24 * 60 * 60 * 1000 : 60 * 1000,
     gcTime: allTerminated ? 7 * 24 * 60 * 60 * 1000 : 5 * 60 * 1000,
+    refetchInterval: hasActive ? 60_000 : false,
   });
+
+  const pricePrecision = useMemo(() => {
+    const rule = tradingRules?.rules?.find((r) => r.trading_pair === tradingPair);
+    if (rule?.min_price_increment) {
+      const inc = rule.min_price_increment;
+      if (inc >= 1) return 0;
+      return Math.max(0, Math.ceil(-Math.log10(inc)));
+    }
+    const closes = candles?.map((c) => c.close).filter((c) => c > 0) ?? [];
+    return inferPricePrecisionFromCandles(closes);
+  }, [tradingRules, tradingPair, candles]);
 
   const chartExecutors = useMemo(
     () => executors.map((ex) => enrichExecutorForChart(ex, candles, interval)),
@@ -139,6 +174,25 @@ export function ExecutorChart({
   );
 
   const overlays = useMemo(() => computeMultiOverlays(chartExecutors), [chartExecutors]);
+  const overlayGeometrySig = useMemo(
+    () =>
+      overlays
+        .map((o) => {
+          const seg = o.segment;
+          const box = o.gridBox;
+          if (seg) {
+            const exitKey =
+              isActive(o.status) ? "live" : String(tsToSeconds(seg.exitTime));
+            return `${o.executorId}:s:${tsToSeconds(seg.entryTime)}:${exitKey}:${o.type}:${o.status}`;
+          }
+          if (box) {
+            return `${o.executorId}:g:${tsToSeconds(box.startTime)}:${tsToSeconds(box.endTime)}:${box.startPrice}:${box.endPrice}:${box.limitPrice ?? 0}`;
+          }
+          return `${o.executorId}:${o.type}:${o.status}`;
+        })
+        .join("|"),
+    [overlays],
+  );
   overlaysRef.current = overlays;
   chartExecutorsRef.current = chartExecutors;
 
@@ -181,8 +235,6 @@ export function ExecutorChart({
         borderVisible: false,
       });
       seriesRef.current = series;
-
-      // Crosshair tooltip handler
       chart.subscribeCrosshairMove((param) => {
         const tooltip = tooltipRef.current;
         if (!tooltip || !containerRef.current) return;
@@ -470,14 +522,30 @@ export function ExecutorChart({
       time: c.time as import("lightweight-charts").UTCTimestamp,
     }));
     seriesRef.current.setData(mapped);
+    const visibleBefore = chartRef.current?.timeScale().getVisibleLogicalRange();
+    if (pricePrecision != null && seriesRef.current) {
+      seriesRef.current.applyOptions({
+        priceFormat: {
+          type: "price",
+          precision: pricePrecision,
+          minMove: 1 / 10 ** pricePrecision,
+        },
+      });
+    }
     if (!initializedRef.current) {
       chartRef.current?.timeScale().fitContent();
       initializedRef.current = true;
+    } else if (visibleBefore) {
+      chartRef.current?.timeScale().setVisibleLogicalRange(visibleBefore);
     }
-  }, [candles, chartReady]);
+  }, [candles, chartReady, pricePrecision]);
 
-  // Reset on pair/interval change
+  // Reset viewport fit only when pair/interval actually changes
   useEffect(() => {
+    const key = `${tradingPair}|${interval}`;
+    if (viewportKeyRef.current === key) return;
+    viewportKeyRef.current = key;
+    overlayGeometrySigRef.current = "";
     initializedRef.current = false;
   }, [tradingPair, interval]);
 
@@ -488,6 +556,11 @@ export function ExecutorChart({
     const mod = chartModuleRef.current;
     if (!series || !chart || !mod || !chartReady) return;
 
+    if (overlayGeometrySigRef.current === overlayGeometrySig) return;
+    overlayGeometrySigRef.current = overlayGeometrySig;
+
+    const visibleAtStart = chart.timeScale().getVisibleLogicalRange();
+
     // Clean up old segment series and vertical lines
     for (const s of segmentSeriesRef.current) {
       try { chart.removeSeries(s); } catch { /* ok */ }
@@ -496,6 +569,16 @@ export function ExecutorChart({
     segmentSeriesRef.current = [];
 
     const isMulti = overlays.length > 1;
+    const linePriceFormat =
+      pricePrecision != null
+        ? {
+            priceFormat: {
+              type: "price" as const,
+              precision: pricePrecision,
+              minMove: 1 / 10 ** pricePrecision,
+            },
+          }
+        : {};
 
     overlays.forEach((overlay: ExecutorOverlay, idx: number) => {
       const color = isMulti ? getExecutorColor(idx, overlay.pnl) : undefined;
@@ -515,6 +598,7 @@ export function ExecutorChart({
           const seg = chart.addSeries(mod.LineSeries, {
             color: boxColor, lineWidth: 2,
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            ...linePriceFormat,
           });
           seg.setData([
             { time: t1 as TS, value: box.startPrice },
@@ -529,6 +613,7 @@ export function ExecutorChart({
           const top = chart.addSeries(mod.LineSeries, {
             color: boxColor, lineWidth: 2,
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            ...linePriceFormat,
           });
           top.setData([
             { time: t1 as TS, value: box.endPrice },
@@ -540,6 +625,7 @@ export function ExecutorChart({
           const bottom = chart.addSeries(mod.LineSeries, {
             color: boxColor, lineWidth: 2, lineStyle: mod.LineStyle.Dashed,
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            ...linePriceFormat,
           });
           bottom.setData([
             { time: t1 as TS, value: box.startPrice },
@@ -558,6 +644,7 @@ export function ExecutorChart({
             const limit = chart.addSeries(mod.LineSeries, {
               color: getThemeColors().red, lineWidth: 1, lineStyle: mod.LineStyle.Dotted,
               priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+              ...linePriceFormat,
             });
             limit.setData([
               { time: t1 as TS, value: box.limitPrice },
@@ -588,6 +675,7 @@ export function ExecutorChart({
         priceLineVisible: false,
         lastValueVisible: false,
         crosshairMarkerVisible: false,
+        ...linePriceFormat,
       });
 
       lineSeries.setData([
@@ -600,10 +688,35 @@ export function ExecutorChart({
 
     // Trigger a redraw of grid vertical lines on the overlay canvas
     if (gridVerticalLinesRef.current.length > 0) {
-      // Small delay to let chart render first
       setTimeout(() => {
         chart.timeScale().scrollToPosition(chart.timeScale().scrollPosition(), false);
       }, 50);
+    }
+
+    if (visibleAtStart) {
+      chart.timeScale().setVisibleLogicalRange(visibleAtStart);
+    }
+  }, [overlayGeometrySig, overlays, chartReady, pricePrecision]);
+
+  // Refresh segment endpoints (live price/time) without rebuilding series
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !chartReady || overlays.length !== 1) return;
+    const overlay = overlays[0];
+    const seg = overlay.segment;
+    if (!seg || overlay.gridBox || segmentSeriesRef.current.length === 0) return;
+
+    const lineSeries = segmentSeriesRef.current[0];
+    if (!lineSeries) return;
+
+    const visibleRange = chart.timeScale().getVisibleLogicalRange();
+    type TS = import("lightweight-charts").UTCTimestamp;
+    lineSeries.setData([
+      { time: tsToSeconds(seg.entryTime) as TS, value: seg.entryPrice },
+      { time: tsToSeconds(seg.exitTime) as TS, value: seg.exitPrice },
+    ]);
+    if (visibleRange) {
+      chart.timeScale().setVisibleLogicalRange(visibleRange);
     }
   }, [overlays, chartReady]);
 
