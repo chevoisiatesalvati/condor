@@ -10,13 +10,23 @@ logger = logging.getLogger(__name__)
 from config_manager import get_config_manager
 from condor.web.auth import get_current_user
 from condor.web.models import CreateExecutorRequest, ExecutorInfo, WebUser
+from condor.web.routes.positions import _normalize_position
 from condor.fetchers.executors import (
     fetch_all_executors,
     extract_executors_list as _extract_executors_list,
+    get_executor_close_timestamp,
+    get_executor_config,
+    get_executor_display_config,
+    get_executor_custom_info,
+    get_executor_entry_price,
     get_executor_pnl,
+    get_executor_timestamp,
     get_executor_volume,
-    get_executor_type,
     get_executor_fees,
+    hydrate_executor_list_details,
+    resolve_executor_side,
+    get_executor_type,
+    parse_executor_json_field,
     MAX_EXECUTORS_FETCH,
 )
 
@@ -38,17 +48,10 @@ def _build_executor_info(ex: dict) -> ExecutorInfo | None:
     """
     if not isinstance(ex, dict):
         return None
-    config = ex.get("config", ex)
-    custom_info = ex.get("custom_info") or {}
+    config = get_executor_config(ex)
+    custom_info = get_executor_custom_info(ex)
 
-    # Entry price is display-only (PnL comes from get_executor_pnl(), independent of it).
-    # Only position executors carry a real entry_price (config > top-level > custom_info);
-    # grid/DCA executors expose break_even_price instead, so fall back to it for display.
-    _cfg_entry = float(config.get("entry_price") or 0)
-    _top_entry = float(ex.get("entry_price") or 0)
-    _ci_entry = float(custom_info.get("current_position_average_price") or 0)
-    _be_price = float(custom_info.get("break_even_price") or 0)
-    entry_price = _cfg_entry or _top_entry or _ci_entry or _be_price or 0.0
+    entry_price = get_executor_entry_price(ex)
 
     # Current/close price: top-level > custom_info.close_price > held_position_orders fill price
     _top_cur = float(ex.get("current_price") or 0)
@@ -68,20 +71,20 @@ def _build_executor_info(ex: dict) -> ExecutorInfo | None:
         type=get_executor_type(ex),
         connector=config.get("connector_name") or ex.get("connector_name") or ex.get("connector") or "",
         trading_pair=config.get("trading_pair") or ex.get("trading_pair") or "",
-        side=_normalize_side(str(custom_info.get("side") or config.get("side") or ex.get("side") or "")),
+        side=resolve_executor_side(ex),
         status=(ex.get("status") or "").lower(),
         close_type=str(ex.get("close_type") or "").lower(),
         pnl=get_executor_pnl(ex),
         volume=get_executor_volume(ex),
-        timestamp=float(config.get("timestamp") or ex.get("timestamp") or 0),
+        timestamp=get_executor_timestamp(ex),
         controller_id=str(config.get("controller_id") or ex.get("controller_id") or ""),
         cum_fees_quote=get_executor_fees(ex),
         net_pnl_pct=float(ex.get("net_pnl_pct") or 0),
         entry_price=entry_price,
         current_price=current_price,
-        close_timestamp=float(ex.get("close_timestamp") or 0),
+        close_timestamp=get_executor_close_timestamp(ex),
         custom_info=custom_info,
-        config=ex.get("config", {}),
+        config=get_executor_display_config(ex),
     )
 
 
@@ -94,6 +97,21 @@ def _dedupe_executor_infos(items: list[ExecutorInfo]) -> list[ExecutorInfo]:
             seen.add(info.id)
             out.append(info)
     return out
+
+
+async def _hydrate_executor_raw_list(name: str, executors_list: list[dict]) -> list[dict]:
+    """Fill stripped search_executors rows from get_executor; refresh SDS when needed."""
+    from condor.fetchers.executors import executor_list_payload_needs_detail
+    from condor.server_data_service import ServerDataType, get_server_data_service
+
+    if not any(executor_list_payload_needs_detail(ex) for ex in executors_list):
+        return executors_list
+
+    cm = get_config_manager()
+    client = await cm.get_client(name)
+    hydrated = await hydrate_executor_list_details(client, executors_list)
+    get_server_data_service().put(name, ServerDataType.EXECUTORS, hydrated)
+    return hydrated
 
 
 @router.get("/servers/{name}/executors", response_model=list[ExecutorInfo])
@@ -143,6 +161,7 @@ async def list_executors(
             raise HTTPException(status_code=502, detail="Failed to fetch executors")
 
     executors_list = _extract_executors_list(result)
+    executors_list = await _hydrate_executor_raw_list(name, executors_list)
 
     items: list[ExecutorInfo] = []
     for ex in executors_list:
@@ -183,7 +202,9 @@ async def list_executors_page(
         sds = get_server_data_service()
         cached = sds.get(name, ServerDataType.EXECUTORS)
         if cached is not None:
-            all_executors = _extract_executors_list(cached)
+            all_executors = await _hydrate_executor_raw_list(
+                name, _extract_executors_list(cached)
+            )
             page = all_executors[:limit]
             items: list[ExecutorInfo] = []
             for ex in page:
@@ -209,7 +230,9 @@ async def list_executors_page(
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
         if cached is not None:
-            all_executors = _extract_executors_list(cached)
+            all_executors = await _hydrate_executor_raw_list(
+                name, _extract_executors_list(cached)
+            )
             page = all_executors[offset : offset + limit]
             items = []
             for ex in page:
@@ -243,7 +266,7 @@ async def list_executors_page(
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
-    page = _extract_executors_list(result)
+    page = await hydrate_executor_list_details(client, _extract_executors_list(result))
     next_cursor = None
     if isinstance(result, dict):
         next_cursor = result.get("next_cursor") or result.get("cursor")
@@ -334,7 +357,12 @@ async def get_positions_held(
     else:
         positions = []
 
-    return {"positions": positions, "summary": result if isinstance(result, dict) else {}}
+    normalized = [
+        _normalize_position(pos, "executor", "Executor")
+        for pos in positions
+        if isinstance(pos, dict)
+    ]
+    return {"positions": normalized, "summary": result if isinstance(result, dict) else {}}
 
 
 @router.delete("/servers/{name}/executors/positions/{connector}/{pair}")

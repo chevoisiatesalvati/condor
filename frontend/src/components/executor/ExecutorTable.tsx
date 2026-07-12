@@ -8,11 +8,20 @@ import {
   X,
 } from "lucide-react";
 import { memo, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 
 import { ExecutorChart } from "@/components/charts/ExecutorChart";
 import { useResizeDrag } from "@/hooks/useResizeDrag";
-import { type ExecutorInfo } from "@/lib/api";
+import { api, type ExecutorInfo } from "@/lib/api";
+import {
+  enrichExecutorForTerminatedDisplay,
+  enrichExecutorWithLivePrice,
+  mergeSessionConfigSources,
+  parseControllerSession,
+  resolveExecutorConfig,
+  type ExecutorEnrichmentContext,
+} from "@/lib/executors";
 import {
   formatUsd,
   formatVolume,
@@ -22,8 +31,10 @@ import {
   formatPrice,
   formatPct,
   formatExecutorSide,
+  executorSideRaw,
   isExecutorActive,
 } from "@/lib/formatters";
+import { parseJournal } from "@/lib/parse-agent";
 
 // ── Sort types ──
 
@@ -157,7 +168,7 @@ const ExecutorRow = memo(function ExecutorRow({
   fmtVol: RowFormatter;
   fmtDet: RowFormatter;
 }) {
-  const side = formatExecutorSide(ex.side);
+  const side = formatExecutorSide(executorSideRaw(ex));
   const pnlBorder = ex.pnl >= 0 ? "var(--color-green)" : "var(--color-red)";
   const quote = ex.trading_pair?.split("-")[1] || "USDT";
   return (
@@ -192,10 +203,15 @@ const ExecutorRow = memo(function ExecutorRow({
         <span
           className="text-xs font-semibold uppercase"
           style={{
-            color: side === "BUY" ? "var(--color-green)" : "var(--color-red)",
+            color:
+              side === "BUY"
+                ? "var(--color-green)"
+                : side === "SELL"
+                  ? "var(--color-red)"
+                  : "var(--color-text-muted)",
           }}
         >
-          {side}
+          {side || "—"}
         </span>
       </td>
       <td className="px-4 py-2.5">
@@ -394,6 +410,7 @@ export function DetailPanel({
   onStop,
   stopping,
   variant = "sidebar",
+  enrichmentContext,
   rateFormatPnl,
   rateFormatValue,
   rateFormatDetailed,
@@ -404,6 +421,7 @@ export function DetailPanel({
   onStop: (id: string) => void;
   stopping: boolean;
   variant?: "sidebar" | "inline";
+  enrichmentContext?: ExecutorEnrichmentContext;
   rateFormatPnl?: (val: number, quote: string) => string;
   rateFormatValue?: (val: number, quote: string) => string;
   rateFormatDetailed?: (val: number, quote: string) => string;
@@ -411,6 +429,71 @@ export function DetailPanel({
   const navigate = useNavigate();
   const isInline = variant === "inline";
   const [panelWidth, setPanelWidth] = useState(480);
+
+  const sessionRef = useMemo(
+    () => parseControllerSession(executor.controller_id),
+    [executor.controller_id],
+  );
+
+  const useRemoteSessionFetch = enrichmentContext?.sessionConfig === undefined;
+  const useRemoteJournalFetch = enrichmentContext?.journalById === undefined;
+
+  const { data: sessionDetail } = useQuery({
+    queryKey: ["strategy-session-executors", sessionRef?.slug, sessionRef?.sslug, sessionRef?.sessionNum],
+    queryFn: () =>
+      api.getStrategySessionExecutors(sessionRef!.slug, sessionRef!.sslug, sessionRef!.sessionNum),
+    enabled: !!sessionRef && useRemoteSessionFetch,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: journalRaw } = useQuery({
+    queryKey: ["session-journal", sessionRef?.slug, sessionRef?.sslug, sessionRef?.sessionNum],
+    queryFn: () =>
+      api.getSessionJournal(sessionRef!.slug, sessionRef!.sslug, sessionRef!.sessionNum),
+    enabled: !!sessionRef && useRemoteJournalFetch,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: strategyDefaults } = useQuery({
+    queryKey: ["strategy-defaults", sessionRef?.slug, sessionRef?.sslug],
+    queryFn: () => api.getStrategyDefaults(sessionRef!.slug, sessionRef!.sslug),
+    enabled: !!sessionRef,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  const journalById = useMemo(() => {
+    if (enrichmentContext?.journalById) return enrichmentContext.journalById;
+    const map = new Map<string, { id: string; side?: string; amount?: number }>();
+    if (!journalRaw?.content) return map;
+    for (const row of parseJournal(journalRaw.content).executors) {
+      if (row.id) map.set(row.id, { id: row.id, side: row.side, amount: row.amount });
+    }
+    return map;
+  }, [enrichmentContext?.journalById, journalRaw?.content]);
+
+  const sessionExecutorRow = useMemo(() => {
+    if (enrichmentContext?.sessionExecutorRow) return enrichmentContext.sessionExecutorRow;
+    return sessionDetail?.executors?.find((row) => row.id === executor.id);
+  }, [enrichmentContext?.sessionExecutorRow, sessionDetail?.executors, executor.id]);
+
+  const effectiveSessionConfig = useMemo(
+    () =>
+      mergeSessionConfigSources(
+        enrichmentContext?.sessionConfig ?? sessionDetail?.session_config,
+        strategyDefaults?.default_config,
+      ),
+    [enrichmentContext?.sessionConfig, sessionDetail?.session_config, strategyDefaults?.default_config],
+  );
+
+  const displayExecutor = useMemo(
+    () =>
+      enrichExecutorForTerminatedDisplay(executor, {
+        sessionConfig: effectiveSessionConfig,
+        journalById,
+        sessionExecutorRow,
+      }),
+    [executor, effectiveSessionConfig, journalById, sessionExecutorRow],
+  );
 
   const { onMouseDown } = useResizeDrag({
     axis: "x",
@@ -423,13 +506,23 @@ export function DetailPanel({
     lockUserSelect: true,
   });
 
-  const sideLabel = formatExecutorSide(executor.side);
-  const sideColor = sideLabel === "BUY" ? "var(--color-green)" : "var(--color-red)";
-  const sideBg = sideLabel === "BUY" ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)";
-  const configEntries = Object.entries(executor.config || {});
-  const customEntries = Object.entries(executor.custom_info || {});
+  const sideLabel = formatExecutorSide(executorSideRaw(displayExecutor));
+  const sideColor =
+    sideLabel === "BUY"
+      ? "var(--color-green)"
+      : sideLabel === "SELL"
+        ? "var(--color-red)"
+        : "var(--color-text-muted)";
+  const sideBg =
+    sideLabel === "BUY"
+      ? "rgba(34,197,94,0.1)"
+      : sideLabel === "SELL"
+        ? "rgba(239,68,68,0.1)"
+        : "rgba(156,163,175,0.1)";
+  const configEntries = Object.entries(displayExecutor.config || {});
+  const customEntries = Object.entries(displayExecutor.custom_info || {});
 
-  const config = executor.config || {};
+  const config = resolveExecutorConfig(displayExecutor);
   const isPosition = executor.type === "position";
   const isGrid = executor.type === "grid";
 
@@ -447,6 +540,23 @@ export function DetailPanel({
   const fmtPnl = rateFormatPnl ? (v: number) => rateFormatPnl(v, quote) : formatPnl;
   const fmtVal = rateFormatValue ? (v: number) => rateFormatValue(v, quote) : formatUsd;
   const fmtDet = rateFormatDetailed ? (v: number) => rateFormatDetailed(v, quote) : formatUsd;
+
+  const needsLivePrice =
+    isExecutorActive(executor.status) &&
+    executor.current_price <= 0 &&
+    !!server &&
+    !!executor.connector &&
+    !!executor.trading_pair;
+  const { data: livePrice } = useQuery({
+    queryKey: ["price", server, executor.connector, executor.trading_pair],
+    queryFn: () => api.getPrice(server, executor.connector, executor.trading_pair),
+    enabled: needsLivePrice,
+    refetchInterval: 5000,
+  });
+  const chartExecutor = useMemo(
+    () => enrichExecutorWithLivePrice(displayExecutor, livePrice?.mid_price),
+    [displayExecutor, livePrice?.mid_price],
+  );
 
   return (
       <div
@@ -513,7 +623,7 @@ export function DetailPanel({
               className="rounded px-1.5 py-0.5 text-xs font-semibold uppercase"
               style={{ color: sideColor, background: sideBg }}
             >
-              {sideLabel}
+              {sideLabel || "—"}
             </span>
             {executor.close_type && (
               <span className="rounded bg-[var(--color-surface)] px-2 py-0.5 text-xs font-medium border border-[var(--color-border)]/50">
@@ -536,7 +646,7 @@ export function DetailPanel({
           {server && executor.connector && executor.trading_pair && (
             <ExecutorChart
               server={server}
-              executors={[executor]}
+              executors={[chartExecutor]}
               connector={executor.connector}
               tradingPair={executor.trading_pair}
               height={300}

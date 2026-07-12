@@ -1402,10 +1402,18 @@ async def get_session_executors(
     user: WebUser = Depends(get_current_user),
 ):
     """Return executors + performance for a single session."""
+    from condor.agents.config import load_session_config
     from condor.agents.performance import fetch_agent_performance
+    from condor.agents.sessions_index import find_session_dir
 
     strategy = _get_strategy(slug, sslug)
     agent_id = f"{_runkey(slug, sslug)}_{session_num}"
+    session_config: dict[str, Any] = {}
+    session_dir = find_session_dir(strategy.data_dir, session_num)
+    if session_dir:
+        loaded = load_session_config(session_dir)
+        if loaded:
+            session_config = loaded
     client, _server = await _get_client_for_strategy(
         strategy.data_dir, strategy.default_config
     )
@@ -1415,6 +1423,7 @@ async def get_session_executors(
             "performance": AgentPerformanceModel(
                 agent_id=agent_id, session_num=session_num
             ).model_dump(),
+            "session_config": session_config,
         }
     perf = await fetch_agent_performance(client, agent_id)
     model = AgentPerformanceModel(
@@ -1431,7 +1440,11 @@ async def get_session_executors(
         closed_count=perf.closed_count,
         executors=perf.executors,
     )
-    return {"executors": perf.executors, "performance": model.model_dump()}
+    return {
+        "executors": perf.executors,
+        "performance": model.model_dump(),
+        "session_config": session_config,
+    }
 
 
 # ── Strategy lifecycle ──

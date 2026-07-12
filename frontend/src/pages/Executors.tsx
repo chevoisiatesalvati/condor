@@ -29,7 +29,7 @@ import { FallbackSpinner } from "@/components/ui/FallbackSpinner";
 import { useRates } from "@/hooks/useRates";
 import { useServer } from "@/hooks/useServer";
 import { api, type ExecutorInfo } from "@/lib/api";
-import { dedupeExecutorsById } from "@/lib/executors";
+import { dedupeExecutorsById, getCachedExecutorsById, mergeExecutorOverlay } from "@/lib/executors";
 import {
   pnlColor,
   isExecutorActive,
@@ -424,12 +424,22 @@ export function Executors() {
     [liveExecutors],
   );
 
+  const cachedExecutorsById = useMemo(
+    () => getCachedExecutorsById((key) => queryClient.getQueryData(key), server!),
+    [queryClient, server, liveExecutors, data],
+  );
+
   const archivedExecutors = useMemo(
     () =>
       applyExecutorFilters(paginatedExecutors, filters)
-        .map((ex) => liveById.get(ex.id) ?? ex)
+        .map((ex) => {
+          let row = liveById.get(ex.id) ?? ex;
+          const cached = cachedExecutorsById.get(ex.id);
+          if (cached) row = mergeExecutorOverlay(row, cached);
+          return row;
+        })
         .filter((ex) => !isExecutorActive(ex.status)),
-    [paginatedExecutors, filters, liveById],
+    [paginatedExecutors, filters, liveById, cachedExecutorsById],
   );
 
   // Aggregate stats (archived only for win rate), filtered by kpiPeriod
@@ -735,7 +745,10 @@ export function Executors() {
                   selectedIds={selectedIds}
                   onToggleSelect={toggleSelect}
                   onSelectAll={() => toggleSelectAll(archivedExecutors)}
-                  allSelected={archivedExecutors.length > 0 && archivedExecutors.every((ex) => selectedIds.has(ex.id))}
+                  allSelected={
+                    archivedExecutors.length > 0 &&
+                    archivedExecutors.every((ex) => selectedIds.has(ex.id))
+                  }
                   onRowClick={setSelectedExecutor}
                   selectedExecutorId={selectedExecutor?.id ?? null}
                   onStop={handleStopOne}

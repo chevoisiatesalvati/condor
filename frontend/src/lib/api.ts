@@ -397,6 +397,8 @@ export interface AgentExecutorRow {
   amount: number;
   timestamp: number;
   close_timestamp: number;
+  created_at?: string;
+  closed_at?: string;
   controller_id: string;
   custom_info?: Record<string, unknown>;
   config?: Record<string, unknown>;
@@ -1185,7 +1187,11 @@ export const api = {
     ),
 
   getStrategySessionExecutors: (slug: string, sslug: string, sessionNum: number) =>
-    apiFetch<{ executors: AgentExecutorRow[]; performance: AgentPerformance }>(
+    apiFetch<{
+      executors: AgentExecutorRow[];
+      performance: AgentPerformance;
+      session_config?: Record<string, unknown>;
+    }>(
       `/api/v1/agents/${encodeURIComponent(slug)}/strategies/${encodeURIComponent(sslug)}/sessions/${sessionNum}/executors`,
     ),
 

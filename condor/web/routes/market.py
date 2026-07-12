@@ -6,26 +6,9 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from config_manager import get_config_manager
+from condor.candle_cache import get_cached_candles, put_cached_candles
 
 logger = logging.getLogger(__name__)
-
-# Simple TTL cache for candle data
-_candle_cache: dict[tuple, tuple[float, list]] = {}  # key -> (timestamp, data)
-_CANDLE_CACHE_TTL = 30.0  # seconds
-_CANDLE_CACHE_MAX = 50  # hard cap on entries (keys rotate every minute per chart)
-
-
-def _candle_cache_put(key: tuple, value: list, now: float) -> None:
-    """Insert into the candle cache, evicting expired entries and capping size."""
-    expired = [
-        k for k, (ts, _) in _candle_cache.items() if now - ts >= _CANDLE_CACHE_TTL
-    ]
-    for k in expired:
-        _candle_cache.pop(k, None)
-    _candle_cache[key] = (now, value)
-    while len(_candle_cache) > _CANDLE_CACHE_MAX:
-        # dicts preserve insertion order: drop the oldest entry first
-        _candle_cache.pop(next(iter(_candle_cache)))
 
 
 from condor.web.auth import get_current_user
@@ -260,10 +243,9 @@ async def get_candles(
         bucketed_start,
         bucketed_end,
     )
-    now = time.monotonic()
-    cached = _candle_cache.get(cache_key)
-    if cached and (now - cached[0]) < _CANDLE_CACHE_TTL:
-        return cached[1]
+    cached_raw = get_cached_candles(cache_key, bucketed_end)
+    if cached_raw is not None:
+        return [CandleData(**c) for c in cached_raw]
 
     client = await cm.get_client(name)
     result = None
@@ -349,5 +331,6 @@ async def get_candles(
                     volume=float(c[5]),
                 )
             )
-    _candle_cache_put(cache_key, candles, now)
+    payload = [c.model_dump() for c in candles]
+    put_cached_candles(cache_key, payload, bucketed_end)
     return candles

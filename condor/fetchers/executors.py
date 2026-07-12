@@ -1,5 +1,6 @@
 """Fetch and manage executors via Hummingbot API."""
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,7 @@ logger = logging.getLogger(__name__)
 # Safety cap to avoid runaway pagination loops
 MAX_EXECUTORS_FETCH = 5000
 EXECUTORS_PAGE_SIZE = 500
+DETAIL_HYDRATE_CONCURRENCY = 25
 
 
 # ============================================
@@ -33,7 +35,7 @@ def get_executor_type(executor: Dict[str, Any]) -> str:
 
     Returns the executor type label (e.g. 'grid', 'position', 'order', 'dca', 'lp').
     """
-    config = executor.get("config", executor)
+    config = get_executor_config(executor)
     for source in (config, executor):
         ex_type = source.get("type", "") or source.get("executor_type", "")
         if isinstance(ex_type, str) and ex_type:
@@ -85,12 +87,248 @@ def _positive_float(value: Any) -> float | None:
     return price if price > 0 else None
 
 
+def _timestamp_to_seconds(raw: Any) -> float | None:
+    """Parse HB executor timestamp fields to unix seconds."""
+    if raw is None or raw == "" or raw == 0:
+        return None
+    if isinstance(raw, (int, float)):
+        ts = float(raw)
+        return ts / 1000.0 if ts > 1e12 else ts
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(text)
+        return dt.timestamp()
+    except ValueError:
+        pass
+    try:
+        ts = float(text)
+        return ts / 1000.0 if ts > 1e12 else ts
+    except (TypeError, ValueError):
+        return None
+
+
+def get_executor_timestamp(executor: Dict[str, Any]) -> float:
+    """Resolve executor open time from API shapes (config, top-level, created_at)."""
+    config = get_executor_config(executor)
+    for source in (config, executor):
+        for key in ("timestamp", "created_at"):
+            ts = _timestamp_to_seconds(source.get(key))
+            if ts is not None and ts > 0:
+                return ts
+    return 0.0
+
+
+def get_executor_close_timestamp(executor: Dict[str, Any]) -> float:
+    """Resolve executor close time from API shapes."""
+    for key in ("close_timestamp", "closed_at"):
+        ts = _timestamp_to_seconds(executor.get(key))
+        if ts is not None and ts > 0:
+            return ts
+    return 0.0
+
+
+def parse_executor_json_field(val: Any) -> dict[str, Any]:
+    """Parse executor ``config`` / ``custom_info`` that may be JSON strings."""
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str) and val.strip().startswith("{"):
+        import json
+
+        try:
+            parsed = json.loads(val)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def get_executor_config(executor: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolved config dict (parsed JSON string or top-level fallback)."""
+    raw = executor.get("config")
+    if isinstance(raw, dict) and raw:
+        return raw
+    parsed = parse_executor_json_field(raw)
+    if parsed:
+        return parsed
+    return executor
+
+
+def get_executor_custom_info(executor: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolved custom_info dict (parsed JSON string)."""
+    return parse_executor_json_field(executor.get("custom_info"))
+
+
+_DISPLAY_CONFIG_KEYS = (
+    "leverage",
+    "total_amount_quote",
+    "amount",
+    "stop_loss",
+    "take_profit",
+    "triple_barrier_config",
+    "connector_name",
+    "trading_pair",
+    "side",
+    "controller_id",
+    "type",
+)
+
+
+def normalize_executor_side(raw: Any) -> str:
+    """Normalize heterogeneous side encodings to BUY, SELL, or empty."""
+    if raw is None or raw is False:
+        return ""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if raw == 1:
+            return "BUY"
+        if raw == 2:
+            return "SELL"
+    label = str(raw).strip()
+    if not label:
+        return ""
+    upper = label.upper()
+    if label in ("1", "1.0") or upper in ("BUY", "LONG", "TRADETYPE.BUY"):
+        return "BUY"
+    if label in ("2", "2.0") or upper in ("SELL", "SHORT", "TRADETYPE.SELL"):
+        return "SELL"
+    return ""
+
+
+def resolve_executor_side(executor: Dict[str, Any]) -> str:
+    """Best-effort side from heterogeneous Hummingbot executor payloads."""
+    if not isinstance(executor, dict):
+        return ""
+    config = get_executor_config(executor)
+    custom_info = get_executor_custom_info(executor)
+
+    candidates: list[Any] = [
+        custom_info.get("side"),
+        config.get("side"),
+        executor.get("side"),
+        custom_info.get("position_side"),
+        executor.get("position_side"),
+        custom_info.get("trade_type"),
+        executor.get("trade_type"),
+    ]
+
+    held = custom_info.get("held_position_orders")
+    if isinstance(held, list):
+        for order in reversed(held):
+            if isinstance(order, dict):
+                candidates.extend([order.get("trade_type"), order.get("side")])
+
+    if custom_info.get("buy_breakeven_price") and not custom_info.get("sell_breakeven_price"):
+        candidates.append(1)
+    if custom_info.get("sell_breakeven_price") and not custom_info.get("buy_breakeven_price"):
+        candidates.append(2)
+
+    for raw in candidates:
+        normalized = normalize_executor_side(raw)
+        if normalized:
+            return normalized
+    return ""
+
+
+def get_executor_side(executor: Dict[str, Any]) -> str:
+    """Alias for resolve_executor_side (live + archived rows)."""
+    return resolve_executor_side(executor)
+
+
+def executor_list_payload_needs_detail(executor: Dict[str, Any]) -> bool:
+    """True when search_executors list row lacks side and needs get_executor."""
+    ex_id = executor.get("id") or executor.get("executor_id")
+    return bool(ex_id) and not resolve_executor_side(executor)
+
+
+def merge_executor_summary_with_detail(summary: dict, detail: dict) -> dict:
+    """Fill stripped list rows from a fuller executor payload."""
+    merged = dict(summary)
+    summary_config = merged.get("config") if isinstance(merged.get("config"), dict) else {}
+    detail_config = detail.get("config") if isinstance(detail.get("config"), dict) else {}
+    if detail_config:
+        merged["config"] = {**summary_config, **detail_config}
+
+    summary_ci = merged.get("custom_info") if isinstance(merged.get("custom_info"), dict) else {}
+    detail_ci = detail.get("custom_info") if isinstance(detail.get("custom_info"), dict) else {}
+    if detail_ci:
+        merged["custom_info"] = {**summary_ci, **detail_ci}
+
+    for key in (
+        "side",
+        "connector_name",
+        "connector",
+        "trading_pair",
+        "type",
+        "controller_id",
+        "executor_type",
+    ):
+        if not merged.get(key) and detail.get(key):
+            merged[key] = detail[key]
+    return merged
+
+
+async def hydrate_executor_list_details(
+    client,
+    executors: list[dict],
+    *,
+    concurrency: int = DETAIL_HYDRATE_CONCURRENCY,
+) -> list[dict]:
+    """Fetch get_executor for list rows missing side (terminated search_executors rows)."""
+    if not executors:
+        return executors
+
+    needs = [(i, ex) for i, ex in enumerate(executors) if executor_list_payload_needs_detail(ex)]
+    if not needs:
+        return executors
+
+    result = list(executors)
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _hydrate_one(idx: int, summary: dict) -> None:
+        ex_id = str(summary.get("id") or summary.get("executor_id") or "")
+        async with sem:
+            detail = await get_executor_detail(client, ex_id)
+        if detail:
+            result[idx] = merge_executor_summary_with_detail(summary, detail)
+
+    await asyncio.gather(*(_hydrate_one(i, ex) for i, ex in needs))
+    logger.info("Hydrated executor details for %d/%d list rows missing side", len(needs), len(executors))
+    return result
+
+
+def get_executor_display_config(executor: Dict[str, Any]) -> Dict[str, Any]:
+    """Chart/tooltip config: nested config dict merged with top-level HB fields."""
+    raw = executor.get("config")
+    out: Dict[str, Any] = (
+        dict(raw)
+        if isinstance(raw, dict) and raw
+        else parse_executor_json_field(raw)
+    )
+    resolved = get_executor_config(executor)
+    for key in _DISPLAY_CONFIG_KEYS:
+        val = resolved.get(key)
+        if val is not None and val != "" and key not in out:
+            out[key] = val
+
+    tb = out.get("triple_barrier_config")
+    if isinstance(tb, str):
+        tb = parse_executor_json_field(tb)
+    if isinstance(tb, dict):
+        for key in ("stop_loss", "take_profit", "time_limit", "trailing_stop"):
+            if key in tb and key not in out:
+                out[key] = tb[key]
+    return out
+
+
 def get_executor_entry_price(executor: Dict[str, Any]) -> float:
     """Resolve entry/average fill price from executor API shapes."""
-    config = executor.get("config", executor) if isinstance(executor.get("config"), dict) else executor
-    custom_info = executor.get("custom_info") or {}
-    if not isinstance(custom_info, dict):
-        custom_info = {}
+    config = get_executor_config(executor)
+    custom_info = get_executor_custom_info(executor)
 
     candidates: list[Any] = [
         config.get("entry_price"),
@@ -158,7 +396,7 @@ async def fetch_all_executors(
         if len(all_items) >= max_items:
             break
         cursor = next_cursor
-    return all_items
+    return await hydrate_executor_list_details(client, all_items)
 
 
 async def create_executor(

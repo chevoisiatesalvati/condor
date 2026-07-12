@@ -11,6 +11,7 @@ import {
   type ExecutorOverlay,
 } from "@/lib/executor-overlays";
 import { dedupCandlesByTime } from "@/lib/chart-utils";
+import { enrichExecutorForChart, resolveExecutorConfig } from "@/lib/executors";
 import { escapeHtml, formatCompactUsd, tsToSeconds } from "@/lib/formatters";
 import { getThemeColors, pnlHexColor, sideColor } from "@/lib/theme-colors";
 
@@ -74,13 +75,13 @@ export function ExecutorChart({
   const segmentSeriesRef = useRef<import("lightweight-charts").ISeriesApi<"Line">[]>([]);
   const gridVerticalLinesRef = useRef<GridVerticalLine[]>([]);
   const overlaysRef = useRef<ExecutorOverlay[]>([]);
+  const chartExecutorsRef = useRef<ExecutorInfo[]>([]);
   const initializedRef = useRef(false);
   const [chartReady, setChartReady] = useState(false);
 
-  // Compute overlays
-  const overlays = useMemo(() => computeMultiOverlays(executors), [executors]);
-  overlaysRef.current = overlays;
-  const timeRange = useMemo(() => getOverlayTimeRange(overlays), [overlays]);
+  // Provisional overlays for candle time-window (entry may be filled after candles load)
+  const provisionalOverlays = useMemo(() => computeMultiOverlays(executors), [executors]);
+  const timeRange = useMemo(() => getOverlayTimeRange(provisionalOverlays), [provisionalOverlays]);
 
   // Determine if any executor is active (for WS subscription)
   const hasActive = executors.some((ex) => isActive(ex.status));
@@ -93,13 +94,25 @@ export function ExecutorChart({
   const paddingSeconds = 1800;
   const startTime = Math.floor(timeRange.start - paddingSeconds);
   const endTime = Math.ceil(timeRange.end + paddingSeconds);
+  const allTerminated = executors.length > 0 && executors.every((ex) => !isActive(ex.status));
 
   const { data: candles, isLoading, isError } = useQuery({
-    queryKey: ["candles", server, connector, tradingPair, interval],
+    queryKey: ["candles", server, connector, tradingPair, interval, startTime, endTime],
     queryFn: () => api.getCandles(server, connector, tradingPair, interval, 5000, startTime, endTime),
     enabled: !!server && !!connector && !!tradingPair,
     retry: 1,
+    staleTime: allTerminated ? 24 * 60 * 60 * 1000 : 60 * 1000,
+    gcTime: allTerminated ? 7 * 24 * 60 * 60 * 1000 : 5 * 60 * 1000,
   });
+
+  const chartExecutors = useMemo(
+    () => executors.map((ex) => enrichExecutorForChart(ex, candles)),
+    [executors, candles],
+  );
+
+  const overlays = useMemo(() => computeMultiOverlays(chartExecutors), [chartExecutors]);
+  overlaysRef.current = overlays;
+  chartExecutorsRef.current = chartExecutors;
 
   // Initialize chart
   useEffect(() => {
@@ -225,8 +238,9 @@ export function ExecutorChart({
         const statusBg = isActive(o.status) ? "rgba(34,197,94,0.15)" : "rgba(156,163,175,0.15)";
         const statusClr = isActive(o.status) ? getThemeColors().green : textMuted;
 
-        // Build config detail rows
-        const cfg = o.config || {};
+        // Build config detail rows from enriched executor (not sparse overlay snapshot)
+        const chartEx = chartExecutorsRef.current.find((e) => e.id === o.executorId);
+        const cfg = chartEx ? resolveExecutorConfig(chartEx) : resolveExecutorConfig({ config: o.config ?? {} } as ExecutorInfo);
         const tripleBarrier: Record<string, unknown> = (() => {
           const raw = cfg.triple_barrier_config;
           if (!raw) return {};
@@ -262,7 +276,7 @@ export function ExecutorChart({
 
         const tp = Number(tripleBarrier.take_profit || cfg.take_profit);
         if (tp > 0 && tp !== -1) addRow("Take Profit", `${(tp * 100).toFixed(2)}%`, getThemeColors().green);
-        const sl = Number(cfg.stop_loss);
+        const sl = Number(tripleBarrier.stop_loss || cfg.stop_loss);
         if (sl > 0 && sl !== -1) addRow("Stop Loss", `${(sl * 100).toFixed(2)}%`, getThemeColors().red);
 
         tooltip.innerHTML = `
