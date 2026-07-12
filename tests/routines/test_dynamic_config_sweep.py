@@ -1,5 +1,8 @@
 """Tests for dynamic strategy replay mega sweep helpers."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
@@ -245,6 +248,51 @@ def test_refine_output_slug_from_preset():
         == "v6_entry_sltp_sl38_tpmin10_mid_thesis"
     )
     assert refine_output_slug("dyn_both_on_entry_sltp_sl3.8_td44") == "entry_sltp_sl3.8_td44"
+
+
+def test_resolve_refine_timeline_range_prefers_parent_json(tmp_path: Path):
+    from scripts.run_refine_sweep import resolve_refine_timeline_range
+
+    snapshot_dir = tmp_path / "replay_snapshots_binance_1y"
+    snapshot_dir.mkdir()
+    (snapshot_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "range_start_utc": "2025-07-07T00:00:00Z",
+                "range_end_utc": "2026-07-10T23:59:59Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parent = {
+        "range_start_utc": "2026-04-10T00:00:00Z",
+        "range_end_utc": "2026-07-10T23:59:59Z",
+    }
+    start, end = resolve_refine_timeline_range(
+        parent_overrides=parent,
+        snapshot_dir=snapshot_dir,
+    )
+    assert start == "2026-04-10T00:00:00Z"
+    assert end == "2026-07-10T23:59:59Z"
+
+
+def test_resolve_refine_timeline_range_cli_overrides_parent(tmp_path: Path):
+    from scripts.run_refine_sweep import resolve_refine_timeline_range
+
+    snapshot_dir = tmp_path / "replay_snapshots_binance_1y"
+    snapshot_dir.mkdir()
+    parent = {
+        "range_start_utc": "2026-04-10T00:00:00Z",
+        "range_end_utc": "2026-07-10T23:59:59Z",
+    }
+    start, end = resolve_refine_timeline_range(
+        parent_overrides=parent,
+        snapshot_dir=snapshot_dir,
+        range_start_utc="2026-05-01T00:00:00Z",
+        range_end_utc="2026-06-01T00:00:00Z",
+    )
+    assert start == "2026-05-01T00:00:00Z"
+    assert end == "2026-06-01T00:00:00Z"
 
 
 def test_refine_parent_relative_candidates_include_baseline():
