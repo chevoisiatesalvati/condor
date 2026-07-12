@@ -20,7 +20,10 @@ export default defineConfig({
   server: {
     port: vitePort,
     proxy: {
-      "/api": apiTarget,
+      "/api": {
+        target: apiTarget,
+        ws: true,
+      },
       "/reports": apiTarget,
       "/ws": {
         target: `ws://localhost:${apiPort}`,

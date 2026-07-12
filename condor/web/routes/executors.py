@@ -85,6 +85,16 @@ def _build_executor_info(ex: dict) -> ExecutorInfo | None:
     )
 
 
+def _dedupe_executor_infos(items: list[ExecutorInfo]) -> list[ExecutorInfo]:
+    """First occurrence wins — API/SDS payloads may contain duplicate ids."""
+    seen: set[str] = set()
+    out: list[ExecutorInfo] = []
+    for info in items:
+        if info.id and info.id not in seen:
+            seen.add(info.id)
+            out.append(info)
+    return out
+
 
 @router.get("/servers/{name}/executors", response_model=list[ExecutorInfo])
 async def list_executors(
@@ -139,7 +149,7 @@ async def list_executors(
         info = _build_executor_info(ex)
         if info:
             items.append(info)
-    return items
+    return _dedupe_executor_infos(items)
 
 
 @router.get("/servers/{name}/executors/page")
@@ -182,7 +192,7 @@ async def list_executors_page(
                     items.append(info)
             has_more = len(all_executors) > limit
             return {
-                "executors": items,
+                "executors": _dedupe_executor_infos(items),
                 "next_cursor": "__sds_offset__" + str(limit) if has_more else None,
             }
 
@@ -191,10 +201,15 @@ async def list_executors_page(
         from condor.server_data_service import ServerDataType, get_server_data_service
 
         sds = get_server_data_service()
+        offset = int(cursor.replace("__sds_offset__", ""))
         cached = sds.get(name, ServerDataType.EXECUTORS)
+        if cached is None:
+            try:
+                cached = await sds.get_or_fetch(name, ServerDataType.EXECUTORS)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
         if cached is not None:
             all_executors = _extract_executors_list(cached)
-            offset = int(cursor.replace("__sds_offset__", ""))
             page = all_executors[offset : offset + limit]
             items = []
             for ex in page:
@@ -204,10 +219,11 @@ async def list_executors_page(
             next_offset = offset + limit
             has_more = next_offset < len(all_executors)
             return {
-                "executors": items,
+                "executors": _dedupe_executor_infos(items),
                 "next_cursor": "__sds_offset__" + str(next_offset) if has_more else None,
             }
-        # Cache expired, fall through to API
+        # Cannot satisfy an SDS offset without cache — stop pagination cleanly.
+        return {"executors": [], "next_cursor": None}
 
     client = await cm.get_client(name)
     kwargs: dict = {"limit": limit}
@@ -243,7 +259,7 @@ async def list_executors_page(
         info = _build_executor_info(ex)
         if info:
             items.append(info)
-    return {"executors": items, "next_cursor": next_cursor or None}
+    return {"executors": _dedupe_executor_infos(items), "next_cursor": next_cursor or None}
 
 
 @router.post("/servers/{name}/executors")
