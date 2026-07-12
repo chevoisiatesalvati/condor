@@ -1,5 +1,5 @@
 import type { AgentExecutorRow, ExecutorInfo, PositionHeld } from "@/lib/api";
-import { candlePriceAt } from "@/lib/chart-utils";
+import { candleMaxDistForInterval, candlePriceAt } from "@/lib/chart-utils";
 import {
   isExecutorActive,
   normalizeExecutorType,
@@ -409,9 +409,11 @@ export function deriveEntryFromPnl(executor: ExecutorInfo, currentPrice: number)
 export function enrichExecutorForChart(
   executor: ExecutorInfo,
   candles: Array<{ timestamp?: number; time?: number; close: number }> | undefined,
+  interval?: string,
 ): ExecutorInfo {
   let result = executor;
   const config = resolveExecutorConfig(result);
+  const maxDistSec = interval ? candleMaxDistForInterval(interval) : 600;
 
   const existingEntry =
     result.entry_price ||
@@ -421,7 +423,7 @@ export function enrichExecutorForChart(
   let entry = existingEntry;
   const openTs = result.timestamp;
   if (entry <= 0 && openTs > 0 && candles?.length) {
-    entry = candlePriceAt(openTs, candles);
+    entry = candlePriceAt(openTs, candles, maxDistSec);
   }
   const current = result.current_price;
   if (entry <= 0 && current > 0) {
@@ -435,7 +437,7 @@ export function enrichExecutorForChart(
   let closePrice = existingClose;
   const closeTs = resolveExecutorCloseTimestamp(result);
   if (closePrice <= 0 && closeTs > 0 && candles?.length) {
-    closePrice = candlePriceAt(closeTs, candles);
+    closePrice = candlePriceAt(closeTs, candles, maxDistSec);
   }
   if (closePrice <= 0 && !isExecutorActive(result.status) && entry > 0 && result.pnl) {
     closePrice = deriveCloseFromPnl(result, entry);

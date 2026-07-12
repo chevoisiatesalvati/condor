@@ -24,10 +24,22 @@ export interface ChartCandle {
   close: number;
 }
 
-/** Close price from the candle nearest ``timestampSec`` (within 10 minutes). */
+/** Max distance (seconds) to accept when matching a candle to a timestamp. */
+export function candleMaxDistForInterval(interval: string): number {
+  const match = interval.match(/^(\d+)([smhdw])$/);
+  if (!match) return 600;
+  const n = Number(match[1]);
+  const unit = match[2];
+  const unitSec =
+    unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : unit === "d" ? 86400 : 604800;
+  return Math.max(600, (n * unitSec) / 2);
+}
+
+/** Close price from the candle nearest ``timestampSec`` within ``maxDistSec``. */
 export function candlePriceAt(
   timestampSec: number,
   candles: Array<{ timestamp?: number; time?: number; close: number }>,
+  maxDistSec = 600,
 ): number {
   if (!timestampSec || !candles.length) return 0;
   const target =
@@ -44,7 +56,7 @@ export function candlePriceAt(
       bestClose = c.close;
     }
   }
-  return bestDist <= 600 ? bestClose : 0;
+  return bestDist <= maxDistSec ? bestClose : 0;
 }
 
 /** Merge duplicate candle timestamps (keep open from first, close from last). */

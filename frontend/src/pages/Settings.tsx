@@ -2,6 +2,7 @@ import { LogOut } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 
 import { ApiKeysSettings } from "@/components/settings/ApiKeysSettings";
+import { DisplaySettings } from "@/components/settings/DisplaySettings";
 import { GatewaySettings } from "@/components/settings/GatewaySettings";
 import { ServersSettings } from "@/components/settings/ServersSettings";
 import { VoiceSettings } from "@/components/settings/VoiceSettings";
@@ -11,6 +12,7 @@ const TABS = [
   { key: "servers", label: "Servers" },
   { key: "gateway", label: "Gateway" },
   { key: "keys", label: "API Keys" },
+  { key: "display", label: "Display" },
   { key: "voice", label: "Voice & AI" },
 ] as const;
 
@@ -55,6 +57,7 @@ export function Settings() {
       {tab === "servers" && <ServersSettings />}
       {tab === "gateway" && <GatewaySettings />}
       {tab === "keys" && <ApiKeysSettings />}
+      {tab === "display" && <DisplaySettings />}
       {tab === "voice" && <VoiceSettings />}
     </div>
   );

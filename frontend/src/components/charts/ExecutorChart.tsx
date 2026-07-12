@@ -11,6 +11,14 @@ import {
   type ExecutorOverlay,
 } from "@/lib/executor-overlays";
 import { dedupCandlesByTime } from "@/lib/chart-utils";
+import {
+  EXECUTOR_CHART_INTERVALS,
+  intervalToSeconds,
+  resolveDefaultInterval,
+  resolveExecutorChartKind,
+  saveExecutorChartPref,
+  type ExecutorChartInterval,
+} from "@/lib/executorChartPrefs";
 import { enrichExecutorForChart, resolveExecutorConfig } from "@/lib/executors";
 import { escapeHtml, formatCompactUsd, tsToSeconds } from "@/lib/formatters";
 import { getThemeColors, pnlHexColor, sideColor } from "@/lib/theme-colors";
@@ -27,7 +35,6 @@ interface ExecutorChartProps {
   executors: ExecutorInfo[];
   connector: string;
   tradingPair: string;
-  interval?: string;
   height?: number;
   snapshots?: SnapshotBubble[];
   onSnapshotClick?: (tick: number) => void;
@@ -59,7 +66,6 @@ export function ExecutorChart({
   executors,
   connector,
   tradingPair,
-  interval = "1m",
   height = 350,
   snapshots,
   onSnapshotClick,
@@ -79,6 +85,24 @@ export function ExecutorChart({
   const initializedRef = useRef(false);
   const [chartReady, setChartReady] = useState(false);
 
+  const chartKind = useMemo(() => resolveExecutorChartKind(executors), [executors]);
+  const executorKey = useMemo(() => executors.map((ex) => ex.id).join(","), [executors]);
+  const [interval, setIntervalState] = useState<ExecutorChartInterval>(() =>
+    resolveDefaultInterval(executors),
+  );
+
+  useEffect(() => {
+    setIntervalState(resolveDefaultInterval(executors));
+  }, [executorKey, chartKind]);
+
+  const handleIntervalChange = useCallback(
+    (next: ExecutorChartInterval) => {
+      setIntervalState(next);
+      saveExecutorChartPref(chartKind, next);
+    },
+    [chartKind],
+  );
+
   // Provisional overlays for candle time-window (entry may be filled after candles load)
   const provisionalOverlays = useMemo(() => computeMultiOverlays(executors), [executors]);
   const timeRange = useMemo(() => getOverlayTimeRange(provisionalOverlays), [provisionalOverlays]);
@@ -95,10 +119,14 @@ export function ExecutorChart({
   const startTime = Math.floor(timeRange.start - paddingSeconds);
   const endTime = Math.ceil(timeRange.end + paddingSeconds);
   const allTerminated = executors.length > 0 && executors.every((ex) => !isActive(ex.status));
+  const intervalSec = intervalToSeconds(interval);
+  const spanSec = Math.max(endTime - startTime, intervalSec);
+  const candleLimit = Math.min(5000, Math.max(200, Math.ceil(spanSec / intervalSec) + 20));
 
   const { data: candles, isLoading, isError } = useQuery({
-    queryKey: ["candles", server, connector, tradingPair, interval, startTime, endTime],
-    queryFn: () => api.getCandles(server, connector, tradingPair, interval, 5000, startTime, endTime),
+    queryKey: ["candles", server, connector, tradingPair, interval, startTime, endTime, candleLimit],
+    queryFn: () =>
+      api.getCandles(server, connector, tradingPair, interval, candleLimit, startTime, endTime),
     enabled: !!server && !!connector && !!tradingPair,
     retry: 1,
     staleTime: allTerminated ? 24 * 60 * 60 * 1000 : 60 * 1000,
@@ -106,8 +134,8 @@ export function ExecutorChart({
   });
 
   const chartExecutors = useMemo(
-    () => executors.map((ex) => enrichExecutorForChart(ex, candles)),
-    [executors, candles],
+    () => executors.map((ex) => enrichExecutorForChart(ex, candles, interval)),
+    [executors, candles, interval],
   );
 
   const overlays = useMemo(() => computeMultiOverlays(chartExecutors), [chartExecutors]);
@@ -660,31 +688,44 @@ export function ExecutorChart({
       }
     >
       {/* Header bar */}
-      <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5">
-        <p className="text-[10px] text-[var(--color-text-muted)]">
-          {tradingPair} &middot; {interval}
+      <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 gap-2">
+        <p className="text-[10px] text-[var(--color-text-muted)] shrink-0">
+          {tradingPair}
           {hasActive && (
             <span className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
           )}
         </p>
-        <div className="flex items-center gap-2">
-          {isLoading && (
-            <span className="text-[10px] text-[var(--color-text-muted)]">Loading...</span>
-          )}
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="flex overflow-hidden rounded-md border border-[var(--color-border)] shrink-0">
+            {EXECUTOR_CHART_INTERVALS.map((iv) => (
+              <button
+                key={iv}
+                type="button"
+                onClick={() => handleIntervalChange(iv)}
+                className={`px-2 py-0.5 text-[10px] ${
+                  interval === iv
+                    ? "bg-[var(--color-primary)] text-white"
+                    : "bg-[var(--color-bg)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
+                }`}
+              >
+                {iv}
+              </button>
+            ))}
+          </div>
           {isError && (
-            <span className="text-[10px] text-red-400">Failed to load candles</span>
+            <span className="text-[10px] text-red-400 shrink-0">Failed to load candles</span>
           )}
           {!isLoading && !isError && candles && candles.length === 0 && (
-            <span className="text-[10px] text-[var(--color-text-muted)]">No candle data</span>
+            <span className="text-[10px] text-[var(--color-text-muted)] shrink-0">No candle data</span>
           )}
           {overlays.length > 1 && (
-            <span className="text-[10px] text-[var(--color-text-muted)]">
+            <span className="text-[10px] text-[var(--color-text-muted)] shrink-0 hidden sm:inline">
               {overlays.length} executors overlaid
             </span>
           )}
           <button
             onClick={toggleFullscreen}
-            className="p-0.5 rounded hover:bg-[var(--color-surface-hover)] transition-colors text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            className="p-0.5 rounded hover:bg-[var(--color-surface-hover)] transition-colors text-[var(--color-text-muted)] hover:text-[var(--color-text)] shrink-0"
             title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
           >
             {fullscreen ? (

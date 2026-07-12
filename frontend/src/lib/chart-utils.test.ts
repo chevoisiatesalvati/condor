@@ -1,40 +1,36 @@
 import { describe, expect, it } from "vitest";
 
-import { dedupCandlesByTime, dedupSortedByTime } from "@/lib/chart-utils";
+import { candleMaxDistForInterval, candlePriceAt } from "@/lib/chart-utils";
 
-describe("dedupSortedByTime", () => {
-  it("keeps last value for duplicate timestamps", () => {
-    const input = [
-      { time: 100, value: 1 },
-      { time: 100, value: 2 },
-      { time: 101, value: 3 },
-    ];
-    expect(dedupSortedByTime(input)).toEqual([
-      { time: 100, value: 2 },
-      { time: 101, value: 3 },
-    ]);
+describe("candlePriceAt", () => {
+  const baseTs = 1_700_000_000;
+  const candles = [{ timestamp: baseTs, close: 100 }];
+
+  it("accepts nearby candle within default tolerance", () => {
+    expect(candlePriceAt(baseTs + 300, candles)).toBe(100);
   });
 
-  it("sorts out-of-order input", () => {
-    const input = [
-      { time: 102, value: 3 },
-      { time: 100, value: 1 },
-      { time: 101, value: 2 },
-    ];
-    expect(dedupSortedByTime(input).map((p) => p.time)).toEqual([100, 101, 102]);
+  it("rejects candle beyond default 600s tolerance", () => {
+    expect(candlePriceAt(baseTs + 3600, candles)).toBe(0);
+  });
+
+  it("accepts 1h-apart candle when maxDistSec allows it", () => {
+    expect(candlePriceAt(baseTs + 1800, candles, 1800)).toBe(100);
+  });
+
+  it("rejects when tolerance is too small for coarse interval", () => {
+    expect(candlePriceAt(baseTs + 3600, candles, 600)).toBe(0);
   });
 });
 
-describe("dedupCandlesByTime", () => {
-  it("merges OHLC for duplicate candle times", () => {
-    const input = [
-      { time: 1782883500, open: 10, high: 12, low: 9, close: 11 },
-      { time: 1782883500, open: 11, high: 13, low: 8, close: 12 },
-      { time: 1782883560, open: 12, high: 14, low: 11, close: 13 },
-    ];
-    expect(dedupCandlesByTime(input)).toEqual([
-      { time: 1782883500, open: 10, high: 13, low: 8, close: 12 },
-      { time: 1782883560, open: 12, high: 14, low: 11, close: 13 },
-    ]);
+describe("candleMaxDistForInterval", () => {
+  it("returns half the candle period, at least 600s", () => {
+    expect(candleMaxDistForInterval("1m")).toBe(600);
+    expect(candleMaxDistForInterval("1h")).toBe(1800);
+    expect(candleMaxDistForInterval("1d")).toBe(43200);
+  });
+
+  it("falls back to 600 for unknown intervals", () => {
+    expect(candleMaxDistForInterval("bogus")).toBe(600);
   });
 });
