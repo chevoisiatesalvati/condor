@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import type { BotsPageResponse, ControllerInfo, ControllerPerformanceHistoryResponse, ControllerPerformanceSnapshot } from "@/lib/api";
 import { candleStore } from "@/lib/candle-store";
+import { cloneExecutorList, dedupeExecutorsById, mergeExecutorPagesWithWs } from "@/lib/executors";
 import { CondorWebSocket } from "@/lib/websocket";
 
 /**
@@ -116,9 +117,12 @@ export function useCondorWebSocket(
           };
         });
       } else if (prefix === "executors") {
-        queryClient.setQueryData(["executors", server, ""], data);
+        const liveExecs = Array.isArray(data)
+          ? dedupeExecutorsById(cloneExecutorList(data) as import("@/lib/api").ExecutorInfo[])
+          : data;
+        queryClient.setQueryData(["executors", server, ""], liveExecs);
         // Also update any filtered executor queries (e.g. ["executors", server, "main", pair])
-        const allExecs = data as { controller_id?: string; trading_pair?: string }[];
+        const allExecs = liveExecs as { controller_id?: string; trading_pair?: string }[];
         if (Array.isArray(allExecs)) {
           const cache = queryClient.getQueryCache().findAll({ queryKey: ["executors", server] });
           for (const entry of cache) {
@@ -135,19 +139,21 @@ export function useCondorWebSocket(
             }
           }
         }
-        const execs = data as unknown[];
-        if (Array.isArray(execs)) {
+        const execs = Array.isArray(liveExecs) ? liveExecs : [];
+        if (execs.length > 0) {
           queryClient.setQueryData(
             ["executors-infinite", server],
             (old: { pages?: { executors: unknown[]; next_cursor: string | null }[]; pageParams?: unknown[] } | undefined) => {
-              if (!old?.pages?.length) return old;
-              const firstPage = old.pages[0];
-              const limit = firstPage.executors.length || 50;
-              const nextFirst = {
-                ...firstPage,
-                executors: execs.slice(0, limit),
+              if (!old?.pages?.length) {
+                return {
+                  pages: [{ executors: execs, next_cursor: null }],
+                  pageParams: [""],
+                };
+              }
+              return {
+                ...old,
+                pages: mergeExecutorPagesWithWs(old.pages, execs),
               };
-              return { ...old, pages: [nextFirst, ...old.pages.slice(1)] };
             },
           );
         }
@@ -222,9 +228,10 @@ export function useCondorWebSocket(
     const newSet = new Set(resolved);
     const oldSet = prevChannelsRef.current;
 
-    // Subscribe new channels
+    // Always (re)subscribe on connect — diff-only skips channels already in
+    // oldSet even when the socket was not open during the first subscribe.
     for (const ch of newSet) {
-      if (!oldSet.has(ch)) ws.subscribe(ch);
+      ws.subscribe(ch);
     }
     // Unsubscribe removed channels
     for (const ch of oldSet) {
@@ -232,7 +239,7 @@ export function useCondorWebSocket(
     }
 
     prevChannelsRef.current = newSet;
-  }, [channels.join(","), server]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [channels.join(","), server, wsVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { wsRef, wsVersion };
 }

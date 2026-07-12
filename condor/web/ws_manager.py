@@ -605,10 +605,12 @@ class WebSocketManager:
         from condor.web.routes.executors import _build_executor_info
 
         executors_list = extract_executors_list(raw_data)
+        seen: set[str] = set()
         result = []
         for ex in executors_list:
             info = _build_executor_info(ex)
-            if info:
+            if info and info.id and info.id not in seen:
+                seen.add(info.id)
                 result.append(info.model_dump())
         return result
 
@@ -1471,8 +1473,14 @@ class WebSocketManager:
         async def on_message(msg: dict) -> None:
             if msg.get("type") != "executors":
                 return
-            executors = self._transform_executors(msg.get("data", []))
-            await self._broadcast_update(channel, executors)
+            raw = msg.get("data", [])
+            executors = self._transform_executors(raw)
+            if raw:
+                get_server_data_service().put(server_name, ServerDataType.EXECUTORS, raw)
+            # Always broadcast — _broadcast_update skips when data == prev, which
+            # can stall the UI until the 60s REST fallback when PnL is unchanged
+            # between ticks or float-normalization makes snapshots look equal.
+            await self.broadcast(channel, executors)
 
         await self._run_ws_stream(
             channel,

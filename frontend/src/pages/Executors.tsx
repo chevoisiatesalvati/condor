@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   Check,
@@ -27,9 +27,9 @@ import {
 import { StopConfirmDialog } from "@/components/executor/StopConfirmDialog";
 import { FallbackSpinner } from "@/components/ui/FallbackSpinner";
 import { useRates } from "@/hooks/useRates";
-import { useCondorWebSocket } from "@/hooks/useWebSocket";
 import { useServer } from "@/hooks/useServer";
 import { api, type ExecutorInfo } from "@/lib/api";
+import { dedupeExecutorsById } from "@/lib/executors";
 import {
   pnlColor,
   isExecutorActive,
@@ -37,6 +37,26 @@ import {
   formatCurrencyPnl,
   formatCurrencyVolume,
 } from "@/lib/formatters";
+
+// ── Filter helper ──
+
+function applyExecutorFilters(
+  list: ExecutorInfo[],
+  filters: { trading_pair: string; executor_types: string[]; controller_ids: string[] },
+): ExecutorInfo[] {
+  let result = list;
+  if (filters.trading_pair) {
+    const q = filters.trading_pair.toLowerCase();
+    result = result.filter((ex) => ex.trading_pair.toLowerCase().includes(q));
+  }
+  if (filters.executor_types.length > 0) {
+    result = result.filter((ex) => filters.executor_types.includes(ex.type));
+  }
+  if (filters.controller_ids.length > 0) {
+    result = result.filter((ex) => ex.controller_id && filters.controller_ids.includes(ex.controller_id));
+  }
+  return result;
+}
 
 // ── Multi-select dropdown ──
 
@@ -251,12 +271,16 @@ export function Executors() {
   const [stopError, setStopError] = useState<string | null>(null);
   const [kpiPeriod, setKpiPeriod] = useState<string>("3M");
 
-  // WebSocket for real-time updates
-  const wsChannels = useMemo(
-    () => (server ? [`executors:${server}`] : []),
-    [server],
-  );
-  useCondorWebSocket(wsChannels, server);
+  // WebSocket for executors is subscribed globally in AppShell (useCondorWebSocket)
+
+  // Live WS-backed cache (same key Portfolio uses — updated every ~2s by useWebSocket)
+  const { data: liveExecutors } = useQuery({
+    queryKey: ["executors", server, ""],
+    queryFn: () => api.getExecutors(server!),
+    enabled: !!server,
+    refetchInterval: 60000,
+    structuralSharing: false,
+  });
 
   const {
     data,
@@ -317,6 +341,7 @@ export function Executors() {
       });
       setSelectedIds(new Set());
       queryClient.invalidateQueries({ queryKey: ["executors-infinite", server] });
+      queryClient.invalidateQueries({ queryKey: ["executors", server] });
     },
   });
 
@@ -342,10 +367,20 @@ export function Executors() {
     }
   };
 
-  const executors = useMemo(
-    () => (data?.pages.flatMap((p) => p?.executors ?? []) ?? []) as ExecutorInfo[],
-    [data],
-  );
+  const paginatedExecutors = useMemo(() => {
+    const flat = (data?.pages.flatMap((p) => p?.executors ?? []) ?? []) as ExecutorInfo[];
+    return dedupeExecutorsById(flat);
+  }, [data]);
+
+  const executors = useMemo(() => {
+    const live = liveExecutors ?? [];
+    const liveIds = new Set(live.map((ex) => ex.id));
+    return dedupeExecutorsById([
+      ...live,
+      ...paginatedExecutors.filter((ex) => !liveIds.has(ex.id)),
+    ]);
+  }, [liveExecutors, paginatedExecutors]);
+
   const reachedCap = loadedPages >= maxPages && hasNextPage;
 
   // Currency conversion
@@ -368,29 +403,33 @@ export function Executors() {
     return Array.from(ids).sort();
   }, [executors]);
 
-  const filteredExecutors = useMemo(() => {
-    let result = executors;
-    if (filters.trading_pair) {
-      const q = filters.trading_pair.toLowerCase();
-      result = result.filter((ex) => ex.trading_pair.toLowerCase().includes(q));
-    }
-    if (filters.executor_types.length > 0) {
-      result = result.filter((ex) => filters.executor_types.includes(ex.type));
-    }
-    if (filters.controller_ids.length > 0) {
-      result = result.filter((ex) => ex.controller_id && filters.controller_ids.includes(ex.controller_id));
-    }
-    return result;
-  }, [executors, filters.trading_pair, filters.executor_types, filters.controller_ids]);
-
-  // Split into active and archived
-  const activeExecutors = useMemo(
-    () => filteredExecutors.filter((ex) => isExecutorActive(ex.status)),
-    [filteredExecutors],
+  const filteredExecutors = useMemo(
+    () => applyExecutorFilters(executors, filters),
+    [executors, filters],
   );
+
+  // Active: live WS cache (not paginated REST) so PnL/status tick every ~2s
+  const activeExecutors = useMemo(
+    () =>
+      dedupeExecutorsById(
+        applyExecutorFilters(liveExecutors ?? [], filters).filter((ex) =>
+          isExecutorActive(ex.status),
+        ),
+      ),
+    [liveExecutors, filters],
+  );
+
+  const liveById = useMemo(
+    () => new Map((liveExecutors ?? []).map((ex) => [ex.id, ex])),
+    [liveExecutors],
+  );
+
   const archivedExecutors = useMemo(
-    () => filteredExecutors.filter((ex) => !isExecutorActive(ex.status)),
-    [filteredExecutors],
+    () =>
+      applyExecutorFilters(paginatedExecutors, filters)
+        .map((ex) => liveById.get(ex.id) ?? ex)
+        .filter((ex) => !isExecutorActive(ex.status)),
+    [paginatedExecutors, filters, liveById],
   );
 
   // Aggregate stats (archived only for win rate), filtered by kpiPeriod
@@ -413,6 +452,23 @@ export function Executors() {
     if (periodFilteredArchived.length === 0) return 0;
     return periodFilteredArchived.filter((ex) => ex.pnl > 0).length / periodFilteredArchived.length;
   }, [periodFilteredArchived]);
+
+  // Keep detail sidebar in sync with live WS data
+  useEffect(() => {
+    if (!selectedExecutor) return;
+    const fresh =
+      liveById.get(selectedExecutor.id) ??
+      executors.find((ex) => ex.id === selectedExecutor.id);
+    if (!fresh) return;
+    if (
+      fresh.pnl !== selectedExecutor.pnl ||
+      fresh.status !== selectedExecutor.status ||
+      fresh.current_price !== selectedExecutor.current_price ||
+      fresh.volume !== selectedExecutor.volume
+    ) {
+      setSelectedExecutor(fresh);
+    }
+  }, [liveById, executors, selectedExecutor]);
 
   // Selection helpers
   const toggleSelect = useCallback((id: string) => {
@@ -440,13 +496,13 @@ export function Executors() {
 
   const handleBulkStop = useCallback(() => {
     const activeIds = Array.from(selectedIds).filter((id) => {
-      const ex = executors.find((e) => e.id === id);
+      const ex = activeExecutors.find((e) => e.id === id) ?? executors.find((e) => e.id === id);
       return ex && isExecutorActive(ex.status);
     });
     if (activeIds.length > 0) {
       setPendingStopIds(activeIds);
     }
-  }, [selectedIds, executors]);
+  }, [selectedIds, activeExecutors, executors]);
 
   const handleBulkExport = useCallback(() => {
     const selected = executors.filter((ex) => selectedIds.has(ex.id));
@@ -531,13 +587,13 @@ export function Executors() {
 
       {stopError && <p className="text-[var(--color-red)]">{stopError}</p>}
 
-      {isLoading ? (
+      {isLoading && !liveExecutors?.length ? (
         <FallbackSpinner />
       ) : error ? (
         <p className="text-[var(--color-red)]">
           {error instanceof Error ? error.message : "Error"}
         </p>
-      ) : !filteredExecutors.length ? (
+      ) : !activeExecutors.length && !archivedExecutors.length ? (
         <div className="flex flex-col items-center gap-2 py-16 text-[var(--color-text-muted)]">
           <Activity className="h-10 w-10" />
           <p>No executors found</p>

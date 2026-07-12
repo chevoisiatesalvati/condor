@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Activity,
   Bot,
@@ -18,6 +18,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { useCredentials } from "@/hooks/useCredentials";
 import { usePrefetchData } from "@/hooks/usePrefetchData";
+import { useCondorWebSocket } from "@/hooks/useWebSocket";
 import { useServer } from "@/hooks/useServer";
 import { useTheme } from "@/hooks/useTheme";
 import { AgentToggleButton } from "./AgentToggleButton";
@@ -45,6 +46,11 @@ export function AppShell() {
 
   // Prefetch core data (executors, bots) and subscribe to WS channels early
   usePrefetchData();
+  const executorWsChannels = useMemo(
+    () => (server ? [`executors:${server}`] : []),
+    [server],
+  );
+  useCondorWebSocket(executorWsChannels, server);
 
   return (
     <div className="flex h-screen flex-col">
