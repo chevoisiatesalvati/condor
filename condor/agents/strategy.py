@@ -130,11 +130,42 @@ def split_key(key: str) -> tuple[str, str] | None:
     return agent_slug, sslug
 
 
+_PUBLIC_STUB_CONFIG_KEYS = (
+    "server_name",
+    "model_base_url",
+    "total_amount_quote",
+    "frequency_sec",
+    "execution_mode",
+    "max_ticks",
+    "digest_interval_ticks",
+    "bot_name",
+    "risk_limits",
+)
+
+
+def prepare_config_for_persist(default_config: dict[str, Any]) -> dict[str, Any]:
+    """Drop expanded strategy_params when a named preset is the source of truth."""
+    config = dict(default_config)
+    preset = str(config.get("strategy_preset") or "custom").strip()
+    if preset != "custom":
+        config.pop("strategy_params", None)
+    return config
+
+
+def public_stub_config(default_config: dict[str, Any]) -> dict[str, Any]:
+    """Infra-only defaults safe to commit in public strategy.md."""
+    return {
+        key: default_config[key]
+        for key in _PUBLIC_STUB_CONFIG_KEYS
+        if key in default_config
+    }
+
+
 def _merge_private_frontmatter(meta: dict, sslug: str) -> dict:
     """Overlay private strategies/{sslug}/agent.md frontmatter when present."""
-    from condor.agents.strategy_paths import resolve_agent_md_for_read
+    from condor.agents.strategy_paths import resolve_agent_md
 
-    private_path = resolve_agent_md_for_read(sslug)
+    private_path = resolve_agent_md(sslug)
     if private_path is None:
         return meta
     try:
@@ -158,23 +189,14 @@ def _merge_private_frontmatter(meta: dict, sslug: str) -> dict:
         public_cfg = merged.get("default_config") or {}
         private_cfg = private_meta.get("default_config")
         if isinstance(private_cfg, dict) and private_cfg:
-            # Private agent.md fills gaps; strategy.md (UI saves) wins on overlap.
-            base = dict(private_cfg)
+            # Private agent.md owns tuned preset/params; public stub supplies infra only.
+            base: dict[str, Any] = {}
             if isinstance(public_cfg, dict):
-                for key, value in public_cfg.items():
-                    if key == "strategy_params" and isinstance(value, dict):
-                        existing = base.get("strategy_params")
-                        if isinstance(existing, dict):
-                            merged_params = dict(existing)
-                            merged_params.update(value)
-                            base["strategy_params"] = merged_params
-                        else:
-                            base["strategy_params"] = dict(value)
-                    else:
-                        base[key] = value
+                base.update(public_stub_config(public_cfg))
+            base.update(private_cfg)
             merged["default_config"] = base
         elif isinstance(public_cfg, dict) and public_cfg:
-            merged["default_config"] = public_cfg
+            merged["default_config"] = public_stub_config(public_cfg) or public_cfg
         if private_meta.get("name") and not merged.get("name"):
             merged["name"] = private_meta["name"]
         return merged
@@ -310,17 +332,49 @@ class StrategyStore:
         return True
 
     def _save(self, strategy: Strategy) -> None:
-        meta = {
+        from condor.agents.strategy_paths import agent_md_write_path
+
+        public_path = self._strategy_md_path(strategy)
+        private_path = agent_md_write_path(strategy.slug)
+        persist_config = prepare_config_for_persist(strategy.default_config)
+
+        base_meta = {
             "name": strategy.name,
             "description": strategy.description,
             "agent_key": strategy.agent_key,
             "skills": strategy.skills,
-            "default_config": strategy.default_config,
             "default_trading_context": strategy.default_trading_context,
             "created_by": strategy.created_by,
             "created_at": strategy.created_at,
         }
+
         strategy.dir.mkdir(parents=True, exist_ok=True)
-        self._strategy_md_path(strategy).write_text(
-            _render_frontmatter(meta, strategy.instructions)
+
+        if private_path.resolve() != public_path.resolve():
+            private_body = strategy.instructions
+            if private_path.is_file():
+                _, private_body = _parse_frontmatter(private_path.read_text())
+
+            private_meta = {**base_meta, "default_config": persist_config}
+            private_path.parent.mkdir(parents=True, exist_ok=True)
+            private_path.write_text(
+                _render_frontmatter(private_meta, private_body)
+            )
+
+            public_body = strategy.instructions
+            if public_path.is_file():
+                _, public_body = _parse_frontmatter(public_path.read_text())
+
+            public_meta = {
+                **base_meta,
+                "default_config": public_stub_config(strategy.default_config),
+            }
+            public_path.write_text(
+                _render_frontmatter(public_meta, public_body)
+            )
+            return
+
+        public_meta = {**base_meta, "default_config": persist_config}
+        public_path.write_text(
+            _render_frontmatter(public_meta, strategy.instructions)
         )

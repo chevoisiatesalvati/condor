@@ -199,8 +199,8 @@ def test_strategy_slug_uses_directory_name(tmp_path, monkeypatch):
     assert s.dir == strat_dir
 
 
-def test_private_frontmatter_public_default_config_wins(tmp_path, monkeypatch):
-    """UI saves default_config to strategy.md; it must not be overwritten by private agent.md."""
+def test_private_frontmatter_wins_for_tuned_config(tmp_path, monkeypatch):
+    """Private agent.md owns preset/params; public strategy.md stub is infra-only."""
     import condor.agents.strategy_paths as strategy_paths_module
 
     _patch_roots(monkeypatch, tmp_path)
@@ -216,6 +216,7 @@ def test_private_frontmatter_public_default_config_wins(tmp_path, monkeypatch):
         "---\n"
         "name: MACD Agent\n"
         "default_config:\n"
+        "  frequency_sec: 1800\n"
         "  strategy_preset: hl_dynamic_timeline_sweep_lead_013\n"
         "  strategy_params:\n"
         "    sl_pct: 3.8\n"
@@ -241,9 +242,73 @@ def test_private_frontmatter_public_default_config_wins(tmp_path, monkeypatch):
     loaded = StrategyStore().get(slug, slug)
     assert loaded is not None
     cfg = loaded.default_config
-    assert cfg["strategy_preset"] == "hl_dynamic_timeline_sweep_lead_013"
-    assert cfg["strategy_params"]["sl_pct"] == 3.8
+    assert cfg["strategy_preset"] == "hl_dynamic_timeline_refine_v6_sltp_winner_binance_1y"
+    assert cfg["strategy_params"]["sl_pct"] == 3.4
     assert cfg["strategy_params"]["scanner_top_n"] == 30
+    assert cfg["frequency_sec"] == 1800
+
+
+def test_strategy_save_writes_private_and_strips_preset_params(tmp_path, monkeypatch):
+    """Defaults save goes to private agent.md without expanded strategy_params."""
+    import condor.agents.strategy_paths as strategy_paths_module
+    from condor.agents.strategy import prepare_config_for_persist
+
+    _patch_roots(monkeypatch, tmp_path)
+    strategies_root = tmp_path / "strategies"
+    strategies_root.mkdir()
+    monkeypatch.setattr(strategy_paths_module, "strategies_dir", lambda: strategies_root)
+
+    slug = "macdbb_scanner_aggressive_hl"
+    _write_agent(tmp_path, slug, name="MACD Agent")
+    strat_dir = tmp_path / slug / "strategies" / slug
+    strat_dir.mkdir(parents=True)
+    (strat_dir / "strategy.md").write_text(
+        "---\n"
+        "name: MACD Agent\n"
+        "default_config:\n"
+        "  frequency_sec: 1800\n"
+        "---\n\n"
+        "Public stub.\n",
+        encoding="utf-8",
+    )
+    private_dir = strategies_root / slug
+    private_dir.mkdir(parents=True)
+    (private_dir / "agent.md").write_text(
+        "---\n"
+        "name: MACD Agent\n"
+        "default_config:\n"
+        "  strategy_preset: hl_dynamic_timeline_refine_lead_013\n"
+        "---\n\n"
+        "Private playbook.\n",
+        encoding="utf-8",
+    )
+
+    store = StrategyStore()
+    loaded = store.get(slug, slug)
+    assert loaded is not None
+    loaded.default_config = {
+        "frequency_sec": 1800,
+        "strategy_preset": "hl_dynamic_timeline_refine_lead_013",
+        "strategy_params": {"sl_pct": 4.4, "tp_pct": 4.2, "scanner_top_n": 30},
+    }
+    store.update(loaded)
+
+    private_text = (private_dir / "agent.md").read_text(encoding="utf-8")
+    public_text = (strat_dir / "strategy.md").read_text(encoding="utf-8")
+    private_meta, private_body = strategy_module._parse_frontmatter(private_text)
+    public_meta, public_body = strategy_module._parse_frontmatter(public_text)
+
+    assert private_body.strip() == "Private playbook."
+    assert public_body.strip() == "Public stub."
+    assert private_meta["default_config"]["strategy_preset"] == "hl_dynamic_timeline_refine_lead_013"
+    assert "strategy_params" not in private_meta["default_config"]
+    assert "strategy_params" not in public_meta["default_config"]
+    assert "strategy_preset" not in public_meta["default_config"]
+    assert public_meta["default_config"]["frequency_sec"] == 1800
+    assert prepare_config_for_persist(loaded.default_config) == {
+        "frequency_sec": 1800,
+        "strategy_preset": "hl_dynamic_timeline_refine_lead_013",
+    }
 
 
 def test_macdbb_agent_listed_in_repo():
