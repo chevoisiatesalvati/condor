@@ -6,7 +6,6 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { AgentControls } from "@/components/agent/AgentControls";
 import { StrategyDefaultsDialog } from "@/components/agent/StrategyDefaultsDialog";
 import { StrategyPresetsDialog } from "@/components/agent/StrategyPresetsDialog";
-import { AgentMarketStrip } from "@/components/agent/AgentMarketStrip";
 import {
   InstanceCard,
   LearningsArchivePanel,
@@ -16,16 +15,13 @@ import {
 import { SessionReviewer } from "@/components/agent/SessionReviewer";
 import { DiscardChangesDialog } from "@/components/editor/EditorDialogs";
 import { ReportBrowser } from "@/components/routines/ReportBrowser";
-import { ExecutorChart } from "@/components/charts/ExecutorChart";
-import { useAgentExecutors } from "@/hooks/useAgentExecutors";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { api } from "@/lib/api";
-import { groupExecutorsByMarket } from "@/lib/executor-overlays";
 
 // ── Strategy Detail Page ──
 //
 // A strategy is a playbook that loops under an Agent. This page holds the rich
-// operational view: live executors, sessions/experiments, controls, PnL and the
+// operational view: sessions/experiments, controls, PnL and the
 // strategy.md / learnings editors. The owning Agent's identity lives one level up
 // at /agents/:slug.
 
@@ -108,18 +104,6 @@ export function StrategyDetail() {
   const controllerIds = useMemo(
     () => instances.map((inst) => inst.agent_id).filter(Boolean),
     [instances],
-  );
-
-  // Real-time executor data via WS
-  const { executors: liveExecutors } = useAgentExecutors(
-    hasRunning ? serverName : null,
-    controllerIds,
-  );
-
-  // Group live executors by connector:pair for charts
-  const chartGroups = useMemo(
-    () => (serverName ? groupExecutorsByMarket(liveExecutors) : []),
-    [liveExecutors, serverName],
   );
 
   // Session/experiment click -> open reviewer
@@ -270,32 +254,6 @@ export function StrategyDetail() {
           </span>
         )}
       </div>
-
-      {/* Market Context Strip */}
-      {hasRunning && liveExecutors.length > 0 && (
-        <div className="mb-6">
-          <AgentMarketStrip serverName={serverName} executors={liveExecutors} />
-        </div>
-      )}
-
-      {/* Live Executor Charts */}
-      {hasRunning && chartGroups.length > 0 && (
-        <div className="mb-6 space-y-4">
-          <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
-            <Zap className="h-3.5 w-3.5" /> Live Executors
-          </h3>
-          {chartGroups.map(([key, group]) => (
-            <ExecutorChart
-              key={key}
-              server={serverName}
-              executors={group}
-              connector={group[0].connector}
-              tradingPair={group[0].trading_pair}
-              height={300}
-            />
-          ))}
-        </div>
-      )}
 
       {/* Running Instances */}
       {hasRunning && (

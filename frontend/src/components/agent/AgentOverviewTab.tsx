@@ -2,13 +2,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   FlaskConical,
   Save,
   Zap,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -227,6 +228,8 @@ export function InstanceCard({
   );
 }
 
+const SESSIONS_PAGE_SIZE = 20;
+
 // ── Performance Panel ──
 
 export function PerformancePanel({
@@ -246,6 +249,32 @@ export function PerformancePanel({
   const totals = data?.totals || {};
   const allRows = data?.sessions || [];
   const sessions = allRows.filter((s) => s.kind === "session");
+  const [page, setPage] = useState(0);
+
+  const sortedRows = useMemo(
+    () =>
+      allRows
+        .slice()
+        .sort((a, b) =>
+          b.kind === a.kind ? b.session_num - a.session_num : a.kind === "experiment" ? 1 : -1,
+        ),
+    [allRows],
+  );
+
+  const totalPages = Math.max(1, Math.ceil(sortedRows.length / SESSIONS_PAGE_SIZE));
+  const pageStart = page * SESSIONS_PAGE_SIZE;
+  const pageRows = sortedRows.slice(pageStart, pageStart + SESSIONS_PAGE_SIZE);
+
+  useEffect(() => {
+    setPage(0);
+  }, [slug, sslug]);
+
+  useEffect(() => {
+    if (page > totalPages - 1) {
+      setPage(Math.max(0, totalPages - 1));
+    }
+  }, [page, totalPages]);
+
   const totalPnl = Number(totals.total_pnl ?? 0);
   const realized = Number(totals.realized_pnl ?? 0);
   const unrealized = Number(totals.unrealized_pnl ?? 0);
@@ -346,10 +375,7 @@ export function PerformancePanel({
                 </tr>
               </thead>
               <tbody>
-                {allRows
-                  .slice()
-                  .sort((a, b) => (b.kind === a.kind ? b.session_num - a.session_num : a.kind === "experiment" ? 1 : -1))
-                  .map((s) => {
+                {pageRows.map((s) => {
                     const pnlCol = s.total_pnl >= 0 ? "text-[var(--color-green)]" : "text-[var(--color-red)]";
                     const isExperiment = s.kind === "experiment";
                     return (
@@ -397,6 +423,36 @@ export function PerformancePanel({
                   })}
               </tbody>
             </table>
+          </div>
+        )}
+        {sortedRows.length > SESSIONS_PAGE_SIZE && (
+          <div className="mt-3 flex items-center justify-between border-t border-[var(--color-border)]/40 pt-3">
+            <span className="text-[10px] text-[var(--color-text-muted)]">
+              {pageStart + 1}–{Math.min(pageStart + SESSIONS_PAGE_SIZE, sortedRows.length)} of {sortedRows.length}
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="rounded p-1 hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Previous page"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <span className="px-2 text-[10px] text-[var(--color-text-muted)]">
+                {page + 1} / {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={page >= totalPages - 1}
+                className="rounded p-1 hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Next page"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         )}
       </div>
