@@ -1,4 +1,0 @@
-# Learnings
-
-## Execution Notes
-
