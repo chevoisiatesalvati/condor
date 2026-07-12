@@ -114,8 +114,19 @@ def _executor_row(ex: dict) -> dict[str, Any]:
 
     # current_price / close_price: top-level > custom_info
     _top_cur = float(ex.get("current_price") or 0)
+    _ci_cur = float(custom_info.get("current_price") or 0)
     _ci_close = float(custom_info.get("close_price") or 0)
-    current_price = _top_cur if _top_cur > 0 else (_ci_close if _ci_close > 0 else 0.0)
+    current_price = (
+        _top_cur
+        if _top_cur > 0
+        else (_ci_cur if _ci_cur > 0 else (_ci_close if _ci_close > 0 else 0.0))
+    )
+
+    amount = float(cfg.get("total_amount_quote") or cfg.get("amount") or 0)
+    if amount <= 0:
+        amount = float(
+            custom_info.get("total_value_quote") or 0
+        )
 
     return {
         "id": str(ex.get("id") or ex.get("executor_id") or ""),
@@ -134,7 +145,7 @@ def _executor_row(ex: dict) -> dict[str, Any]:
         "volume": get_executor_volume(ex),
         "fees": get_executor_fees(ex),
         "notional_quote": notional_quote,
-        "amount": notional_quote,
+        "amount": amount,
         "entry_price": entry_price,
         "current_price": current_price,
         "timestamp": float(cfg.get("timestamp") or ex.get("timestamp") or 0),
