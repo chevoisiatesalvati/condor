@@ -17,7 +17,7 @@ def strategies_dir() -> Path:
 
 
 def agent_dir(slug: str) -> Path:
-    """Public agent folder (routines, sessions, dry runs)."""
+    """Public agent folder (routines, strategies/, presets)."""
     return AGENTS_DIR / slug
 
 
@@ -75,20 +75,27 @@ def iter_strategy_slugs() -> list[str]:
     return sorted(slugs)
 
 
-_SESSION_DIRNAMES = ("sessions", "trading_sessions")
-
-
-def _dir_has_sessions(path: Path) -> bool:
-    for dirname in _SESSION_DIRNAMES:
-        sessions_dir = path / dirname
-        if not sessions_dir.is_dir():
-            continue
-        for entry in sessions_dir.iterdir():
-            if entry.is_dir() and entry.name.startswith("session_"):
-                return True
-    return False
-
-
 def resolve_strategy_data_dir(agent_slug: str, sslug: str) -> Path:
     """Session/journal root under the canonical agents/ tree."""
     return REPO_ROOT / "agents" / agent_slug / "strategies" / sslug
+
+
+def _materialize_path(path: Path, *, is_dir: bool) -> None:
+    """Replace broken symlinks with a real directory or file."""
+    if path.is_symlink() and not path.exists():
+        path.unlink()
+    if is_dir:
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Learnings\n\n## Execution Notes\n\n")
+
+
+def ensure_strategy_data_dir(agent_slug: str, sslug: str) -> Path:
+    """Ensure strategy operational dirs exist under agents/ (never via symlinks)."""
+    strategy_dir = resolve_strategy_data_dir(agent_slug, sslug)
+    strategy_dir.mkdir(parents=True, exist_ok=True)
+    _materialize_path(strategy_dir / "sessions", is_dir=True)
+    _materialize_path(strategy_dir / "learnings.md", is_dir=False)
+    return strategy_dir

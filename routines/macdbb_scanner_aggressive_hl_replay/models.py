@@ -215,7 +215,7 @@ class ReplayConfigBase(BaseModel):
         return value
     strategy_slug: str = Field(
         default="macdbb_scanner_aggressive_hl",
-        description="Agent folder under trading_agents",
+        description="Strategy slug under agents/{slug}/strategies/",
     )
     session_nums: str = Field(
         default="all",
