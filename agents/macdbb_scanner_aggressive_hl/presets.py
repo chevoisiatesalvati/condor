@@ -33,6 +33,13 @@ _bundle_cache: dict[str, Any] | None = None
 _bundle_mtime: float | None = None
 
 
+def invalidate_preset_cache() -> None:
+    """Clear mtime cache after presets.yaml is written externally."""
+    global _bundle_cache, _bundle_mtime
+    _bundle_cache = None
+    _bundle_mtime = None
+
+
 def _private_preset_bundle() -> dict[str, Any]:
     """Load private presets.yaml, refreshing when the file changes."""
     global _bundle_cache, _bundle_mtime

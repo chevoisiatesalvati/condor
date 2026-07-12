@@ -1227,6 +1227,151 @@ async def update_strategy_defaults(
     return StrategyDefaultsResponse(**_build_strategy_defaults(strategy))
 
 
+# ── Strategy presets (presets.yaml CRUD) ──
+
+
+class StrategyPresetSummary(BaseModel):
+    id: str
+    label: str
+    source: str  # public | private
+    editable: bool
+    override_count: int = 0
+
+
+class StrategyPresetDetail(StrategyPresetSummary):
+    overrides: dict[str, Any] = {}
+
+
+class CreateStrategyPresetRequest(BaseModel):
+    id: str
+    label: str
+    overrides: dict[str, Any] = {}
+
+
+class UpdateStrategyPresetRequest(BaseModel):
+    label: str | None = None
+    overrides: dict[str, Any] | None = None
+
+
+def _require_admin(user: WebUser) -> None:
+    from config_manager import get_config_manager
+
+    if not get_config_manager().is_admin(user.id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def _preset_store_http_error(exc: Exception) -> HTTPException:
+    from condor.agents.preset_store import PresetStoreError
+
+    if isinstance(exc, PresetStoreError):
+        return HTTPException(status_code=400, detail=str(exc))
+    raise exc
+
+
+@router.get("/{slug}/strategy-presets", response_model=list[StrategyPresetSummary])
+async def list_agent_strategy_presets(
+    slug: str, user: WebUser = Depends(get_current_user)
+):
+    from condor.agents.preset_store import agent_supports_presets, list_strategy_presets
+
+    if not agent_supports_presets(slug):
+        return []
+    return list_strategy_presets(slug)
+
+
+@router.get(
+    "/{slug}/strategy-presets/{preset_id}",
+    response_model=StrategyPresetDetail,
+)
+async def get_agent_strategy_preset(
+    slug: str, preset_id: str, user: WebUser = Depends(get_current_user)
+):
+    from condor.agents.preset_store import agent_supports_presets, get_strategy_preset
+
+    if not agent_supports_presets(slug):
+        raise HTTPException(status_code=404, detail="Agent has no preset support")
+    try:
+        return get_strategy_preset(slug, preset_id)
+    except Exception as exc:
+        raise _preset_store_http_error(exc) from exc
+
+
+@router.post(
+    "/{slug}/strategy-presets",
+    response_model=StrategyPresetDetail,
+    status_code=201,
+)
+async def create_agent_strategy_preset(
+    slug: str,
+    req: CreateStrategyPresetRequest,
+    user: WebUser = Depends(get_current_user),
+):
+    from condor.agents.preset_store import (
+        agent_supports_presets,
+        create_strategy_preset,
+    )
+
+    _require_admin(user)
+    if not agent_supports_presets(slug):
+        raise HTTPException(status_code=404, detail="Agent has no preset support")
+    try:
+        return create_strategy_preset(
+            slug,
+            preset_id=req.id,
+            label=req.label,
+            overrides=req.overrides,
+        )
+    except Exception as exc:
+        raise _preset_store_http_error(exc) from exc
+
+
+@router.put(
+    "/{slug}/strategy-presets/{preset_id}",
+    response_model=StrategyPresetDetail,
+)
+async def update_agent_strategy_preset(
+    slug: str,
+    preset_id: str,
+    req: UpdateStrategyPresetRequest,
+    user: WebUser = Depends(get_current_user),
+):
+    from condor.agents.preset_store import (
+        agent_supports_presets,
+        update_strategy_preset,
+    )
+
+    _require_admin(user)
+    if not agent_supports_presets(slug):
+        raise HTTPException(status_code=404, detail="Agent has no preset support")
+    try:
+        return update_strategy_preset(
+            slug,
+            preset_id,
+            label=req.label,
+            overrides=req.overrides,
+        )
+    except Exception as exc:
+        raise _preset_store_http_error(exc) from exc
+
+
+@router.delete("/{slug}/strategy-presets/{preset_id}", status_code=204)
+async def delete_agent_strategy_preset(
+    slug: str, preset_id: str, user: WebUser = Depends(get_current_user)
+):
+    from condor.agents.preset_store import (
+        agent_supports_presets,
+        delete_strategy_preset,
+    )
+
+    _require_admin(user)
+    if not agent_supports_presets(slug):
+        raise HTTPException(status_code=404, detail="Agent has no preset support")
+    try:
+        delete_strategy_preset(slug, preset_id)
+    except Exception as exc:
+        raise _preset_store_http_error(exc) from exc
+
+
 # ── Strategy performance ──
 
 

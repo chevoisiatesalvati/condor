@@ -13,6 +13,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import SweepResul
 from routines.macdbb_scanner_aggressive_hl_replay.sweep_automation import (
     LeaderTracker,
     PRESET_NAME_PREFIX,
+    REFINE_PRESET_NAME_PREFIX,
     PromoteAutomationConfig,
     PromoteJob,
     PromoteQueue,
@@ -20,8 +21,34 @@ from routines.macdbb_scanner_aggressive_hl_replay.sweep_automation import (
     SweepLeaderState,
     build_full_config_from_result,
     is_refine_cancel_requested,
+    refine_phase_csv_path,
     register_sweep_lead_preset,
 )
+
+REAL_PRESETS_YAML = (
+    Path(__file__).resolve().parents[1]
+    / "strategies"
+    / "macdbb_scanner_aggressive_hl"
+    / "presets.yaml"
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_strategy_presets(tmp_path, monkeypatch):
+    """Never read/write the repo strategies submodule presets.yaml during tests."""
+    isolated = tmp_path / "strategies"
+    isolated.mkdir()
+    monkeypatch.setenv("CONDOR_STRATEGIES_DIR", str(isolated))
+    baseline = (
+        REAL_PRESETS_YAML.read_text(encoding="utf-8")
+        if REAL_PRESETS_YAML.is_file()
+        else None
+    )
+    yield
+    if baseline is not None:
+        assert REAL_PRESETS_YAML.read_text(encoding="utf-8") == baseline, (
+            "tests must not mutate strategies/macdbb_scanner_aggressive_hl/presets.yaml"
+        )
 
 
 def _result(name: str, cap_norm: float, pnl: float = 0.0, trades: int = 10) -> SweepResult:
@@ -212,7 +239,7 @@ async def test_promote_queue_processes_job(tmp_path: Path):
     presets_path = tmp_path / "strategies" / "macdbb_scanner_aggressive_hl" / "presets.yaml"
     with (
         patch(
-            "condor.trading_agent.strategy_paths.private_strategy_dir",
+            "condor.agents.strategy_paths.private_strategy_dir",
             return_value=tmp_path / "strategies" / "macdbb_scanner_aggressive_hl",
         ),
         patch(
@@ -281,18 +308,22 @@ def test_refine_subprocess_manager_cancel(tmp_path: Path, monkeypatch):
 
     class FakeProcess:
         pid = 4242
+        _alive = True
 
         def poll(self):
-            return None
+            return None if self._alive else 0
 
         def terminate(self):
+            self._alive = False
             return None
 
         def kill(self):
+            self._alive = False
             return None
 
         def wait(self, timeout=None):
-            return 0
+            self._alive = False
+            return -15
 
     fake = FakeProcess()
     monkeypatch.setattr(
@@ -305,12 +336,138 @@ def test_refine_subprocess_manager_cancel(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(
         "routines.macdbb_scanner_aggressive_hl_replay.sweep_automation.os.killpg",
-        lambda pgid, sig: None,
+        lambda pgid, sig: fake.terminate(),
     )
 
     parent_json = tmp_path / "lead_001_parent_overrides.json"
     parent_json.write_text("{}", encoding="utf-8")
-    manager.start(parent_json, "lead_001")
+    process = manager.start(parent_json, "lead_001")
     assert manager.is_running()
+    assert process is fake
     manager.cancel()
-    assert not manager.is_running()
+    assert fake.wait() == -15
+    assert fake.poll() == 0
+
+
+@pytest.mark.asyncio
+async def test_refine_completion_registers_preset_and_backtest(tmp_path: Path):
+    state_path = tmp_path / "automation.json"
+    tracker = LeaderTracker(state_path)
+    snapshot_dir = tmp_path / "replay_snapshots_binance_1y"
+    snapshot_dir.mkdir()
+
+    merged = {
+        "replay_mode": "timeline_backtest",
+        "enable_dynamic_sizing": True,
+        "enable_dynamic_barriers": True,
+        "sl_pct": 3.8,
+        "range_start_utc": "2026-04-10T00:00:00Z",
+        "range_end_utc": "2026-07-10T23:59:59Z",
+    }
+    winner = _result("refine_D_winner", 900.0, pnl=500.0, trades=120)
+    winner.overrides = merged
+
+    phase_d = refine_phase_csv_path(tmp_path, snapshot_dir, "lead_007", "D")
+    phase_d.parent.mkdir(parents=True, exist_ok=True)
+    import csv
+    import json
+
+    with phase_d.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "rank",
+                "name",
+                "pnl",
+                "capital_normalized_pnl",
+                "pnl_per_exposure",
+                "trades",
+                "formal",
+                "adaptive",
+                "win_rate_pct",
+                "exit_tp",
+                "exit_sl",
+                "exit_thesis_decay",
+                "exit_session_end",
+                "exit_flip",
+                "exit_other",
+                "total_exposure",
+                "avg_notional",
+                "avg_size_mult",
+                "avg_sl_pct",
+                "avg_tp_pct",
+                "sl_saturation_pct",
+                "tp_saturation_pct",
+                "dynamic_mode",
+                "snapshot_dir",
+                "overrides_json",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "rank": "1",
+                "name": winner.name,
+                "pnl": str(winner.pnl),
+                "capital_normalized_pnl": str(winner.capital_normalized_pnl),
+                "pnl_per_exposure": "0.01",
+                "trades": str(winner.trades),
+                "formal": "1",
+                "adaptive": "0",
+                "win_rate_pct": "50.0",
+                "exit_tp": "1",
+                "exit_sl": "0",
+                "exit_thesis_decay": "0",
+                "exit_session_end": "0",
+                "exit_flip": "0",
+                "exit_other": "0",
+                "total_exposure": "1000",
+                "avg_notional": "250",
+                "avg_size_mult": "1.0",
+                "avg_sl_pct": "2.0",
+                "avg_tp_pct": "5.0",
+                "sl_saturation_pct": "0",
+                "tp_saturation_pct": "0",
+                "dynamic_mode": "both_on",
+                "snapshot_dir": str(snapshot_dir),
+                "overrides_json": json.dumps(merged),
+            }
+        )
+
+    config = PromoteAutomationConfig(
+        telegram_chat_id="12345",
+        dynamic_mode="both_on",
+        sweep_grid="entry_sltp",
+        range_start_utc="2026-04-10T00:00:00Z",
+        range_end_utc="2026-07-10T23:59:59Z",
+        snapshot_dir=str(snapshot_dir),
+        output_dir=tmp_path,
+        automation_state_path=state_path,
+        repo_root=tmp_path,
+    )
+    queue = PromoteQueue(tracker, config)
+    presets_path = tmp_path / "strategies" / "macdbb_scanner_aggressive_hl" / "presets.yaml"
+
+    with (
+        patch(
+            "condor.agents.strategy_paths.private_strategy_dir",
+            return_value=tmp_path / "strategies" / "macdbb_scanner_aggressive_hl",
+        ),
+        patch(
+            "routines.macdbb_scanner_aggressive_hl_replay.sweep_automation.run_backtest_for_preset",
+            new_callable=AsyncMock,
+            return_value=("report-refine", "ok"),
+        ) as backtest_mock,
+        patch(
+            "routines.macdbb_scanner_aggressive_hl_replay.sweep_automation.send_refine_complete_telegram",
+            new_callable=AsyncMock,
+        ) as telegram_mock,
+    ):
+        await queue._process_refine_completion("lead_007")
+
+    preset_name = f"{REFINE_PRESET_NAME_PREFIX}lead_007"
+    bundle = yaml.safe_load(presets_path.read_text(encoding="utf-8"))
+    assert preset_name in bundle["dynamic_preset_overrides"]
+    backtest_mock.assert_awaited_once()
+    telegram_mock.assert_awaited_once()
+    assert (tmp_path / "lead_007_refine_winner_overrides.json").is_file()

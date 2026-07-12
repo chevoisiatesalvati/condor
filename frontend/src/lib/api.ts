@@ -11,7 +11,14 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Request failed: ${res.status}`);
   }
-  return res.json();
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  const text = await res.text();
+  if (!text) {
+    return undefined as T;
+  }
+  return JSON.parse(text) as T;
 }
 
 // ── Types ──
@@ -488,6 +495,18 @@ export interface StrategyDefaults {
   agent_key: string;
   model_base_url: string;
   strategy_presets: Array<{ id: string; label: string }>;
+}
+
+export interface StrategyPresetSummary {
+  id: string;
+  label: string;
+  source: "public" | "private";
+  editable: boolean;
+  override_count: number;
+}
+
+export interface StrategyPresetDetail extends StrategyPresetSummary {
+  overrides: Record<string, unknown>;
 }
 
 export interface SnapshotSummary {
@@ -1123,6 +1142,41 @@ export const api = {
     apiFetch<StrategyDefaults>(
       `/api/v1/agents/${encodeURIComponent(slug)}/strategies/${encodeURIComponent(sslug)}/defaults`,
       { method: "PUT", body: JSON.stringify(data) },
+    ),
+
+  listStrategyPresets: (slug: string) =>
+    apiFetch<StrategyPresetSummary[]>(
+      `/api/v1/agents/${encodeURIComponent(slug)}/strategy-presets`,
+    ),
+
+  getStrategyPreset: (slug: string, presetId: string) =>
+    apiFetch<StrategyPresetDetail>(
+      `/api/v1/agents/${encodeURIComponent(slug)}/strategy-presets/${encodeURIComponent(presetId)}`,
+    ),
+
+  createStrategyPreset: (
+    slug: string,
+    data: { id: string; label: string; overrides: Record<string, unknown> },
+  ) =>
+    apiFetch<StrategyPresetDetail>(
+      `/api/v1/agents/${encodeURIComponent(slug)}/strategy-presets`,
+      { method: "POST", body: JSON.stringify(data) },
+    ),
+
+  updateStrategyPreset: (
+    slug: string,
+    presetId: string,
+    data: { label?: string; overrides?: Record<string, unknown> },
+  ) =>
+    apiFetch<StrategyPresetDetail>(
+      `/api/v1/agents/${encodeURIComponent(slug)}/strategy-presets/${encodeURIComponent(presetId)}`,
+      { method: "PUT", body: JSON.stringify(data) },
+    ),
+
+  deleteStrategyPreset: (slug: string, presetId: string) =>
+    apiFetch<void>(
+      `/api/v1/agents/${encodeURIComponent(slug)}/strategy-presets/${encodeURIComponent(presetId)}`,
+      { method: "DELETE" },
     ),
 
   getStrategyPerformance: (slug: string, sslug: string) =>

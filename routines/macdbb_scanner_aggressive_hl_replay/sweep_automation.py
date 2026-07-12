@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+    REFINE_DYNAMIC_MODE,
     SweepResult,
     _merge,
     finalize_sweep_config,
@@ -37,6 +38,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
 logger = logging.getLogger(__name__)
 
 PRESET_NAME_PREFIX = "hl_dynamic_timeline_sweep_lead_"
+REFINE_PRESET_NAME_PREFIX = "hl_dynamic_timeline_refine_"
 
 
 @dataclass
@@ -199,13 +201,43 @@ def build_full_config_from_result(
     return merged
 
 
-def register_sweep_lead_preset(
+def refine_phase_csv_path(
+    output_dir: Path,
+    snapshot_dir: Path,
+    output_tag: str,
+    phase: str,
+) -> Path:
+    slug = snapshot_dir.name
+    if slug.startswith("replay_snapshots_"):
+        slug = slug.removeprefix("replay_snapshots_")
+    stem = (
+        f"macdbb_scanner_aggressive_hl_backtest_{REFINE_DYNAMIC_MODE}_refine_{output_tag}_"
+        f"phase{phase}_{slug}"
+    )
+    return output_dir / f"{stem}.csv"
+
+
+def load_top_sweep_result_from_csv(csv_path: Path) -> SweepResult:
+    import csv
+
+    from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+        _sweep_result_from_csv_row,
+    )
+
+    with csv_path.open(encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    return _sweep_result_from_csv_row(row)
+
+
+def register_dynamic_preset(
     preset_name: str,
     preset_overrides: dict[str, Any],
     *,
+    label: str,
     presets_path: Path | None = None,
+    replace_existing: bool = False,
 ) -> None:
-    """Append a sweep-lead preset without touching agent.md or winner defaults."""
+    """Append or update a dynamic preset without touching winner defaults."""
     from condor.trading_agent.strategy_paths import private_strategy_dir
 
     yaml_path = presets_path or (private_strategy_dir(AGENT_SLUG) / "presets.yaml")
@@ -216,7 +248,7 @@ def register_sweep_lead_preset(
             bundle = loaded
 
     dynamic_overrides = bundle.setdefault("dynamic_preset_overrides", {})
-    if preset_name in dynamic_overrides:
+    if preset_name in dynamic_overrides and not replace_existing:
         raise ValueError(f"Preset {preset_name!r} already exists in {yaml_path}")
 
     filtered = {
@@ -227,8 +259,7 @@ def register_sweep_lead_preset(
     dynamic_overrides[preset_name] = filtered
 
     labels = bundle.setdefault("labels", {})
-    cap_label = f"Sweep lead {preset_name.removeprefix(PRESET_NAME_PREFIX)}"
-    labels.setdefault(preset_name, cap_label)
+    labels[preset_name] = label
 
     names = list(bundle.get("agent_strategy_preset_names") or [])
     if preset_name not in names:
@@ -239,6 +270,25 @@ def register_sweep_lead_preset(
     yaml_path.write_text(
         yaml.safe_dump(bundle, sort_keys=False, default_flow_style=False),
         encoding="utf-8",
+    )
+    from condor.agents.preset_store import invalidate_agent_preset_cache
+
+    invalidate_agent_preset_cache(AGENT_SLUG)
+
+
+def register_sweep_lead_preset(
+    preset_name: str,
+    preset_overrides: dict[str, Any],
+    *,
+    presets_path: Path | None = None,
+) -> None:
+    """Append a sweep-lead preset without touching agent.md or winner defaults."""
+    register_dynamic_preset(
+        preset_name,
+        preset_overrides,
+        label=f"Sweep lead {preset_name.removeprefix(PRESET_NAME_PREFIX)}",
+        presets_path=presets_path,
+        replace_existing=False,
     )
 
 
@@ -272,6 +322,38 @@ async def run_backtest_for_preset(
     result = await run_dynamic_replay(config, None)
     text = result.text if hasattr(result, "text") else str(result)
     return get_last_report_id(), text
+
+
+async def send_refine_complete_telegram(
+    chat_id: str,
+    *,
+    preset_name: str,
+    output_tag: str,
+    result: SweepResult,
+    report_id: str | None = None,
+) -> None:
+    from condor.routine_hooks import _resolve_report_html
+    from condor.routine_store import _http_bot
+
+    lines = [
+        "Refine complete",
+        f"Parent tag: {output_tag}",
+        f"Config: {result.name}",
+        f"Refine cap-norm: ${result.capital_normalized_pnl:+.2f}",
+        f"Raw PnL: ${result.pnl:+.2f}",
+        f"Trades: {result.trades}",
+        f"Preset: {preset_name}",
+    ]
+    await _http_bot.send_message(chat_id=chat_id, text="\n".join(lines))
+
+    if report_id:
+        html, filename = _resolve_report_html(report_id, None)
+        await _http_bot.send_document(
+            chat_id=chat_id,
+            document=html.encode("utf-8"),
+            caption=f"Backtest report: {preset_name}",
+            filename=filename or f"{preset_name}.html",
+        )
 
 
 async def send_promote_telegram(
@@ -341,9 +423,10 @@ class RefineSubprocessManager:
         return self._process is not None and self._process.poll() is None
 
     def cancel(self) -> None:
-        if not self.is_running():
+        if self._process is None:
             return
-        assert self._process is not None
+        if self._process.poll() is not None:
+            return
         pid = self._process.pid
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -352,14 +435,6 @@ class RefineSubprocessManager:
                 self._process.terminate()
             except OSError:
                 pass
-        try:
-            self._process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                self._process.kill()
-        self._process = None
 
     def start(
         self,
@@ -367,7 +442,7 @@ class RefineSubprocessManager:
         output_tag: str,
         *,
         tracker: LeaderTracker | None = None,
-    ) -> int:
+    ) -> subprocess.Popen[Any]:
         self.cancel()
         if tracker is not None:
             tracker.request_refine_cancel()
@@ -410,7 +485,7 @@ class RefineSubprocessManager:
             self._process.pid,
             output_tag,
         )
-        return self._process.pid
+        return self._process
 
 
 @dataclass
@@ -454,6 +529,7 @@ class PromoteQueue:
             automation_state_path=config.automation_state_path,
             refine_workers=config.refine_workers,
         )
+        self._refine_monitor_tasks: dict[str, asyncio.Task[None]] = {}
 
     def start(self) -> None:
         if self._worker_task is None:
@@ -538,6 +614,7 @@ class PromoteQueue:
                 tracker=self._tracker,
             )
             refine_started = True
+            self._schedule_refine_monitor(job.output_tag, self._refine_manager._process)
 
         chat_id = cfg.telegram_chat_id
         if chat_id:
@@ -546,6 +623,117 @@ class PromoteQueue:
                 job,
                 report_id=report_id,
                 refine_started=refine_started,
+            )
+
+    def _schedule_refine_monitor(
+        self,
+        output_tag: str,
+        process: subprocess.Popen[Any] | None,
+    ) -> None:
+        if process is None:
+            return
+        prior = self._refine_monitor_tasks.pop(output_tag, None)
+        if prior is not None and not prior.done():
+            prior.cancel()
+        self._refine_monitor_tasks[output_tag] = asyncio.create_task(
+            self._monitor_refine(output_tag, process)
+        )
+
+    async def _monitor_refine(
+        self,
+        output_tag: str,
+        process: subprocess.Popen[Any],
+    ) -> None:
+        exit_code = await asyncio.to_thread(process.wait)
+        if self._tracker.state.refine_output_tag != output_tag:
+            logger.info(
+                "Refine monitor for %s stopped — superseded by %s",
+                output_tag,
+                self._tracker.state.refine_output_tag,
+            )
+            return
+        self._tracker.set_refine_pid(None)
+        if is_refine_cancel_requested(self._config.automation_state_path):
+            logger.info("Refine %s cancelled — skipping completion pipeline", output_tag)
+            return
+        if exit_code != 0:
+            logger.warning(
+                "Refine %s exited with code %s — skipping completion pipeline",
+                output_tag,
+                exit_code,
+            )
+            return
+        try:
+            await self._process_refine_completion(output_tag)
+        except Exception as error:
+            logger.exception(
+                "Refine completion pipeline failed for %s: %s",
+                output_tag,
+                error,
+            )
+
+    async def _process_refine_completion(self, output_tag: str) -> None:
+        cfg = self._config
+        snapshot_dir = Path(cfg.snapshot_dir)
+        phase_d_csv = refine_phase_csv_path(cfg.output_dir, snapshot_dir, output_tag, "D")
+        if not phase_d_csv.is_file():
+            logger.warning(
+                "Refine %s finished but phase D CSV missing: %s",
+                output_tag,
+                phase_d_csv,
+            )
+            return
+
+        winner = load_top_sweep_result_from_csv(phase_d_csv)
+        preset_name = f"{REFINE_PRESET_NAME_PREFIX}{output_tag}"
+        print(
+            f"Refine complete: processing {preset_name} ({winner.name}) "
+            f"cap_norm=${winner.capital_normalized_pnl:+.2f}",
+            flush=True,
+        )
+
+        full_overrides = build_full_config_from_result(
+            winner,
+            dynamic_mode=cfg.dynamic_mode,
+            sweep_grid=cfg.sweep_grid,
+            frequency_sec=cfg.frequency_sec,
+            time_window_min=cfg.time_window_min,
+            range_start_utc=cfg.range_start_utc or None,
+            range_end_utc=cfg.range_end_utc or None,
+            snapshot_dir=cfg.snapshot_dir or None,
+        )
+        full_overrides["preset"] = "custom"
+
+        winner_json = cfg.output_dir / f"{output_tag}_refine_winner_overrides.json"
+        winner_json.write_text(
+            json.dumps(full_overrides, indent=2, default=str),
+            encoding="utf-8",
+        )
+
+        register_dynamic_preset(
+            preset_name,
+            full_overrides,
+            label=f"Refine {output_tag} winner",
+            replace_existing=True,
+        )
+
+        report_id, _text = await run_backtest_for_preset(
+            preset_name,
+            full_overrides=full_overrides,
+            range_start_utc=cfg.range_start_utc or None,
+            range_end_utc=cfg.range_end_utc or None,
+            snapshot_dir=cfg.snapshot_dir or None,
+            candle_prefetch_mode=cfg.candle_prefetch_mode,
+        )
+
+        chat_id = cfg.telegram_chat_id
+        if chat_id:
+            await send_refine_complete_telegram(
+                chat_id,
+                preset_name=preset_name,
+                output_tag=output_tag,
+                result=winner,
+                report_id=report_id,
             )
 
 
