@@ -12,7 +12,7 @@ import {
 } from "@/lib/executor-overlays";
 import { dedupCandlesByTime } from "@/lib/chart-utils";
 import { enrichExecutorForChart, resolveExecutorConfig } from "@/lib/executors";
-import { escapeHtml, formatCompactUsd, resolveExecutorCloseTimestamp, tsToSeconds } from "@/lib/formatters";
+import { escapeHtml, formatCompactUsd, tsToSeconds } from "@/lib/formatters";
 import { getThemeColors, pnlHexColor, sideColor } from "@/lib/theme-colors";
 
 export interface SnapshotBubble {
@@ -113,43 +113,6 @@ export function ExecutorChart({
   const overlays = useMemo(() => computeMultiOverlays(chartExecutors), [chartExecutors]);
   overlaysRef.current = overlays;
   chartExecutorsRef.current = chartExecutors;
-
-  // #region agent log
-  useEffect(() => {
-    const ex = chartExecutors[0];
-    if (!ex) return;
-    fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
-      body: JSON.stringify({
-        sessionId: "644d7b",
-        runId: "post-fix-v6",
-        hypothesisId: "H10",
-        location: "ExecutorChart.tsx:chartExecutors",
-        message: "Chart executor entry enrichment",
-        data: {
-          executorId: ex.id,
-          connector,
-          tradingPair,
-          rawEntry: executors[0]?.entry_price ?? 0,
-          chartEntry: ex.entry_price,
-          current: ex.current_price,
-          configKeys: Object.keys(resolveExecutorConfig(ex)),
-          closeTimestamp: resolveExecutorCloseTimestamp(ex),
-          chartReady,
-          candleCount: candles?.length ?? 0,
-          isLoading,
-          isError,
-          timeRange,
-          overlayCount: overlays.length,
-          hasSegment: overlays.some((o) => !!o.segment),
-          segments: overlays.map((o) => o.segment ?? null),
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [chartExecutors, executors, candles, overlays, chartReady, isLoading, isError, connector, tradingPair, timeRange]);
-  // #endregion
 
   // Initialize chart
   useEffect(() => {
@@ -585,29 +548,6 @@ export function ExecutorChart({
       const segColor = color ?? seg.color;
       const entryT = tsToSeconds(seg.entryTime);
       const exitT = tsToSeconds(seg.exitTime);
-
-      // #region agent log
-      fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
-        body: JSON.stringify({
-          sessionId: "644d7b",
-          hypothesisId: "H4",
-          location: "ExecutorChart.tsx:applySegment",
-          message: "Drawing segment line",
-          data: {
-            executorId: overlay.executorId,
-            type: overlay.type,
-            entryT,
-            exitT,
-            entryPrice: seg.entryPrice,
-            exitPrice: seg.exitPrice,
-            chartReady,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
 
       // Order executors: solid line when active (horizontal), dashed otherwise
       const isOrderActive = overlay.type === "order" && isActive(overlay.status);

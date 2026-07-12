@@ -533,39 +533,7 @@ export function getExecutorColor(_index: number, pnl?: number): string {
 }
 
 export function computeMultiOverlays(executors: ExecutorInfo[]): ExecutorOverlay[] {
-  const result = executors.map((ex) => computeExecutorOverlay(ex));
-  // #region agent log
-  for (const o of result) {
-    fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
-      body: JSON.stringify({
-        sessionId: "644d7b",
-        hypothesisId: "H1-H3",
-        location: "executor-overlays.ts:computeMultiOverlays",
-        message: "Overlay segment computed",
-        data: {
-          executorId: o.executorId,
-          type: o.type,
-          status: o.status,
-          hasSegment: !!o.segment,
-          segment: o.segment
-            ? {
-                entryTime: o.segment.entryTime,
-                exitTime: o.segment.exitTime,
-                entryPrice: o.segment.entryPrice,
-                exitPrice: o.segment.exitPrice,
-              }
-            : null,
-          entryPrice: o.entryPrice,
-          exitPrice: o.exitPrice,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }
-  // #endregion
-  return result;
+  return executors.map((ex) => computeExecutorOverlay(ex));
 }
 
 function toSeconds(ts: number): number {

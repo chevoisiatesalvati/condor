@@ -20,7 +20,6 @@ import {
   getCachedExecutorsById,
   mergeExecutorOverlay,
   normalizePositionHeld,
-  resolveExecutorConfig,
   type ExecutorEnrichmentContext,
 } from "@/lib/executors";
 import { type ExecutorEntry, type ParsedJournal, type ParsedSnapshot, parseSnapshot } from "@/lib/parse-agent";
@@ -255,46 +254,6 @@ export function SessionExecutors({
     };
     return merged.map(enrich);
   }, [restExecutors, wsExecutors, normalizedPositions, liveById, cachedExecutorsById, journalById, sessionConfig]);
-
-  // #region agent log
-  useEffect(() => {
-    const sample = executorInfos.filter((ex) => {
-      const s = ex.status?.toLowerCase() ?? "";
-      const active = s === "running" || s === "active" || s === "active_position";
-      const terminated = s === "terminated" || s === "closed" || s === "completed";
-      return active || terminated;
-    }).slice(0, 4);
-    if (sample.length === 0) return;
-    fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
-      body: JSON.stringify({
-        sessionId: "644d7b",
-        runId: "post-fix-v6",
-        hypothesisId: "H11",
-        location: "AgentSessionContent.tsx:executorInfos",
-        message: "Session executor merge result",
-        data: {
-          sessionControllerIds,
-          cachedCount: cachedExecutorsById.size,
-          wsCount: wsExecutors.length,
-          restCount: restExecutors.length,
-          sample: sample.map((ex) => ({
-            id: ex.id,
-            status: ex.status,
-            entry_price: ex.entry_price,
-            current_price: ex.current_price,
-            close_timestamp: ex.close_timestamp,
-            configKeys: Object.keys(resolveExecutorConfig(ex)),
-            customInfoKeys: Object.keys(ex.custom_info || {}),
-            cachedHit: cachedExecutorsById.has(ex.id),
-          })),
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [executorInfos, wsExecutors, restExecutors, sessionControllerIds, cachedExecutorsById]);
-  // #endregion
 
   const sessionEnrichment = useMemo<ExecutorEnrichmentContext>(
     () => ({

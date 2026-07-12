@@ -7,7 +7,7 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 
@@ -20,7 +20,6 @@ import {
   mergeSessionConfigSources,
   parseControllerSession,
   resolveExecutorConfig,
-  sessionConfigHasDefaults,
   type ExecutorEnrichmentContext,
 } from "@/lib/executors";
 import {
@@ -32,7 +31,7 @@ import {
   formatPrice,
   formatPct,
   formatExecutorSide,
-  resolveExecutorSide,
+  executorSideRaw,
   isExecutorActive,
 } from "@/lib/formatters";
 import { parseJournal } from "@/lib/parse-agent";
@@ -169,7 +168,7 @@ const ExecutorRow = memo(function ExecutorRow({
   fmtVol: RowFormatter;
   fmtDet: RowFormatter;
 }) {
-  const side = formatExecutorSide(ex.side);
+  const side = formatExecutorSide(executorSideRaw(ex));
   const pnlBorder = ex.pnl >= 0 ? "var(--color-green)" : "var(--color-red)";
   const quote = ex.trading_pair?.split("-")[1] || "USDT";
   return (
@@ -204,10 +203,15 @@ const ExecutorRow = memo(function ExecutorRow({
         <span
           className="text-xs font-semibold uppercase"
           style={{
-            color: side === "BUY" ? "var(--color-green)" : "var(--color-red)",
+            color:
+              side === "BUY"
+                ? "var(--color-green)"
+                : side === "SELL"
+                  ? "var(--color-red)"
+                  : "var(--color-text-muted)",
           }}
         >
-          {side}
+          {side || "—"}
         </span>
       </td>
       <td className="px-4 py-2.5">
@@ -502,9 +506,19 @@ export function DetailPanel({
     lockUserSelect: true,
   });
 
-  const sideLabel = formatExecutorSide(displayExecutor.side);
-  const sideColor = sideLabel === "BUY" ? "var(--color-green)" : "var(--color-red)";
-  const sideBg = sideLabel === "BUY" ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)";
+  const sideLabel = formatExecutorSide(executorSideRaw(displayExecutor));
+  const sideColor =
+    sideLabel === "BUY"
+      ? "var(--color-green)"
+      : sideLabel === "SELL"
+        ? "var(--color-red)"
+        : "var(--color-text-muted)";
+  const sideBg =
+    sideLabel === "BUY"
+      ? "rgba(34,197,94,0.1)"
+      : sideLabel === "SELL"
+        ? "rgba(239,68,68,0.1)"
+        : "rgba(156,163,175,0.1)";
   const configEntries = Object.entries(displayExecutor.config || {});
   const customEntries = Object.entries(displayExecutor.custom_info || {});
 
@@ -543,47 +557,6 @@ export function DetailPanel({
     () => enrichExecutorWithLivePrice(displayExecutor, livePrice?.mid_price),
     [displayExecutor, livePrice?.mid_price],
   );
-
-  // #region agent log
-  useEffect(() => {
-    const cfg = resolveExecutorConfig(displayExecutor);
-    fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
-      body: JSON.stringify({
-        sessionId: "644d7b",
-        runId: "post-fix-v7",
-        hypothesisId: "H12",
-        location: "ExecutorTable.tsx:DetailPanel",
-        message: "Terminated display enrichment",
-        data: {
-          variant,
-          executorId: executor.id,
-          controllerId: executor.controller_id,
-          sessionRef,
-          journalRows: journalById.size,
-          hasSessionConfig: sessionConfigHasDefaults(effectiveSessionConfig),
-          sessionConfigKeys: Object.keys(effectiveSessionConfig ?? {}),
-          configKeys: Object.keys(cfg),
-          side: resolveExecutorSide(displayExecutor),
-          leverage: cfg.leverage,
-          amount: cfg.total_amount_quote ?? cfg.amount,
-          stopLoss: cfg.stop_loss,
-          takeProfit: cfg.take_profit,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [
-    displayExecutor,
-    effectiveSessionConfig,
-    executor.id,
-    executor.controller_id,
-    journalById.size,
-    sessionRef,
-    variant,
-  ]);
-  // #endregion
 
   return (
       <div
@@ -650,7 +623,7 @@ export function DetailPanel({
               className="rounded px-1.5 py-0.5 text-xs font-semibold uppercase"
               style={{ color: sideColor, background: sideBg }}
             >
-              {sideLabel}
+              {sideLabel || "—"}
             </span>
             {executor.close_type && (
               <span className="rounded bg-[var(--color-surface)] px-2 py-0.5 text-xs font-medium border border-[var(--color-border)]/50">
@@ -670,35 +643,6 @@ export function DetailPanel({
           )}
 
           {/* Executor Chart */}
-          {/* #region agent log */}
-          {(() => {
-            const chartEnabled = !!(server && executor.connector && executor.trading_pair);
-            fetch("http://127.0.0.1:7313/ingest/66e6cf39-e791-4256-8122-105d89ec429b", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "644d7b" },
-              body: JSON.stringify({
-                sessionId: "644d7b",
-                hypothesisId: "H5",
-                location: "ExecutorTable.tsx:DetailPanel",
-                message: "DetailPanel chart gate",
-                data: {
-                  variant,
-                  executorId: executor.id,
-                  chartEnabled,
-                  server: server || null,
-                  connector: executor.connector || null,
-                  trading_pair: executor.trading_pair || null,
-                  type: executor.type,
-                  timestamp: executor.timestamp,
-                  entry_price: chartExecutor.entry_price,
-                  current_price: chartExecutor.current_price,
-                },
-                timestamp: Date.now(),
-              }),
-            }).catch(() => {});
-            return null;
-          })()}
-          {/* #endregion */}
           {server && executor.connector && executor.trading_pair && (
             <ExecutorChart
               server={server}

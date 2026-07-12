@@ -1,5 +1,6 @@
 """Fetch and manage executors via Hummingbot API."""
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,7 @@ logger = logging.getLogger(__name__)
 # Safety cap to avoid runaway pagination loops
 MAX_EXECUTORS_FETCH = 5000
 EXECUTORS_PAGE_SIZE = 500
+DETAIL_HYDRATE_CONCURRENCY = 25
 
 
 # ============================================
@@ -177,64 +179,126 @@ _DISPLAY_CONFIG_KEYS = (
 )
 
 
-def normalize_executor_side(
-    *sources: Any,
-) -> str:
-    """Map HB side encodings to BUY/SELL; empty when unknown."""
-    _map = {
-        "1": "BUY",
-        "2": "SELL",
-        "buy": "BUY",
-        "sell": "SELL",
-        "long": "BUY",
-        "short": "SELL",
-        "tradetype.buy": "BUY",
-        "tradetype.sell": "SELL",
-    }
-    for raw in sources:
-        if raw is None:
-            continue
-        if isinstance(raw, (int, float)) and raw in (1, 2):
-            return "BUY" if int(raw) == 1 else "SELL"
-        text = str(raw).strip()
-        if not text:
-            continue
-        mapped = _map.get(text.lower())
-        if mapped:
-            return mapped
-        upper = text.upper()
-        if upper in ("BUY", "SELL"):
-            return upper
+def normalize_executor_side(raw: Any) -> str:
+    """Normalize heterogeneous side encodings to BUY, SELL, or empty."""
+    if raw is None or raw is False:
+        return ""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if raw == 1:
+            return "BUY"
+        if raw == 2:
+            return "SELL"
+    label = str(raw).strip()
+    if not label:
+        return ""
+    upper = label.upper()
+    if label in ("1", "1.0") or upper in ("BUY", "LONG", "TRADETYPE.BUY"):
+        return "BUY"
+    if label in ("2", "2.0") or upper in ("SELL", "SHORT", "TRADETYPE.SELL"):
+        return "SELL"
+    return ""
+
+
+def resolve_executor_side(executor: Dict[str, Any]) -> str:
+    """Best-effort side from heterogeneous Hummingbot executor payloads."""
+    if not isinstance(executor, dict):
+        return ""
+    config = get_executor_config(executor)
+    custom_info = get_executor_custom_info(executor)
+
+    candidates: list[Any] = [
+        custom_info.get("side"),
+        config.get("side"),
+        executor.get("side"),
+        custom_info.get("position_side"),
+        executor.get("position_side"),
+        custom_info.get("trade_type"),
+        executor.get("trade_type"),
+    ]
+
+    held = custom_info.get("held_position_orders")
+    if isinstance(held, list):
+        for order in reversed(held):
+            if isinstance(order, dict):
+                candidates.extend([order.get("trade_type"), order.get("side")])
+
+    if custom_info.get("buy_breakeven_price") and not custom_info.get("sell_breakeven_price"):
+        candidates.append(1)
+    if custom_info.get("sell_breakeven_price") and not custom_info.get("buy_breakeven_price"):
+        candidates.append(2)
+
+    for raw in candidates:
+        normalized = normalize_executor_side(raw)
+        if normalized:
+            return normalized
     return ""
 
 
 def get_executor_side(executor: Dict[str, Any]) -> str:
-    """Resolve side from config, custom_info, and held_position_orders fills."""
-    config = get_executor_config(executor)
-    custom_info = get_executor_custom_info(executor)
-    side = normalize_executor_side(
-        config.get("side"),
-        executor.get("side"),
-        custom_info.get("side"),
-        custom_info.get("position_side"),
-    )
-    if side:
-        return side
+    """Alias for resolve_executor_side (live + archived rows)."""
+    return resolve_executor_side(executor)
 
-    held_orders = custom_info.get("held_position_orders")
-    if isinstance(held_orders, list):
-        for order in held_orders:
-            if not isinstance(order, dict):
-                continue
-            side = normalize_executor_side(
-                order.get("side"),
-                order.get("trade_type"),
-                order.get("position_side"),
-                order.get("order_type"),
-            )
-            if side:
-                return side
-    return ""
+
+def executor_list_payload_needs_detail(executor: Dict[str, Any]) -> bool:
+    """True when search_executors list row lacks side and needs get_executor."""
+    ex_id = executor.get("id") or executor.get("executor_id")
+    return bool(ex_id) and not resolve_executor_side(executor)
+
+
+def merge_executor_summary_with_detail(summary: dict, detail: dict) -> dict:
+    """Fill stripped list rows from a fuller executor payload."""
+    merged = dict(summary)
+    summary_config = merged.get("config") if isinstance(merged.get("config"), dict) else {}
+    detail_config = detail.get("config") if isinstance(detail.get("config"), dict) else {}
+    if detail_config:
+        merged["config"] = {**summary_config, **detail_config}
+
+    summary_ci = merged.get("custom_info") if isinstance(merged.get("custom_info"), dict) else {}
+    detail_ci = detail.get("custom_info") if isinstance(detail.get("custom_info"), dict) else {}
+    if detail_ci:
+        merged["custom_info"] = {**summary_ci, **detail_ci}
+
+    for key in (
+        "side",
+        "connector_name",
+        "connector",
+        "trading_pair",
+        "type",
+        "controller_id",
+        "executor_type",
+    ):
+        if not merged.get(key) and detail.get(key):
+            merged[key] = detail[key]
+    return merged
+
+
+async def hydrate_executor_list_details(
+    client,
+    executors: list[dict],
+    *,
+    concurrency: int = DETAIL_HYDRATE_CONCURRENCY,
+) -> list[dict]:
+    """Fetch get_executor for list rows missing side (terminated search_executors rows)."""
+    if not executors:
+        return executors
+
+    needs = [(i, ex) for i, ex in enumerate(executors) if executor_list_payload_needs_detail(ex)]
+    if not needs:
+        return executors
+
+    result = list(executors)
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _hydrate_one(idx: int, summary: dict) -> None:
+        ex_id = str(summary.get("id") or summary.get("executor_id") or "")
+        async with sem:
+            detail = await get_executor_detail(client, ex_id)
+        if detail:
+            result[idx] = merge_executor_summary_with_detail(summary, detail)
+
+    await asyncio.gather(*(_hydrate_one(i, ex) for i, ex in needs))
+    logger.info("Hydrated executor details for %d/%d list rows missing side", len(needs), len(executors))
+    return result
 
 
 def get_executor_display_config(executor: Dict[str, Any]) -> Dict[str, Any]:
@@ -332,7 +396,7 @@ async def fetch_all_executors(
         if len(all_items) >= max_items:
             break
         cursor = next_cursor
-    return all_items
+    return await hydrate_executor_list_details(client, all_items)
 
 
 async def create_executor(

@@ -1413,6 +1413,7 @@ class WebSocketManager:
             try:
                 from condor.fetchers.executors import (
                     extract_executors_list as _extract_executors_list,
+                    hydrate_executor_list_details,
                 )
 
                 sds = get_server_data_service()
@@ -1460,6 +1461,11 @@ class WebSocketManager:
                     cursor = next_cursor
                     page_num += 1
 
+                all_raw = await hydrate_executor_list_details(client, all_raw)
+                executors = self._transform_executors(all_raw)
+                if executors:
+                    await self.broadcast(channel, executors)
+
                 # Cache in SDS so other consumers benefit
                 sds.put(server_name, ServerDataType.EXECUTORS, all_raw)
             except asyncio.CancelledError:
@@ -1473,10 +1479,37 @@ class WebSocketManager:
         async def on_message(msg: dict) -> None:
             if msg.get("type") != "executors":
                 return
+            from condor.fetchers.executors import (
+                extract_executors_list as _extract_executors_list,
+                hydrate_executor_list_details,
+                merge_executor_summary_with_detail,
+            )
+
             raw = msg.get("data", [])
+            if not isinstance(raw, list):
+                raw = _extract_executors_list(raw)
+
+            sds = get_server_data_service()
+            cached = sds.get(server_name, ServerDataType.EXECUTORS)
+            if cached is not None:
+                cached_list = _extract_executors_list(cached)
+                by_id = {
+                    str(ex.get("id") or ex.get("executor_id") or ""): ex
+                    for ex in cached_list
+                    if ex.get("id") or ex.get("executor_id")
+                }
+                raw = [
+                    merge_executor_summary_with_detail(ex, by_id[eid])
+                    if (eid := str(ex.get("id") or ex.get("executor_id") or "")) in by_id
+                    else ex
+                    for ex in raw
+                ]
+
+            client = await cm.get_client(server_name)
+            raw = await hydrate_executor_list_details(client, raw)
             executors = self._transform_executors(raw)
             if raw:
-                get_server_data_service().put(server_name, ServerDataType.EXECUTORS, raw)
+                sds.put(server_name, ServerDataType.EXECUTORS, raw)
             # Always broadcast — _broadcast_update skips when data == prev, which
             # can stall the UI until the 60s REST fallback when PnL is unchanged
             # between ticks or float-normalization makes snapshots look equal.

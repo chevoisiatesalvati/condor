@@ -23,7 +23,8 @@ from condor.fetchers.executors import (
     get_executor_timestamp,
     get_executor_volume,
     get_executor_fees,
-    get_executor_side,
+    hydrate_executor_list_details,
+    resolve_executor_side,
     get_executor_type,
     parse_executor_json_field,
     MAX_EXECUTORS_FETCH,
@@ -52,34 +53,6 @@ def _build_executor_info(ex: dict) -> ExecutorInfo | None:
 
     entry_price = get_executor_entry_price(ex)
 
-    # #region agent log
-    if entry_price == 0.0 and get_executor_type(ex) == "position":
-        import json
-        import time
-
-        _raw_ci = ex.get("custom_info")
-        _log = {
-            "sessionId": "644d7b",
-            "runId": "post-fix-v2",
-            "hypothesisId": "H8",
-            "location": "executors.py:_build_executor_info",
-            "message": "Position executor missing entry_price",
-            "data": {
-                "id": str(ex.get("id") or ex.get("executor_id") or ""),
-                "custom_info_type": type(_raw_ci).__name__,
-                "custom_info_preview": str(_raw_ci)[:120] if _raw_ci else None,
-                "config_type": type(ex.get("config")).__name__,
-                "parsed_custom_keys": list(get_executor_custom_info(ex).keys())[:10],
-            },
-            "timestamp": int(time.time() * 1000),
-        }
-        try:
-            with open("/home/saul/projects/Hummingbot/condor/.cursor/debug-644d7b.log", "a") as _f:
-                _f.write(json.dumps(_log) + "\n")
-        except Exception:
-            pass
-    # #endregion
-
     # Current/close price: top-level > custom_info.close_price > held_position_orders fill price
     _top_cur = float(ex.get("current_price") or 0)
     _ci_close = float(custom_info.get("close_price") or 0)
@@ -98,7 +71,7 @@ def _build_executor_info(ex: dict) -> ExecutorInfo | None:
         type=get_executor_type(ex),
         connector=config.get("connector_name") or ex.get("connector_name") or ex.get("connector") or "",
         trading_pair=config.get("trading_pair") or ex.get("trading_pair") or "",
-        side=get_executor_side(ex),
+        side=resolve_executor_side(ex),
         status=(ex.get("status") or "").lower(),
         close_type=str(ex.get("close_type") or "").lower(),
         pnl=get_executor_pnl(ex),
@@ -124,6 +97,21 @@ def _dedupe_executor_infos(items: list[ExecutorInfo]) -> list[ExecutorInfo]:
             seen.add(info.id)
             out.append(info)
     return out
+
+
+async def _hydrate_executor_raw_list(name: str, executors_list: list[dict]) -> list[dict]:
+    """Fill stripped search_executors rows from get_executor; refresh SDS when needed."""
+    from condor.fetchers.executors import executor_list_payload_needs_detail
+    from condor.server_data_service import ServerDataType, get_server_data_service
+
+    if not any(executor_list_payload_needs_detail(ex) for ex in executors_list):
+        return executors_list
+
+    cm = get_config_manager()
+    client = await cm.get_client(name)
+    hydrated = await hydrate_executor_list_details(client, executors_list)
+    get_server_data_service().put(name, ServerDataType.EXECUTORS, hydrated)
+    return hydrated
 
 
 @router.get("/servers/{name}/executors", response_model=list[ExecutorInfo])
@@ -173,6 +161,7 @@ async def list_executors(
             raise HTTPException(status_code=502, detail="Failed to fetch executors")
 
     executors_list = _extract_executors_list(result)
+    executors_list = await _hydrate_executor_raw_list(name, executors_list)
 
     items: list[ExecutorInfo] = []
     for ex in executors_list:
@@ -213,7 +202,9 @@ async def list_executors_page(
         sds = get_server_data_service()
         cached = sds.get(name, ServerDataType.EXECUTORS)
         if cached is not None:
-            all_executors = _extract_executors_list(cached)
+            all_executors = await _hydrate_executor_raw_list(
+                name, _extract_executors_list(cached)
+            )
             page = all_executors[:limit]
             items: list[ExecutorInfo] = []
             for ex in page:
@@ -239,7 +230,9 @@ async def list_executors_page(
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
         if cached is not None:
-            all_executors = _extract_executors_list(cached)
+            all_executors = await _hydrate_executor_raw_list(
+                name, _extract_executors_list(cached)
+            )
             page = all_executors[offset : offset + limit]
             items = []
             for ex in page:
@@ -273,7 +266,7 @@ async def list_executors_page(
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
-    page = _extract_executors_list(result)
+    page = await hydrate_executor_list_details(client, _extract_executors_list(result))
     next_cursor = None
     if isinstance(result, dict):
         next_cursor = result.get("next_cursor") or result.get("cursor")

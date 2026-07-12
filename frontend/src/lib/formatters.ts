@@ -216,7 +216,16 @@ export function isExecutorActive(status: string) {
   return s === "active" || s === "running" || s === "active_position";
 }
 
-export function formatExecutorSide(side: unknown): "BUY" | "SELL" {
+export function executorSideRaw(ex: {
+  side?: string;
+  config?: { side?: unknown };
+  custom_info?: { side?: unknown };
+}): unknown {
+  return ex.side || ex.config?.side || ex.custom_info?.side;
+}
+
+export function formatExecutorSide(side: unknown): "BUY" | "SELL" | "" {
+  if (side === null || side === undefined || side === "") return "";
   if (typeof side === "string") {
     const upper = side.toUpperCase();
     if (side === "1" || upper === "BUY" || side === "TradeType.BUY" || upper === "LONG") {
@@ -227,12 +236,16 @@ export function formatExecutorSide(side: unknown): "BUY" | "SELL" {
     }
   }
   if (typeof side === "number") {
-    return side === 1 ? "BUY" : "SELL";
+    if (side === 1) return "BUY";
+    if (side === 2) return "SELL";
+    return "";
   }
-  const label = String(side ?? "").toUpperCase();
+  const label = String(side).toUpperCase();
   if (label === "LONG") return "BUY";
   if (label === "SHORT") return "SELL";
-  return label === "BUY" ? "BUY" : "SELL";
+  if (label === "BUY") return "BUY";
+  if (label === "SELL") return "SELL";
+  return "";
 }
 
 /** Resolve side from executor row, config, and custom_info (never guess SELL). */
