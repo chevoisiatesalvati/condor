@@ -99,6 +99,7 @@ export function StrategyDetail() {
   // Derive controller IDs from active instances for WS executor streaming
   const instances = strategy?.instances || [];
   const hasRunning = instances.length > 0;
+  const hasLiveInstance = instances.some((inst) => inst.status === "running");
   const serverName = (strategy?.config?.server_name as string) || "";
 
   const controllerIds = useMemo(
@@ -220,9 +221,9 @@ export function StrategyDetail() {
             </button>
             <button
               onClick={() => setShowDeleteConfirm(true)}
-              disabled={strategy.status === "running"}
+              disabled={hasLiveInstance}
               className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-400 transition-all hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-30"
-              title={strategy.status === "running" ? "Stop strategy before deleting" : "Delete strategy"}
+              title={hasLiveInstance ? "Stop all running sessions before deleting" : "Delete strategy"}
             >
               <Trash2 className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Delete</span>
@@ -230,7 +231,6 @@ export function StrategyDetail() {
             <AgentControls
               slug={slug!}
               sslug={sslug!}
-              status={strategy.status}
               defaultContext={strategy.default_trading_context || (strategy.config.trading_context as string) || ""}
               defaultAgentKey={strategy.defaults?.agent_key ?? ""}
               agentConfig={strategy.defaults?.default_config ?? strategy.config}

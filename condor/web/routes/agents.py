@@ -1455,7 +1455,6 @@ async def start_strategy(
         TickEngine,
         get_engine,
         start_engine,
-        stop_engine_by_id,
     )
 
     agent = _get_agent(slug)
@@ -1496,9 +1495,6 @@ async def start_strategy(
                     f"hot-reload). Resume session {orphaned[-1]} or fully restart Condor."
                 ),
             )
-
-        for engine in list(_get_engines_for(slug, sslug)):
-            await stop_engine_by_id(engine.agent_id)
 
         config_dict = load_full_config(strategy_dir, strategy.default_config)
         config_dict = _merge_config_strategy_params(strategy.slug, config_dict)

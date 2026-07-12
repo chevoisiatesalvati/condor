@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Square, X } from "lucide-react";
+import { Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -247,7 +247,6 @@ export function StartSessionDialog({
 export function AgentControls({
   slug,
   sslug,
-  status,
   defaultContext,
   defaultAgentKey,
   agentConfig,
@@ -255,99 +254,21 @@ export function AgentControls({
 }: {
   slug: string;
   sslug: string;
-  status: string;
   defaultContext: string;
   defaultAgentKey: string;
   agentConfig: Record<string, unknown>;
   strategyPresets?: Array<{ id: string; label: string }>;
 }) {
-  const queryClient = useQueryClient();
   const [showStartDialog, setShowStartDialog] = useState(false);
-  const [confirmStop, setConfirmStop] = useState(false);
-
-  const stopMut = useMutation({
-    mutationFn: () => api.stopStrategy(slug, sslug),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["strategy", slug, sslug] });
-      setConfirmStop(false);
-    },
-  });
-  const pauseMut = useMutation({
-    mutationFn: () => api.pauseStrategy(slug, sslug),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["strategy", slug, sslug] }),
-  });
-  const resumeMut = useMutation({
-    mutationFn: () => api.resumeStrategy(slug, sslug),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["strategy", slug, sslug] }),
-  });
-
-  const loading = stopMut.isPending || pauseMut.isPending || resumeMut.isPending;
-  const controlError = stopMut.error || pauseMut.error || resumeMut.error;
-
-  const stopControls = confirmStop ? (
-    <div className="flex items-center gap-1.5">
-      <button
-        onClick={() => stopMut.mutate()}
-        disabled={stopMut.isPending}
-        className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-red-500 disabled:opacity-40"
-      >
-        {stopMut.isPending ? "Stopping..." : "Confirm"}
-      </button>
-      <button
-        onClick={() => setConfirmStop(false)}
-        disabled={stopMut.isPending}
-        className="rounded-lg px-3 py-1.5 text-xs text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)] disabled:opacity-40"
-      >
-        Cancel
-      </button>
-    </div>
-  ) : (
-    <button
-      onClick={() => setConfirmStop(true)}
-      disabled={loading}
-      className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-400 transition-all hover:bg-red-500/20 disabled:opacity-40"
-    >
-      <Square className="h-3.5 w-3.5" /> Stop
-    </button>
-  );
 
   return (
     <>
-      <div className="flex items-center gap-2">
-        {status === "idle" || status === "stopped" ? (
-          <button
-            onClick={() => setShowStartDialog(true)}
-            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-emerald-500"
-          >
-            <Play className="h-3.5 w-3.5" /> Start
-          </button>
-        ) : status === "running" ? (
-          <>
-            <button
-              onClick={() => pauseMut.mutate()}
-              disabled={loading}
-              className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-400 transition-all hover:bg-amber-500/20 disabled:opacity-40"
-            >
-              <Pause className="h-3.5 w-3.5" /> Pause
-            </button>
-            {stopControls}
-          </>
-        ) : status === "paused" ? (
-          <>
-            <button
-              onClick={() => resumeMut.mutate()}
-              disabled={loading}
-              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-emerald-500 disabled:opacity-40"
-            >
-              <Play className="h-3.5 w-3.5" /> Resume
-            </button>
-            {stopControls}
-          </>
-        ) : null}
-        {controlError && (
-          <p className="text-xs text-red-400">{controlError.message}</p>
-        )}
-      </div>
+      <button
+        onClick={() => setShowStartDialog(true)}
+        className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-emerald-500"
+      >
+        <Play className="h-3.5 w-3.5" /> Start
+      </button>
 
       <StartSessionDialog
         open={showStartDialog}
