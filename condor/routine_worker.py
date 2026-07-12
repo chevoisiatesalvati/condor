@@ -48,7 +48,7 @@ def resolve_routine_by_name(routine_name: str, extra_routines_dir: str | None = 
         slug, rname = routine_name.split("/", 1)
         agents_dir = (
             Path(__file__).resolve().parent.parent
-            / "trading_agents"
+            / "agents"
             / slug
             / "routines"
         )
@@ -106,17 +106,44 @@ async def _run_routine(
     if not routine:
         raise ValueError(f"Routine '{routine_name}' not found")
 
-    reports._last_report_id = None
+    logger.info(
+        "Worker running routine=%s server=%s config_keys=%s",
+        routine_name,
+        server_name,
+        sorted(config.keys()),
+    )
+
+    reports.reset_last_report_id()
     start = time.time()
     ctx = WebRoutineContext(server_name, chat_id=user_id)
     cfg = routine.config_class(**config)
     raw = await routine.run_fn(cfg, ctx)
     duration = time.time() - start
 
+    report_id = reports.get_last_report_id()
+    result_preview = str(raw)
+    if len(result_preview) > 200:
+        result_preview = result_preview[:200] + "…"
+    if report_id:
+        logger.info(
+            "Worker routine=%s finished duration=%.1fs report_id=%s result=%s",
+            routine_name,
+            duration,
+            report_id,
+            result_preview,
+        )
+    else:
+        logger.warning(
+            "Worker routine=%s finished duration=%.1fs report_id=none result=%s",
+            routine_name,
+            duration,
+            result_preview,
+        )
+
     return {
         "ok": True,
         "duration_sec": duration,
-        "report_id": reports._last_report_id,
+        "report_id": report_id,
         "result": routine_result_to_dict(raw),
         "error": None,
         "traceback": None,
@@ -146,6 +173,12 @@ async def main_async(args: argparse.Namespace) -> int:
             extra_routines_dir=args.extra_routines_dir,
         )
     except Exception as exc:
+        logger.exception(
+            "Worker routine=%s failed: %s: %s",
+            args.routine,
+            type(exc).__name__,
+            exc,
+        )
         envelope = {
             "ok": False,
             "duration_sec": 0.0,

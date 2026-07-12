@@ -24,6 +24,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     _dynamic_sweep_base,
     _load_sessions,
     iter_mega_dynamic_sweep_configs,
+    prepare_shared_candle_stores,
     resolve_sweep_workers,
     run_sweep_config_batch,
 )
@@ -59,7 +60,7 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("data/replay_snapshots_binance_1y"),
     )
-    parser.add_argument("--worker-ram-gb", type=float, default=2.0)
+    parser.add_argument("--worker-ram-gb", type=float, default=3.0)
     parser.add_argument(
         "--output",
         type=Path,
@@ -133,6 +134,27 @@ async def _preload(args: argparse.Namespace) -> tuple[SweepRunContext, list[tupl
         flush=True,
     )
 
+    (
+        hl_candle_cache,
+        hl_barrier_candle_cache,
+        hl_vol_candle_cache,
+        hl_candle_store,
+        hl_barrier_candle_store,
+        hl_vol_candle_store,
+    ) = prepare_shared_candle_stores(
+        hl_candle_cache,
+        hl_barrier_candle_cache,
+        hl_vol_candle_cache,
+        enabled=True,
+    )
+    if hl_candle_store is not None:
+        print(
+            f"Shared candle stores: price={len(hl_candle_store)} "
+            f"barrier={len(hl_barrier_candle_store or [])} "
+            f"vol={len(hl_vol_candle_store or [])}",
+            flush=True,
+        )
+
     ctx = SweepRunContext(
         dynamic_mode=args.dynamic_mode,
         parsed_sessions=parsed_sessions,
@@ -140,11 +162,25 @@ async def _preload(args: argparse.Namespace) -> tuple[SweepRunContext, list[tupl
         hl_candle_cache=hl_candle_cache,
         hl_barrier_candle_cache=hl_barrier_candle_cache,
         hl_vol_candle_cache=hl_vol_candle_cache,
+        hl_candle_store=hl_candle_store,
+        hl_barrier_candle_store=hl_barrier_candle_store,
+        hl_vol_candle_store=hl_vol_candle_store,
         reports_by_pair=reports_by_pair,
         parent_overrides=None,
         benchmark_avg_notional=FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
     )
     return ctx, merged_items
+
+
+def _process_rss_kb() -> int | None:
+    try:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except OSError:
+        return None
+    return None
 
 
 def main() -> int:
@@ -158,49 +194,54 @@ def main() -> int:
     worker_counts = sorted(set(worker_counts), reverse=True)
     ctx, merged_items = asyncio.run(_preload(args))
 
-    print(f"\n{'workers':>8} {'resolved':>9} {'wall_s':>8} {'s/config':>10} {'speedup':>8}")
-    print("-" * 50)
+    print(f"\n{'workers':>8} {'resolved':>9} {'wall_s':>8} {'s/config':>10} {'speedup':>8} {'rss_mb':>8}")
+    print("-" * 60)
 
     baseline_sec: float | None = None
     rows: list[dict] = []
 
-    for requested in worker_counts:
-        resolved = resolve_sweep_workers(
-            requested,
-            worker_ram_gb=args.worker_ram_gb,
-        )
-        t0 = time.perf_counter()
-        results = run_sweep_config_batch(
-            merged_items,
-            ctx,
-            workers=requested,
-            worker_ram_gb=args.worker_ram_gb,
-        )
-        wall = time.perf_counter() - t0
-        if baseline_sec is None:
-            baseline_sec = wall
-        speedup = baseline_sec / wall if wall > 0 else 0.0
-        per_config = wall / len(merged_items)
-        print(
-            f"{requested:>8} {resolved:>9} {wall:>8.1f} {per_config:>10.1f} {speedup:>7.2f}x",
-            flush=True,
-        )
-        rows.append(
-            {
-                "requested_workers": requested,
-                "resolved_workers": resolved,
-                "config_count": len(merged_items),
-                "wall_sec": round(wall, 2),
-                "sec_per_config": round(per_config, 2),
-                "speedup_vs_workers_1": round(speedup, 3),
-                "top_pnl": round(max(r.pnl for r in results), 2),
-            }
-        )
+    try:
+        for requested in worker_counts:
+            resolved = resolve_sweep_workers(
+                requested,
+                worker_ram_gb=args.worker_ram_gb,
+            )
+            t0 = time.perf_counter()
+            results = run_sweep_config_batch(
+                merged_items,
+                ctx,
+                workers=requested,
+                worker_ram_gb=args.worker_ram_gb,
+            )
+            wall = time.perf_counter() - t0
+            rss_mb = (_process_rss_kb() or 0) / 1024.0
+            if baseline_sec is None:
+                baseline_sec = wall
+            speedup = baseline_sec / wall if wall > 0 else 0.0
+            per_config = wall / len(merged_items)
+            print(
+                f"{requested:>8} {resolved:>9} {wall:>8.1f} {per_config:>10.1f} {speedup:>7.2f}x {rss_mb:>8.0f}",
+                flush=True,
+            )
+            rows.append(
+                {
+                    "requested_workers": requested,
+                    "resolved_workers": resolved,
+                    "config_count": len(merged_items),
+                    "wall_sec": round(wall, 2),
+                    "sec_per_config": round(per_config, 2),
+                    "speedup_vs_baseline": round(speedup, 3),
+                    "parent_rss_mb": round(rss_mb, 1),
+                    "result_count": len(results),
+                }
+            )
+    finally:
+        ctx.close_shared_stores()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(rows, indent=2), encoding="utf-8")
     print(f"\nWrote {args.output}")
-    best = max(rows, key=lambda row: row["speedup_vs_workers_1"] / max(row["resolved_workers"], 1))
+    best = max(rows, key=lambda row: row["speedup_vs_baseline"] / max(row["resolved_workers"], 1))
     print(
         f"Suggested starting point: --workers {best['resolved_workers']} "
         f"({best['sec_per_config']:.0f}s/config in this probe)",

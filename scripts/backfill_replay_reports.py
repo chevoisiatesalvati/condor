@@ -10,7 +10,7 @@ import logging
 import sys
 
 from routines.macdbb_scanner_aggressive_hl_replay.models import parse_session_selector
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.report_backfill import (
     BackfillSettings,
     collect_session_tick_times,
@@ -105,7 +105,7 @@ def _expand_session_selector(raw: str, sessions_dir) -> list[int]:
 
 
 def _session_nums(args: argparse.Namespace) -> list[int]:
-    sessions_dir = TRADING_AGENTS_DIR / args.strategy_slug / "sessions"
+    sessions_dir = strategy_sessions_dir(args.strategy_slug)
     return _expand_session_selector(args.sessions, sessions_dir)
 
 

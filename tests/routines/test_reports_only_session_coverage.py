@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_data_dir, strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     build_reports_by_pair,
     load_reports_index,
@@ -17,7 +17,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.session_builder import build_s
 from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import parse_tick_schedule_file
 
 STRATEGY_SLUG = "macdbb_scanner_aggressive_hl"
-SESSIONS_DIR = TRADING_AGENTS_DIR / STRATEGY_SLUG / "sessions"
+SESSIONS_DIR = strategy_sessions_dir(STRATEGY_SLUG)
 TIME_WINDOW_MIN = 30
 
 

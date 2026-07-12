@@ -3,6 +3,10 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 import { defineConfig } from "vite";
 
+const vitePort = Number(process.env.VITE_PORT ?? 5173);
+const apiPort = Number(process.env.VITE_API_PORT ?? 8088);
+const apiTarget = `http://localhost:${apiPort}`;
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: {
@@ -14,11 +18,12 @@ export default defineConfig({
     },
   },
   server: {
+    port: vitePort,
     proxy: {
-      "/api": "http://localhost:8088",
-      "/reports": "http://localhost:8088",
+      "/api": apiTarget,
+      "/reports": apiTarget,
       "/ws": {
-        target: "ws://localhost:8088",
+        target: `ws://localhost:${apiPort}`,
         ws: true,
       },
     },

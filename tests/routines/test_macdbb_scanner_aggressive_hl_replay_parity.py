@@ -17,9 +17,11 @@ from routines.macdbb_scanner_aggressive_hl_replay.models import (
     JournalCreatePlan,
     JournalSignal1h,
     OpenPosition,
+    ParsedReport,
     StrategyReplayConfig,
     TickMeta,
 )
+from routines.macdbb_scanner_aggressive_hl_replay.signals import _resolve_price
 from routines.macdbb_scanner_aggressive_hl_replay.simulator import (
     _advance_simulated_streak,
     _adaptive_entry_allowed,
@@ -332,9 +334,10 @@ def test_scan_barriers_between_detects_long_stop_loss():
     ]
     hit = scan_barriers_between(candles, start, end, "long", entry, sl_pct=2.6, tp_pct=5.0)
     assert hit is not None
-    reason, exit_price = hit
+    reason, exit_price, hit_time = hit
     assert reason == "stop_loss_close_proxy"
     assert exit_price == entry * (1.0 - 0.026)
+    assert hit_time == dt.datetime(2026, 6, 12, 0, 10, tzinfo=dt.timezone.utc)
 
 
 def test_parse_barrier_events_from_structured_field_and_narrative():
@@ -367,7 +370,9 @@ def test_parse_snapshot_barrier_closes_from_barrier_section():
         parse_journal_ticks,
     )
 
-    session_dir = Path("trading_agents/macdbb_scanner_aggressive_hl/sessions/session_58")
+    from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_data_dir
+
+    session_dir = strategy_data_dir("macdbb_scanner_aggressive_hl") / "sessions/session_58"
     snapshot_text = (session_dir / "snapshots" / "snapshot_59.md").read_text()
     events = _parse_snapshot_barrier_closes(snapshot_text)
     assert len(events) == 1
@@ -466,4 +471,68 @@ def test_barrier_exit_price_caps_sl_tp_at_configured_levels():
         sl_pct=2.0,
         tp_pct=5.0,
     ) == 204.0
+
+
+def test_timeline_backtest_prefers_candle_price_over_snapshot_report():
+    config = DynamicStrategyReplayConfig(
+        replay_mode="timeline_backtest",
+        data_source="snapshots",
+        price_source="reports",
+        candle_source="binance_perpetual",
+    )
+    meta = TickMeta(
+        tick=35,
+        timestamp=dt.datetime(2026, 6, 12, 17, 0, tzinfo=dt.timezone.utc),
+        macd_pairs=[],
+    )
+    parsed = ParsedReport(
+        pair="BEAT-USDT",
+        interval="1h",
+        signal="BUY",
+        price=9.6957,
+        bb_pos_pct=50.0,
+        bb_mid=9.5,
+        bb_upper=10.0,
+        macd=0.1,
+        signal_line=0.05,
+        histogram=0.05,
+        trend="bullish",
+        momentum="increasing",
+        bullish_cross=False,
+        price_le_mid=False,
+        bearish_cross=False,
+        price_ge_upper=False,
+        macd_lt_zero=False,
+    )
+    cache = {("BEAT-USDT", 35): 11.033}
+    price, trusted, tag = _resolve_price(
+        "BEAT-USDT",
+        meta,
+        parsed,
+        config,
+        {},
+        cache,
+    )
+    assert price == 11.033
+    assert trusted is True
+    assert tag == "binance"
+
+
+def test_dynamic_barriers_enable_session_price_prefetch_with_reports_source():
+    from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
+        hl_prefetch_settings_from_config,
+    )
+
+    config = DynamicStrategyReplayConfig(
+        price_source="reports",
+        enable_dynamic_barriers=True,
+    )
+    settings = hl_prefetch_settings_from_config(config)
+    assert settings.build_session_prices is True
+
+    reports_only = DynamicStrategyReplayConfig(
+        price_source="reports",
+        enable_dynamic_barriers=False,
+    )
+    assert hl_prefetch_settings_from_config(reports_only).build_session_prices is False
 

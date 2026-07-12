@@ -4,6 +4,7 @@ import {
   applyPresetOverrides,
   getDisabledSelectOptions,
   reconcileReplayConfigValues,
+  shouldDemotePresetToCustom,
   updateConfigValues,
 } from "@/lib/routineUtils";
 
@@ -21,6 +22,14 @@ const PRESET_OVERRIDES = {
     snapshot_dir: "data/replay_snapshots_binance_1y",
     sl_pct: 3.8,
     tp_pct: 5.0,
+  },
+};
+
+const PRESET_OVERRIDES_WITH_SESSION = {
+  ...PRESET_OVERRIDES,
+  hl_dynamic_session_parity: {
+    ...PRESET_OVERRIDES.hl_dynamic_session_parity,
+    session_nums: "all",
   },
 };
 
@@ -130,15 +139,62 @@ describe("updateConfigValues", () => {
     expect(next.sl_pct).toBe(1.8);
   });
 
-  it("switches to custom for preset-owned fields outside overrides", () => {
+  it("switches to custom when a preset-owned field diverges", () => {
     const next = updateConfigValues(
       base,
       "session_nums",
       "37,58",
-      PRESET_OVERRIDES,
+      PRESET_OVERRIDES_WITH_SESSION,
     );
     expect(next.preset).toBe("custom");
     expect(next.session_nums).toBe("37,58");
+  });
+
+  it("keeps named preset when timeline range changes", () => {
+    const timelineBase = {
+      ...base,
+      preset: "hl_dynamic_timeline_refine_v5_winner_binance_1y",
+      replay_mode: "timeline_backtest",
+      data_source: "snapshots",
+      range_start_utc: "2026-01-01T00:00:00Z",
+      range_end_utc: "2026-06-01T00:00:00Z",
+    };
+    const next = updateConfigValues(
+      timelineBase,
+      "range_start_utc",
+      "2026-03-01T00:00:00Z",
+      PRESET_OVERRIDES,
+    );
+    expect(next.preset).toBe("hl_dynamic_timeline_refine_v5_winner_binance_1y");
+    expect(next.range_start_utc).toBe("2026-03-01T00:00:00Z");
+  });
+
+  it("keeps named preset when infra fields outside preset overrides change", () => {
+    const next = updateConfigValues(
+      {
+        ...base,
+        preset: "hl_dynamic_timeline_refine_v5_winner_binance_1y",
+        replay_mode: "timeline_backtest",
+        data_source: "snapshots",
+        max_auto_snapshot_days: 14,
+      },
+      "max_auto_snapshot_days",
+      21,
+      PRESET_OVERRIDES,
+    );
+    expect(next.preset).toBe("hl_dynamic_timeline_refine_v5_winner_binance_1y");
+    expect(next.max_auto_snapshot_days).toBe(21);
+  });
+
+  it("does not demote preset for fields absent from overrides", () => {
+    expect(
+      shouldDemotePresetToCustom(
+        "max_auto_snapshot_days",
+        21,
+        "hl_dynamic_session_parity",
+        PRESET_OVERRIDES,
+      ),
+    ).toBe(false);
   });
 
   it("does not re-apply overrides when switching to custom", () => {

@@ -1,3 +1,4 @@
 [submodule "strategies"]
 	path = strategies
 	url = git@github.com:chevoisiatesalvati/condor-strategies.git
+	branch = main

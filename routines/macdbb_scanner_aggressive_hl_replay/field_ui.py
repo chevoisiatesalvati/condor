@@ -49,6 +49,14 @@ REPLAY_FIELD_UI: dict[str, dict[str, Any]] = {
         "options_from": "replay_snapshot_dirs",
         "widget": "select",
     },
+    "auto_update_snapshots": {
+        "group": "Preset & mode",
+        "visible_when": SNAPSHOT_MODE,
+    },
+    "max_auto_snapshot_days": {
+        "group": "Preset & mode",
+        "visible_when": SNAPSHOT_MODE,
+    },
 }
 
 for _hl_field in _HL_PREFETCH_FIELDS:
@@ -157,7 +165,7 @@ def build_dynamic_replay_field_metadata(config_class: type) -> dict[str, dict[st
             "description": field_info.description or name,
         }
         if name == "preset":
-            from trading_agents.macdbb_scanner_aggressive_hl.presets import (
+            from agents.macdbb_scanner_aggressive_hl.presets import (
                 backtest_preset_names,
                 preset_labels,
             )

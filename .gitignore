@@ -171,8 +171,17 @@ condor_bot_data.pickle.bak
 
 # Local config and data
 config.yml
+config.dev.yml
 audit_log.yml
 data/
+
+# Dev worktree reports (make dev-local)
+reports-dev/
+
+# Per-assistant runtime stores (FEAT-003): definitions are committed, stores are not.
+# assistants/{name}/AGENT.md is tracked; assistants/{name}/store/ is runtime.
+assistants/*/store/
+agents/*/store/
 
 # Node
 node_modules/
@@ -181,16 +190,18 @@ node_modules/
 reports/
 
 # Trading agents
-trading_agents/*/sessions/*
-trading_agents/*/dry_runs/*
-trading_agents/*/learnings.md
-trading_agents/*/learnings_archive.md
-trading_agents/*/journal.md
-trading_agents/*/agent.md
-trading_agents/*/agent.old.md
-trading_agents/*/learnings.old.md
-trading_agents/*/presets.private.yaml
-trading_agents/*/presets.private.py
+agents/*/strategies/*/sessions/*
+agents/*/strategies/*/dry_runs/*
+agents/*/strategies/*/learnings.md
+agents/*/strategies/*/learnings_archive.md
+agents/*/strategies/*/journal.md
+agents/*/strategies/*/strategy.old.md
+agents/*/strategies/*/learnings.old.md
+agents/*/presets.private.yaml
+agents/*/presets.private.py
 
 # Backups
 agent_backups/*
+
+/improvements/
+/features/

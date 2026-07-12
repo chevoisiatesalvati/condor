@@ -9,7 +9,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from condor.web.routes import agents, archived, auth, backtesting, bots, chat_ws, controller_performance, executors, market, portfolio, positions, reports, routines, servers, settings, transcribe, ws
+from condor.web.routes import (
+    agents,
+    archived,
+    auth,
+    backtesting,
+    bots,
+    chat_ws,
+    controller_performance,
+    executors,
+    market,
+    portfolio,
+    positions,
+    reports,
+    routines,
+    servers,
+    settings,
+    transcribe,
+    ws,
+)
 from utils.config import is_dev_mode
 
 
@@ -61,23 +79,37 @@ def create_app() -> FastAPI:
     app.include_router(chat_ws.router, prefix="/api/v1")
     app.include_router(transcribe.router, prefix="/api/v1")
 
-    # ── Serve report HTML files ──
-    reports_dir = Path(__file__).resolve().parent.parent.parent / "reports"
-    reports_dir.mkdir(exist_ok=True)
-    app.mount("/reports", StaticFiles(directory=str(reports_dir)), name="reports")
+    # ── Serve report HTML files (same dir as condor.reports CHARTS_DIR) ──
+    from condor.reports import CHARTS_DIR
+
+    CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/reports", StaticFiles(directory=str(CHARTS_DIR)), name="reports")
 
     # ── Serve built frontend (production only; dev uses Vite on :5173) ──
     dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
     if dist.is_dir() and not is_dev_mode():
         index_html = dist / "index.html"
-        app.mount("/assets", StaticFiles(directory=str(dist / "assets")), name="static-assets")
+        dist_root = dist.resolve()
+        app.mount(
+            "/assets", StaticFiles(directory=str(dist / "assets")), name="static-assets"
+        )
 
         @app.get("/{full_path:path}")
         async def serve_spa(request: Request, full_path: str):
             """SPA fallback: serve index.html for all non-API routes."""
-            file_path = dist / full_path
-            if full_path and file_path.is_file():
-                return FileResponse(file_path)
+            if full_path:
+                try:
+                    candidate = (dist / full_path).resolve()
+                except (OSError, ValueError):
+                    candidate = None
+                # SEC-044: confine to dist — encoded traversal (%2e%2e, ..%2f)
+                # reaches here decoded, and FileResponse applies no guard.
+                if (
+                    candidate is not None
+                    and candidate.is_relative_to(dist_root)
+                    and candidate.is_file()
+                ):
+                    return FileResponse(candidate)
             return FileResponse(index_html)
 
     return app

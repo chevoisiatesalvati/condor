@@ -73,3 +73,36 @@ def parse_iso_utc(value: str) -> dt.datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=dt.timezone.utc)
     return parsed.astimezone(dt.timezone.utc)
+
+
+def iter_timeline_tick_chunks(
+    tick_meta_map: dict[int, TickMeta],
+    *,
+    chunk_days: int = 28,
+    overlap_days: int = 7,
+) -> list[dict[int, TickMeta]]:
+    """Split a tick schedule into overlapping UTC chunks for bounded-memory replay."""
+    if chunk_days <= 0 or not tick_meta_map:
+        return [tick_meta_map]
+    ordered = sorted(tick_meta_map.items(), key=lambda item: item[1].timestamp)
+    start_time = ordered[0][1].timestamp
+    end_time = ordered[-1][1].timestamp
+    overlap = dt.timedelta(days=max(0, overlap_days))
+    step = dt.timedelta(days=chunk_days)
+    chunks: list[dict[int, TickMeta]] = []
+    chunk_start = start_time
+    while chunk_start <= end_time:
+        chunk_end = min(chunk_start + step, end_time)
+        window_start = chunk_start - overlap if chunks else chunk_start
+        window_end = chunk_end
+        chunk = {
+            tick: meta
+            for tick, meta in ordered
+            if window_start <= meta.timestamp <= window_end
+        }
+        if chunk:
+            chunks.append(chunk)
+        if chunk_end >= end_time:
+            break
+        chunk_start = chunk_end
+    return chunks or [tick_meta_map]

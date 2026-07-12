@@ -243,12 +243,12 @@ def reload_handlers():
         "handlers.agents.stream",
         "handlers.agents.confirmation",
         "handlers.agents._shared",
+        "handlers.memory",
         "handlers.admin",
         "handlers.admin.update",
         "utils.auth",
         "utils.telegram_formatters",
         "config_manager",
-        "condor.data_manager",
     ]
 
     for module_name in modules_to_reload:
@@ -267,8 +267,6 @@ def reload_handlers():
         sds_register()
     except Exception as e:
         logger.warning(f"Failed to re-register SDS fetches: {e}")
-
-    # DataManager register_default_fetches is now a no-op (SDS handles registrations)
 
 
 def register_handlers(application: Application) -> None:
@@ -296,8 +294,10 @@ def register_handlers(application: Application) -> None:
     from handlers.config.api_keys import keys_command
     from handlers.config.gateway import gateway_command
     from handlers.config.servers import servers_command
+    from handlers.delegations import delegations_callback_handler, delegations_command
     from handlers.dex import dex_callback_handler, lp_command
     from handlers.executors import executors_callback_handler, executors_command
+    from handlers.memory import memory_callback_handler, memory_command
     from handlers.portfolio import get_portfolio_callback_handler, portfolio_command
     from handlers.routines import routines_callback_handler, routines_command
     from handlers.trading import trade_command as unified_trade_command
@@ -322,6 +322,8 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("executors", executors_command))
     application.add_handler(CommandHandler("agent", agent_command))
     application.add_handler(CommandHandler("performance", performance_command))
+    application.add_handler(CommandHandler("delegations", delegations_command))
+    application.add_handler(CommandHandler("memory", memory_command))
 
     # Add configuration commands (direct access)
     application.add_handler(CommandHandler("servers", servers_command))
@@ -360,6 +362,16 @@ def register_handlers(application: Application) -> None:
     )
     application.add_handler(
         CallbackQueryHandler(performance_callback_handler, pattern="^perf:")
+    )
+
+    # Add delegations callback handler (/delegations list + view + stop)
+    application.add_handler(
+        CallbackQueryHandler(delegations_callback_handler, pattern="^deleg:")
+    )
+
+    # Add memory callback handler (/memory review + delete)
+    application.add_handler(
+        CallbackQueryHandler(memory_callback_handler, pattern="^memory:")
     )
 
     # Add admin callback handler
@@ -404,38 +416,24 @@ async def sync_server_permissions() -> None:
     logger.info("Synced server permissions")
 
 
-async def post_init(application: Application) -> None:
-    """Register bot commands after initialization."""
-    from handlers import scrub_all_user_agent_llm_typing_states
+async def register_bot_commands(application: Application) -> None:
+    """Register the Telegram command menus (public for everyone, admin overlay).
 
-    cleared = scrub_all_user_agent_llm_typing_states(application)
-    if cleared:
-        logger.info(
-            "Cleared %d persisted agent LLM typing state(s) from user_data",
-            cleared,
-        )
-
-    from telegram import BotCommandScopeChat
-
-    from utils.config import ADMIN_USER_ID
-
-    # Sync server permissions (ensures all servers have ownership entries)
-    await sync_server_permissions()
-
-    # Preload Whisper model in background so first voice message is fast
-    import asyncio
-
-    from utils.transcribe import DEFAULT_MODEL, _get_model
-
-    asyncio.get_event_loop().run_in_executor(None, _get_model, DEFAULT_MODEL)
-
-    # Clear any previously set commands for all scopes to avoid stale overrides
+    Extracted from ``post_init`` so it can also run on hot-reload — otherwise a
+    newly added command (e.g. /delegations) gets its dispatch handler reloaded
+    but never shows up in the menu until a full process restart.
+    """
     from telegram import (
+        BotCommand,
         BotCommandScopeAllGroupChats,
         BotCommandScopeAllPrivateChats,
+        BotCommandScopeChat,
         BotCommandScopeDefault,
     )
 
+    from utils.config import ADMIN_USER_ID
+
+    # Clear any previously set commands for all scopes to avoid stale overrides
     for scope in [
         BotCommandScopeDefault(),
         BotCommandScopeAllPrivateChats(),
@@ -454,12 +452,17 @@ async def post_init(application: Application) -> None:
         except Exception:
             pass
 
-    # Public commands (all users)
+    # 1) Public commands — registered by default for ALL users (default scope is
+    #    the universal fallback every user resolves to unless a more specific
+    #    scope overrides it). Wrapped independently so a transient failure here
+    #    never blocks the admin step (or the rest of post_init) from running.
     commands = [
         BotCommand("start", "Welcome message and setup"),
         BotCommand("portfolio", "View balances across exchanges"),
         BotCommand("agent", "AI trading assistant"),
         BotCommand("performance", "Trading agent performance stats"),
+        BotCommand("delegations", "Monitor background agent tasks"),
+        BotCommand("memory", "Review what the assistant remembers about you"),
         BotCommand("executors", "Deploy and manage trading executors"),
         BotCommand("bots", "Deploy and manage trading bots"),
         BotCommand("new_bot", "Create bot configurations"),
@@ -471,9 +474,13 @@ async def post_init(application: Application) -> None:
         BotCommand("gateway", "Gateway for DEX trading"),
         BotCommand("web", "Open the web dashboard"),
     ]
-    await application.bot.set_my_commands(commands)
+    try:
+        await application.bot.set_my_commands(commands)
+    except Exception as e:
+        logger.warning(f"Failed to set public commands: {e}", exc_info=True)
 
-    # Admin-only commands (visible only to admin user in their command menu)
+    # 2) Admin-only commands — layered on top of the public ones, visible only in
+    #    the admin user's own command menu (chat scope overrides the default).
     if ADMIN_USER_ID:
         admin_commands = commands + [
             BotCommand("admin", "Admin panel - manage users and access"),
@@ -486,6 +493,74 @@ async def post_init(application: Application) -> None:
         except Exception as e:
             logger.warning(f"Failed to set admin-specific commands: {e}", exc_info=True)
 
+
+async def _boot_web_services() -> None:
+    """Start shared web/API services (safe without a Telegram Application)."""
+    await sync_server_permissions()
+
+    import asyncio
+
+    from utils.transcribe import DEFAULT_MODEL, _get_model
+
+    asyncio.get_event_loop().run_in_executor(None, _get_model, DEFAULT_MODEL)
+
+    from condor.server_data_service import get_server_data_service
+    from condor.server_data_service import register_default_fetches as sds_register
+
+    sds_register()
+    sds = get_server_data_service()
+    sds.start()
+    await sds.auto_subscribe_servers()
+
+
+async def _shutdown_services() -> None:
+    """Tear down agents, web sockets, API clients, and background services."""
+    from handlers.agents.session import destroy_all_sessions, stop_health_monitor
+
+    await stop_health_monitor()
+    await destroy_all_sessions()
+
+    from condor.agents.engine import get_all_engines
+
+    for engine in list(get_all_engines().values()):
+        try:
+            await engine.stop()
+        except Exception:
+            pass
+
+    from condor.web.ws_manager import get_ws_manager
+
+    get_ws_manager().stop()
+
+    from condor.server_data_service import get_server_data_service
+
+    get_server_data_service().stop()
+
+    from config_manager import get_config_manager
+
+    await get_config_manager().close_all_clients()
+
+    from mcp_servers.hummingbot_api.hummingbot_client import hummingbot_client
+
+    await hummingbot_client.close()
+
+
+async def post_init(application: Application) -> None:
+    """Register bot commands after initialization."""
+    from handlers import scrub_all_user_agent_llm_typing_states
+
+    cleared = scrub_all_user_agent_llm_typing_states(application)
+    if cleared:
+        logger.info(
+            "Cleared %d persisted agent LLM typing state(s) from user_data",
+            cleared,
+        )
+
+    await _boot_web_services()
+
+    # Register command menus (public + admin overlay)
+    await register_bot_commands(application)
+
     # Restore scheduled routine jobs from persistence
     from handlers.routines import restore_scheduled_jobs
 
@@ -495,20 +570,6 @@ async def post_init(application: Application) -> None:
     from condor.routine_store import get_routine_store
 
     get_routine_store().set_bot(application.bot)
-
-    # Start ServerDataService (unified server-centric cache)
-    from condor.server_data_service import get_server_data_service
-    from condor.server_data_service import register_default_fetches as sds_register
-
-    sds_register()
-    sds = get_server_data_service()
-    sds.start()
-    await sds.auto_subscribe_servers()
-
-    # DataManager legacy wrapper — kept for any unmigrated code
-    from condor.data_manager import get_data_manager
-
-    get_data_manager().start()
 
     # Start agent session health monitor
     from handlers.agents.session import start_health_monitor
@@ -615,8 +676,8 @@ class WebServerRunner:
 
     async def restart(self, extra_modules: list[str] | None = None) -> None:
         modules = extra_modules or []
-        if "condor.trading_agent.engine" in modules:
-            from condor.trading_agent.engine import get_all_engines, stop_engine_by_id
+        if "condor.agents.engine" in modules:
+            from condor.agents.engine import get_all_engines, stop_engine_by_id
 
             for engine in list(get_all_engines().values()):
                 try:
@@ -716,7 +777,7 @@ def _classify_changes(
 async def watch_and_reload(application: Application) -> None:
     """Watch for file changes and reload handlers or web server automatically."""
     try:
-        from watchfiles import awatch
+        from watchfiles import DefaultFilter, awatch
     except ImportError:
         logger.warning(
             "watchfiles not installed. Auto-reload disabled. Install with: uv add watchfiles"
@@ -740,7 +801,15 @@ async def watch_and_reload(application: Application) -> None:
         ", ".join(str(p) for p in watch_paths),
     )
 
-    async for changes in awatch(*watch_paths):
+    class _ReloadFilter(DefaultFilter):
+        """Ignore per-assistant runtime stores (FEAT-003)."""
+
+        def __call__(self, change, path: str) -> bool:
+            if f"{os.sep}store{os.sep}" in path:
+                return False
+            return super().__call__(change, path)
+
+    async for changes in awatch(*watch_paths, watch_filter=_ReloadFilter()):
         logger.info("📝 Detected changes: %s", changes)
         try:
             (
@@ -764,16 +833,56 @@ async def watch_and_reload(application: Application) -> None:
 
                 reload_assistants()
                 logger.info("✅ Auto-reloaded assistants")
-
             if needs_handler_reload:
                 reload_handlers()
                 register_handlers(application)
+                await register_bot_commands(application)
                 logger.info("✅ Auto-reloaded handlers successfully")
 
             if needs_web_reload:
                 queue_web_reload(extra_modules or None)
         except Exception as e:
             logger.error("❌ Auto-reload failed: %s", e, exc_info=True)
+
+
+async def watch_and_reload_web() -> None:
+    """Watch condor/ for changes and hot-reload the web server (web-only dev mode)."""
+    try:
+        from watchfiles import DefaultFilter, awatch
+    except ImportError:
+        logger.warning(
+            "watchfiles not installed. Auto-reload disabled. Install with: uv add watchfiles"
+        )
+        return
+
+    project_root = Path(__file__).parent
+    condor_path = project_root / "condor"
+    condor_web_path = condor_path / "web"
+    main_py = Path(__file__)
+
+    watch_paths: list[Path] = [condor_path, main_py]
+    logger.info(
+        "👀 Watching for web changes in: %s",
+        ", ".join(str(p) for p in watch_paths),
+    )
+
+    async for changes in awatch(*watch_paths, watch_filter=DefaultFilter()):
+        logger.info("📝 Detected web changes: %s", changes)
+        try:
+            _reload_assistants, _reload_handlers, needs_web_reload, extra_modules = _classify_changes(
+                changes,
+                handlers_path=project_root / "handlers",
+                routines_path=project_root / "routines",
+                assistants_path=project_root / "assistants",
+                condor_path=condor_path,
+                condor_web_path=condor_web_path,
+                main_py=main_py,
+                project_root=project_root,
+            )
+            if needs_web_reload:
+                queue_web_reload(extra_modules or None)
+        except Exception as e:
+            logger.error("❌ Web auto-reload failed: %s", e, exc_info=True)
 
 
 def get_persistence() -> SafePicklePersistence:
@@ -825,45 +934,28 @@ async def send_to_all(self, message: str, parse_mode: str = "Markdown"):
 
 def main() -> None:
     """Run the bot."""
+    if os.environ.get("CONDOR_WEB_ONLY"):
+        asyncio.run(_run_web_only())
+        return
+
+    # Reap any ACP/MCP subprocess trees orphaned by a prior hard kill (kill -9,
+    # OOM, power loss) before we spawn our own — those bypass post_shutdown.
+    try:
+        from condor.acp.client import reap_stale_acp_trees
+
+        reaped = reap_stale_acp_trees(TELEGRAM_TOKEN)
+        if reaped:
+            logger.info("Reaped %d stale ACP/MCP process(es) from a prior run", reaped)
+    except Exception:
+        logger.exception("Startup ACP reaper failed (continuing)")
+
     # Setup persistence to save user data, chat data, and bot data
     # This will save trading context, last used parameters, etc.
     persistence = get_persistence()
 
     async def post_shutdown(application: Application) -> None:
         """Clean up agent subprocesses on shutdown."""
-        from handlers.agents.session import destroy_all_sessions, stop_health_monitor
-
-        await stop_health_monitor()
-        await destroy_all_sessions()
-
-        # Stop all trading agents
-        from condor.trading_agent.engine import get_all_engines
-
-        for engine in list(get_all_engines().values()):
-            try:
-                await engine.stop()
-            except Exception:
-                pass
-
-        # Stop WebSocket manager
-        from condor.web.ws_manager import get_ws_manager
-
-        get_ws_manager().stop()
-
-        # Stop ServerDataService
-        from condor.server_data_service import get_server_data_service
-
-        get_server_data_service().stop()
-
-        # Close cached Hummingbot API clients (ConfigManager)
-        from config_manager import get_config_manager
-
-        await get_config_manager().close_all_clients()
-
-        # Close MCP hummingbot client
-        from mcp_servers.hummingbot_api.hummingbot_client import hummingbot_client
-
-        await hummingbot_client.close()
+        await _shutdown_services()
 
     # Create the Application with persistence enabled
     application = (
@@ -962,8 +1054,6 @@ async def _run_dual(application: Application) -> None:
             pass
     await web_runner.stop()
 
-    # Graceful Telegram shutdown (mirror run_polling order: updater → stop → post_stop → shutdown
-    # → post_shutdown — those hooks are not wired when not using run_polling).
     await application.updater.stop()
     await application.stop()
     if application.post_stop:
@@ -971,6 +1061,52 @@ async def _run_dual(application: Application) -> None:
     await application.shutdown()
     if application.post_shutdown:
         await application.post_shutdown(application)
+
+
+async def _run_web_only() -> None:
+    """Run FastAPI + background services without Telegram polling (dev worktree)."""
+    import signal
+
+    from condor.web.ws_manager import get_ws_manager
+
+    global _web_reload_event
+    _web_reload_event = asyncio.Event()
+
+    web_runner = WebServerRunner(host="0.0.0.0", port=WEB_PORT)
+    await web_runner.start()
+    reload_task = asyncio.create_task(web_reload_loop(web_runner))
+    watcher_task = asyncio.create_task(watch_and_reload_web())
+
+    await _boot_web_services()
+    get_ws_manager().start()
+
+    logger.info(
+        "Starting Condor (web-only dev): API on port %s — UI at %s",
+        WEB_PORT,
+        WEB_URL,
+    )
+
+    shutdown_event = asyncio.Event()
+
+    def _signal_handler():
+        shutdown_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _signal_handler)
+
+    await shutdown_event.wait()
+
+    logger.info("Shutting down...")
+    watcher_task.cancel()
+    reload_task.cancel()
+    for task in (watcher_task, reload_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    await web_runner.stop()
+    await _shutdown_services()
 
 
 if __name__ == "__main__":

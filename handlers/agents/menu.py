@@ -5,7 +5,7 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from ._shared import AGENT_MODES, AGENT_OPTIONS, DEFAULT_AGENT, DEFAULT_MODE, format_agent_llm_label
+from ._shared import AGENT_MODES, AGENT_OPTIONS, DEFAULT_AGENT, DEFAULT_MODE, format_agent_llm_label, normalize_mode
 from .session import get_session
 
 log = logging.getLogger(__name__)
@@ -15,10 +15,7 @@ def _active_session_keyboard(mode: str) -> InlineKeyboardMarkup:
     """Build keyboard for active session."""
     rows = [
         [
-            InlineKeyboardButton("Switch Agent Mode", callback_data="agent:switch_mode"),
             InlineKeyboardButton("New", callback_data="agent:new"),
-        ],
-        [
             InlineKeyboardButton("Compact", callback_data="agent:compact"),
         ],
         [
@@ -28,18 +25,6 @@ def _active_session_keyboard(mode: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Close", callback_data="agent:close")],
     ]
     return InlineKeyboardMarkup(rows)
-
-
-def _mode_selection_keyboard() -> InlineKeyboardMarkup:
-    """Build keyboard for mode selection."""
-    buttons = []
-    for key, info in AGENT_MODES.items():
-        buttons.append(
-            InlineKeyboardButton(info["label"], callback_data=f"agent:mode:{key}")
-        )
-    keyboard = [buttons]
-    keyboard.append([InlineKeyboardButton("Back", callback_data="agent:menu")])
-    return InlineKeyboardMarkup(keyboard)
 
 
 def _settings_keyboard(current_llm: str) -> InlineKeyboardMarkup:
@@ -178,9 +163,8 @@ def _cursor_picker_keyboard(
 def _no_session_keyboard(mode: str) -> InlineKeyboardMarkup:
     """Build keyboard when no session is active."""
     rows = [
-        [InlineKeyboardButton("Start", callback_data=f"agent:mode:{mode}")],
         [
-            InlineKeyboardButton("Switch Agent Mode", callback_data="agent:switch_mode"),
+            InlineKeyboardButton("Start", callback_data=f"agent:mode:{mode}"),
             InlineKeyboardButton("Change LLM", callback_data="agent:settings"),
         ],
         [InlineKeyboardButton("Close", callback_data="agent:close")],
@@ -222,9 +206,9 @@ async def show_agent_menu(
         text = "\n".join(lines)
         keyboard = _active_session_keyboard(session.mode)
     else:
-        # No session — show options to start, switch mode, or change settings
+        # No session — show options to start or change settings
         agent_key = context.user_data.get("agent_llm", DEFAULT_AGENT)
-        mode = context.user_data.get("agent_mode", DEFAULT_MODE)
+        mode = normalize_mode(context.user_data.get("agent_mode"))
         mode_label = AGENT_MODES.get(mode, {}).get("label", mode)
         llm_label = format_agent_llm_label(agent_key)
         text = (

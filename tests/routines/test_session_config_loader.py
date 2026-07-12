@@ -7,12 +7,9 @@ from pathlib import Path
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_scanner_aggressive_hl_replay.session_config import replay_config_from_session
 
-STRATEGY_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "trading_agents"
-    / "macdbb_scanner_aggressive_hl"
-    / "sessions"
-)
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_data_dir
+
+STRATEGY_DIR = strategy_data_dir("macdbb_scanner_aggressive_hl") / "sessions"
 
 
 def test_session_60_config_loader():

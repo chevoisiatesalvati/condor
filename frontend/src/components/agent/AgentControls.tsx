@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Square, X } from "lucide-react";
+import { Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -15,6 +15,7 @@ import {
 } from "@/components/agent/AgentSessionConfigFields";
 import { StrategyPresetSelect } from "@/components/agent/StrategyPresetSelect";
 import { StrategyParamsForm } from "@/components/agent/StrategyParamsForm";
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { api } from "@/lib/api";
 
 function readRiskLimit(defaults: Record<string, unknown>, key: string, fallback: number) {
@@ -29,6 +30,7 @@ export function StartSessionDialog({
   open,
   onClose,
   slug,
+  sslug,
   agentConfig,
   defaultContext,
   defaultAgentKey,
@@ -37,12 +39,14 @@ export function StartSessionDialog({
   open: boolean;
   onClose: () => void;
   slug: string;
+  sslug: string;
   agentConfig: Record<string, unknown>;
   defaultContext: string;
   defaultAgentKey: string;
   strategyPresets?: Array<{ id: string; label: string }>;
 }) {
   const queryClient = useQueryClient();
+  useEscapeKey(open, onClose);
 
   const [executionMode, setExecutionMode] = useState<ExecutionMode>(
     (agentConfig.execution_mode as ExecutionMode) || "loop",
@@ -65,8 +69,8 @@ export function StartSessionDialog({
   const [strategyParams, setStrategyParams] = useState<Record<string, unknown>>({});
 
   const { data: strategySchema } = useQuery({
-    queryKey: ["strategy-config-schema", slug],
-    queryFn: () => api.getStrategyConfigSchema(slug),
+    queryKey: ["strategy-config-schema", slug, sslug],
+    queryFn: () => api.getStrategyConfigSchema(slug, sslug),
     enabled: open,
   });
 
@@ -107,10 +111,10 @@ export function StartSessionDialog({
           ? { strategy_params: strategyParams }
           : {}),
       };
-      return api.startAgent(slug, config, context, agentKey);
+      return api.startStrategy(slug, sslug, config, context, agentKey);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agent", slug] });
+      queryClient.invalidateQueries({ queryKey: ["strategy", slug, sslug] });
       onClose();
     },
   });
@@ -125,7 +129,7 @@ export function StartSessionDialog({
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-[var(--color-text)]">Start New Session</h2>
-          <button onClick={onClose} className="text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
+          <button onClick={onClose} className="text-[var(--color-text-muted)] hover:text-[var(--color-text)]" title="Close" aria-label="Close">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -175,14 +179,14 @@ export function StartSessionDialog({
           {strategyPresets.length > 0 && (
             <StrategyPresetSelect
               slug={slug}
+              sslug={sslug}
               value={strategyPreset}
               presets={strategyPresets}
               frequencySec={Number(frequencySec) || 60}
+              baseParams={strategyParams}
               onChange={(preset, params, riskLimits) => {
                 setStrategyPreset(preset);
-                if (Object.keys(params).length > 0) {
-                  setStrategyParams(params);
-                }
+                setStrategyParams(params);
                 const maxOpen = riskLimits?.max_open_executors;
                 if (maxOpen !== undefined && maxOpen !== null) {
                   setMaxOpenExecutors(String(maxOpen));
@@ -230,6 +234,9 @@ export function StartSessionDialog({
                   : "Start Session"}
           </button>
         </div>
+        {startMut.isError && (
+          <p className="mt-3 text-xs text-red-400">{startMut.error.message}</p>
+        )}
       </div>
     </div>
   );
@@ -239,88 +246,35 @@ export function StartSessionDialog({
 
 export function AgentControls({
   slug,
-  status,
+  sslug,
   defaultContext,
   defaultAgentKey,
   agentConfig,
   strategyPresets = [],
 }: {
   slug: string;
-  status: string;
+  sslug: string;
   defaultContext: string;
   defaultAgentKey: string;
   agentConfig: Record<string, unknown>;
   strategyPresets?: Array<{ id: string; label: string }>;
 }) {
-  const queryClient = useQueryClient();
   const [showStartDialog, setShowStartDialog] = useState(false);
-
-  const stopMut = useMutation({
-    mutationFn: () => api.stopAgent(slug),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agent", slug] }),
-  });
-  const pauseMut = useMutation({
-    mutationFn: () => api.pauseAgent(slug),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agent", slug] }),
-  });
-  const resumeMut = useMutation({
-    mutationFn: () => api.resumeAgent(slug),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agent", slug] }),
-  });
-
-  const loading = stopMut.isPending || pauseMut.isPending || resumeMut.isPending;
 
   return (
     <>
-      <div className="flex items-center gap-2">
-        {status === "idle" || status === "stopped" ? (
-          <button
-            onClick={() => setShowStartDialog(true)}
-            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-emerald-500"
-          >
-            <Play className="h-3.5 w-3.5" /> Start
-          </button>
-        ) : status === "running" ? (
-          <>
-            <button
-              onClick={() => pauseMut.mutate()}
-              disabled={loading}
-              className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-400 transition-all hover:bg-amber-500/20 disabled:opacity-40"
-            >
-              <Pause className="h-3.5 w-3.5" /> Pause
-            </button>
-            <button
-              onClick={() => stopMut.mutate()}
-              disabled={loading}
-              className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-400 transition-all hover:bg-red-500/20 disabled:opacity-40"
-            >
-              <Square className="h-3.5 w-3.5" /> Stop
-            </button>
-          </>
-        ) : status === "paused" ? (
-          <>
-            <button
-              onClick={() => resumeMut.mutate()}
-              disabled={loading}
-              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-emerald-500 disabled:opacity-40"
-            >
-              <Play className="h-3.5 w-3.5" /> Resume
-            </button>
-            <button
-              onClick={() => stopMut.mutate()}
-              disabled={loading}
-              className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-400 transition-all hover:bg-red-500/20 disabled:opacity-40"
-            >
-              <Square className="h-3.5 w-3.5" /> Stop
-            </button>
-          </>
-        ) : null}
-      </div>
+      <button
+        onClick={() => setShowStartDialog(true)}
+        className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-emerald-500"
+      >
+        <Play className="h-3.5 w-3.5" /> Start
+      </button>
 
       <StartSessionDialog
         open={showStartDialog}
         onClose={() => setShowStartDialog(false)}
         slug={slug}
+        sslug={sslug}
         agentConfig={agentConfig}
         defaultContext={defaultContext}
         defaultAgentKey={defaultAgentKey}

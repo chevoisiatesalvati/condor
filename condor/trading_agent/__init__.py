@@ -1,31 +1,8 @@
-"""Autonomous Trading Agent Framework.
+"""Backward-compatible alias for ``condor.agents`` (pre-upstream rename)."""
 
-Spawns ACP sessions on a configurable tick loop. Each tick reads a persistent
-journal, analyzes market state via skills, makes trading decisions through
-executors, and writes observations back to the journal.
-"""
+from condor.trading_agent._shim import install
 
-from .config import AgentConfig, RiskLimitsConfig, load_agent_config, load_full_config, sanitize_config_dict, save_agent_config, save_full_config
-from .engine import TickEngine
-from .journal import JournalManager, get_session_dir, next_session_number
-from .risk import RiskEngine, RiskLimits, resolve_risk_limits
-from .strategy import Strategy, StrategyStore
+install()
 
-__all__ = [
-    "AgentConfig",
-    "RiskLimitsConfig",
-    "load_agent_config",
-    "load_full_config",
-    "save_agent_config",
-    "save_full_config",
-    "sanitize_config_dict",
-    "TickEngine",
-    "JournalManager",
-    "get_session_dir",
-    "next_session_number",
-    "RiskEngine",
-    "RiskLimits",
-    "resolve_risk_limits",
-    "Strategy",
-    "StrategyStore",
-]
+from condor.agents import *  # noqa: F403,E402
+from condor.agents import __all__ as __all__

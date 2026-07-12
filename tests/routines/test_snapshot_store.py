@@ -21,8 +21,12 @@ from routines.macdbb_scanner_aggressive_hl_replay.reports import (
 from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
     append_states,
     configure_snapshot_dir,
+    is_snapshot_store_active,
+    load_macdbb_index,
     load_parsed_macdbb_snapshot,
     load_parsed_scanner_snapshot,
+    reload_snapshot_caches,
+    warm_snapshot_caches,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import (
     TickMarketState,
@@ -105,6 +109,25 @@ def test_snapshot_store_round_trip_and_report_loader(tmp_path):
     assert parsed.pair == "BTC-USD"
     assert parsed.interval == "1h"
     assert parsed.signal in {"LONG", "SHORT", "NEUTRAL"}
+
+
+def test_reload_snapshot_caches_picks_up_incremental_append(tmp_path):
+    """Simulate auto-update: warm on empty dir, append, reload must see macdbb rows."""
+    configure_snapshot_dir(tmp_path)
+    warm_snapshot_caches(tmp_path)
+    assert load_macdbb_index(snapshot_dir=tmp_path) == []
+
+    tick_time = dt.datetime(2026, 7, 1, 12, 0, tzinfo=dt.timezone.utc)
+    append_states([_sample_state(tick_time)], snapshot_dir=tmp_path)
+
+    reload_snapshot_caches(tmp_path)
+    configure_snapshot_dir(tmp_path)
+
+    assert is_snapshot_store_active()
+    reports = load_macdbb_index(snapshot_dir=tmp_path)
+    assert len(reports) == 1
+    assert reports[0].pair == "BTC-USD"
+    assert len(load_reports_index()) == 1
 
 
 def test_metrics_to_parsed_report_matches_compute_fields():

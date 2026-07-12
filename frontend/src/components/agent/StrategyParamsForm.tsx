@@ -14,6 +14,7 @@ interface Props {
   values: Record<string, unknown>;
   frequencySec: number;
   onChange: (key: string, value: unknown) => void;
+  defaultExpanded?: boolean;
 }
 
 function NumberField({
@@ -123,8 +124,9 @@ export function StrategyParamsForm({
   values,
   frequencySec,
   onChange,
+  defaultExpanded = false,
 }: Props) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   const fieldsByGroup = groups.length
     ? groups.map((group) => ({

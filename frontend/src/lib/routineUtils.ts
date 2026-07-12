@@ -175,6 +175,28 @@ function configValuesEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+const USER_WINS_AFTER_PRESET_KEY_SET = new Set<string>(USER_WINS_AFTER_PRESET_KEYS);
+
+/** True when a field edit should drop the active named preset to custom. */
+export function shouldDemotePresetToCustom(
+  key: string,
+  value: unknown,
+  activePreset: unknown,
+  presetOverrides?: Record<string, Record<string, unknown>>,
+): boolean {
+  if (!activePreset || activePreset === "custom" || key === "preset") {
+    return false;
+  }
+  if (USER_WINS_AFTER_PRESET_KEY_SET.has(key)) {
+    return false;
+  }
+  const overrides = presetOverrides?.[String(activePreset)];
+  if (!overrides || !(key in overrides)) {
+    return false;
+  }
+  return !configValuesEqual(value, overrides[key]);
+}
+
 /** Apply a single field change; when preset changes, refresh overridden fields. */
 export function updateConfigValues(
   prev: Record<string, unknown>,
@@ -191,8 +213,7 @@ export function updateConfigValues(
   }
 
   const next = reconcileReplayConfigValues({ ...prev, [key]: value }, key);
-  const activePreset = prev.preset;
-  if (activePreset && activePreset !== "custom" && !configValuesEqual(value, prev[key])) {
+  if (shouldDemotePresetToCustom(key, value, prev.preset, presetOverrides)) {
     next.preset = "custom";
   }
   return next;

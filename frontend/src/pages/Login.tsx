@@ -4,18 +4,25 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 
 export function Login() {
-  const { isAuthenticated, loginWithToken } = useAuth();
+  const { isAuthenticated, loginWithToken, loginDev } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [error, setError] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
   const attempted = useRef(false);
 
+  // Where to land after login. Only allow internal paths to avoid open redirects.
+  const rawRedirect = searchParams.get("redirect");
+  const redirectTo =
+    rawRedirect && rawRedirect.startsWith("/") && !rawRedirect.startsWith("//")
+      ? rawRedirect
+      : "/";
+
   useEffect(() => {
     if (isAuthenticated) {
-      navigate("/", { replace: true });
+      navigate(redirectTo, { replace: true });
     }
-  }, [isAuthenticated, navigate]);
+  }, [isAuthenticated, navigate, redirectTo]);
 
   // Auto-login when ?token= is present in URL
   useEffect(() => {
@@ -24,13 +31,30 @@ export function Login() {
     attempted.current = true;
     setLoggingIn(true);
 
+    // Strip the one-time token from the URL so it does not linger in browser
+    // history or get leaked via the Referer header. The token is consumed via
+    // a POST below; the address bar should not keep it.
+    window.history.replaceState(null, "", window.location.pathname);
+
     loginWithToken(token)
-      .then(() => navigate("/", { replace: true }))
+      .then(() => navigate(redirectTo, { replace: true }))
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Login failed");
         setLoggingIn(false);
       });
-  }, [searchParams, loginWithToken, navigate]);
+  }, [searchParams, loginWithToken, navigate, redirectTo]);
+
+  const handleDevLogin = async () => {
+    setLoggingIn(true);
+    setError("");
+    try {
+      await loginDev();
+      navigate(redirectTo, { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Dev login failed");
+      setLoggingIn(false);
+    }
+  };
 
   return (
     <div className="flex h-screen items-center justify-center">
@@ -46,6 +70,15 @@ export function Login() {
             <p className="mb-6 text-sm text-[var(--color-text-muted)]">
               Run the <code className="rounded bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-xs">/web</code> command in your Telegram bot to get a login link.
             </p>
+            {import.meta.env.DEV && (
+              <button
+                type="button"
+                onClick={handleDevLogin}
+                className="w-full rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+              >
+                Dev login (admin)
+              </button>
+            )}
           </>
         )}
         {error && (

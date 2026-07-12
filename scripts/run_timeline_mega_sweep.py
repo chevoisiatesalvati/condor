@@ -9,8 +9,12 @@ import json
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
-    ENTRY_SLTP_SWEEP_VERSION,
+    ENTRY_SLTP_SWEEP_SAMPLE_MODES,
     SWEEP_GRID_CHOICES,
     default_min_configs_for_sweep_grid,
     sweep_space_size,
@@ -47,8 +51,14 @@ def _parse_args() -> argparse.Namespace:
     sweep.add_argument(
         "--sweep-grid",
         choices=SWEEP_GRID_CHOICES,
-        default="entry_sltp_v6",
-        help="Config grid: entry_sltp_v6 (adaptive+SL floors) or mega_v5 (full mega)",
+        default="entry_sltp",
+        help="Config grid: entry_sltp (adaptive+SL floors) or mega_v5 (full mega)",
+    )
+    sweep.add_argument(
+        "--sample-mode",
+        choices=ENTRY_SLTP_SWEEP_SAMPLE_MODES,
+        default="random",
+        help="entry_sltp sampling: random (default) or exhaustive grid walk",
     )
     sweep.add_argument(
         "--min-configs",
@@ -83,6 +93,16 @@ def _parse_args() -> argparse.Namespace:
         help="Parquet snapshot directory for timeline replay",
     )
     sweep.add_argument(
+        "--range-start",
+        default="",
+        help="Timeline start UTC (ISO, inclusive). Default: snapshot manifest range_start_utc",
+    )
+    sweep.add_argument(
+        "--range-end",
+        default="",
+        help="Timeline end UTC (ISO, inclusive). Default: snapshot manifest range_end_utc",
+    )
+    sweep.add_argument(
         "--checkpoint-every",
         type=int,
         default=DEFAULT_CHECKPOINT_EVERY,
@@ -97,8 +117,26 @@ def _parse_args() -> argparse.Namespace:
     sweep.add_argument(
         "--worker-ram-gb",
         type=float,
-        default=2.0,
-        help="Estimated RAM per worker for worker cap (default 2.0)",
+        default=3.0,
+        help="Estimated RAM per worker for worker cap (timeline sweeps: default 3.0)",
+    )
+    sweep.add_argument(
+        "--candle-prefetch-mode",
+        choices=("full", "lazy"),
+        default="full",
+        help="Candle preload: full (default) or lazy on-demand parquet loads",
+    )
+    sweep.add_argument(
+        "--chunk-days",
+        type=int,
+        default=0,
+        help="Split timeline replay into N-day chunks with state carry-over (0=disabled)",
+    )
+    sweep.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="Exit and auto-resume every N configs (0=run all remaining in one process)",
     )
     sweep.add_argument(
         "--start-index",
@@ -117,6 +155,27 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Ignore progress.json and start from config 0",
     )
+    sweep.add_argument(
+        "--auto-promote",
+        action="store_true",
+        help="On new cap-norm leader (after first positive anchor): preset + backtest + TG + refine",
+    )
+    sweep.add_argument(
+        "--telegram-chat-id",
+        default="",
+        help="Telegram chat id for promote notifications (default: ADMIN_USER_ID env)",
+    )
+    sweep.add_argument(
+        "--refine-workers",
+        type=int,
+        default=2,
+        help="Workers for auto-spawned refine subprocess (default 2)",
+    )
+    sweep.add_argument(
+        "--no-refine",
+        action="store_true",
+        help="With --auto-promote: preset + backtest + TG only, skip refine subprocess",
+    )
 
     sweep_all = sub.add_parser(
         "sweep-all",
@@ -126,7 +185,7 @@ def _parse_args() -> argparse.Namespace:
     sweep_all.add_argument(
         "--sweep-grid",
         choices=SWEEP_GRID_CHOICES,
-        default="entry_sltp_v6",
+        default="entry_sltp",
     )
     sweep_all.add_argument("--min-configs", type=int, default=0)
     sweep_all.add_argument("--seed", type=int, default=42)
@@ -224,11 +283,15 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
         end = manifest["range_end_utc"]
     else:
         start, end = timeline_range_from_reports()
-    grid_tag = (
-        ENTRY_SLTP_SWEEP_VERSION
-        if args.sweep_grid == "entry_sltp_v6"
-        else args.sweep_grid
-    )
+    if getattr(args, "range_start", ""):
+        start = args.range_start
+    if getattr(args, "range_end", ""):
+        end = args.range_end
+    if bool(getattr(args, "range_start", "")) != bool(getattr(args, "range_end", "")):
+        raise ValueError("Provide both --range-start and --range-end, or neither")
+    if start and end and start >= end:
+        raise ValueError(f"Invalid sweep range: {start} must be before {end}")
+    grid_tag = args.sweep_grid
     output_stem = (
         args.output_stem
         or f"macdbb_scanner_aggressive_hl_backtest_{args.dynamic_mode}_{grid_tag}_timeline"
@@ -258,33 +321,65 @@ async def _run_sweep(args: argparse.Namespace) -> Path:
             )
     print(
         f"Timeline sweep grid={args.sweep_grid} mode={args.dynamic_mode} | "
+        f"sample_mode={getattr(args, 'sample_mode', 'random')} | "
         f"space~{sweep_space_size(args.sweep_grid, args.dynamic_mode):,} | "
         f"min_configs={min_configs} | range {start} -> {end} | snapshots={args.snapshot_dir}"
     )
     print(f"Checkpoint CSV (every {args.checkpoint_every} configs): {checkpoint_path}")
     if start_index:
         print(f"Resuming from config index {start_index} with {args.workers} worker(s)")
-    results, _baseline, _benchmark, range_start, range_end = await run_timeline_dynamic_sweep(
-        dynamic_mode=args.dynamic_mode,
-        output_dir=args.output_dir,
-        min_configs=min_configs,
-        seed=args.seed,
-        output_stem=output_stem,
-        frequency_sec=args.frequency_sec,
-        time_window_min=args.time_window_min,
-        range_start_utc=start,
-        range_end_utc=end,
-        snapshot_dir=str(args.snapshot_dir),
-        top_n=args.top,
-        progress_path=progress_path,
-        parent_overrides=parent_overrides,
-        checkpoint_every=args.checkpoint_every,
-        workers=args.workers,
-        worker_ram_gb=args.worker_ram_gb,
-        sweep_grid=args.sweep_grid,
-        start_index=start_index,
-        resume_results=resume_results,
-    )
+    batch_size = int(getattr(args, "batch_size", 0) or 0)
+    while True:
+        batch_limit = batch_size if batch_size > 0 else None
+        results, _baseline, _benchmark, range_start, range_end = await run_timeline_dynamic_sweep(
+            dynamic_mode=args.dynamic_mode,
+            output_dir=args.output_dir,
+            min_configs=min_configs,
+            seed=args.seed,
+            output_stem=output_stem,
+            frequency_sec=args.frequency_sec,
+            time_window_min=args.time_window_min,
+            range_start_utc=start,
+            range_end_utc=end,
+            snapshot_dir=str(args.snapshot_dir),
+            top_n=args.top,
+            progress_path=progress_path,
+            parent_overrides=parent_overrides,
+            checkpoint_every=args.checkpoint_every,
+            workers=args.workers,
+            worker_ram_gb=args.worker_ram_gb,
+            sweep_grid=args.sweep_grid,
+            sample_mode=getattr(args, "sample_mode", "random"),
+            start_index=start_index,
+            resume_results=resume_results,
+            auto_promote=getattr(args, "auto_promote", False),
+            telegram_chat_id=args.telegram_chat_id or None,
+            run_refine=not getattr(args, "no_refine", False),
+            refine_workers=getattr(args, "refine_workers", 2),
+            automation_state_path=args.output_dir / f"{output_stem}.automation.json",
+            repo_root=Path(__file__).resolve().parent.parent,
+            candle_prefetch_mode=getattr(args, "candle_prefetch_mode", "full"),
+            chunk_days=getattr(args, "chunk_days", 0),
+            max_configs=batch_limit,
+        )
+        if batch_size <= 0:
+            break
+        if not progress_path.is_file():
+            break
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        if progress.get("status") == "completed":
+            break
+        next_index = int(progress.get("config_index") or 0)
+        if next_index <= start_index or next_index >= min_configs:
+            break
+        start_index = next_index
+        if checkpoint_path.is_file():
+            from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+                load_sweep_results_from_csv,
+            )
+
+            resume_results = load_sweep_results_from_csv(checkpoint_path)
+        print(f"Batch complete — continuing from config index {start_index}")
     csv_path = args.output_dir / f"{output_stem}.csv"
     if results:
         winner = results[0]

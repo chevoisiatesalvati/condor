@@ -44,6 +44,10 @@ export const NO_SENTIMENT_COLUMNS = new Set([
   "hold",
   "created",
   "volume $",
+  "entry time",
+  "exit time",
+  "entry price",
+  "exit price",
 ]);
 
 /** Parse numeric strings like $+189.90, -12.5%, or +3.2. */

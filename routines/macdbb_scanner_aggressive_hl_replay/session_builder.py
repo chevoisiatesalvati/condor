@@ -13,7 +13,6 @@ from routines.macdbb_scanner_aggressive_hl_replay.hydrated_ticks_cache import (
 from routines.macdbb_scanner_aggressive_hl_replay.journal import parse_journal_ticks
 from routines.macdbb_scanner_aggressive_hl_replay.metrics import compute_metrics
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig, TickMeta
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
 from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ReportMeta,
     ScannerReportMeta,
@@ -51,12 +50,10 @@ def _default_strategy_params(config: DynamicStrategyReplayConfig) -> dict[str, A
 
 def load_timeline_strategy_params(config: DynamicStrategyReplayConfig) -> dict[str, Any]:
     """Strategy params for timeline tick hydration (scanner queue sizing)."""
-    from condor.trading_agent.strategy_paths import resolve_agent_md
+    from condor.trading_agent.strategy_paths import resolve_agent_md_for_read
 
     params = _default_strategy_params(config)
-    agent_path = resolve_agent_md(config.strategy_slug) or (
-        TRADING_AGENTS_DIR / config.strategy_slug / "agent.md"
-    )
+    agent_path = resolve_agent_md_for_read(config.strategy_slug)
     if not agent_path.is_file():
         return params
     try:

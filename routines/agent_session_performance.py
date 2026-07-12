@@ -23,7 +23,7 @@ from routines.base import RoutineResult
 
 logger = logging.getLogger(__name__)
 
-_DATA_ROOT = Path(__file__).resolve().parent.parent / "trading_agents"
+_DATA_ROOT = Path(__file__).resolve().parent.parent / "agents"
 _TICK_RE = re.compile(
     r"tick#1\s*\|\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})",
     re.IGNORECASE,
@@ -36,7 +36,7 @@ class Config(BaseModel):
 
     strategy_slug: str = Field(
         default="macdbb_scanner_aggressive",
-        description="Strategy folder name under trading_agents/",
+        description="Strategy folder name under agents/<slug>/strategies/",
     )
     session_num: int | None = Field(
         default=None,
@@ -233,7 +233,7 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str | Routi
     if not client:
         return "No server available. Configure servers in /config."
 
-    agent_dir = _DATA_ROOT / config.strategy_slug
+    agent_dir = _DATA_ROOT / config.strategy_slug / "strategies" / config.strategy_slug
     if not agent_dir.is_dir():
         return f"Strategy not found: {config.strategy_slug}"
 

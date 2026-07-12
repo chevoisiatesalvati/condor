@@ -1,4 +1,4 @@
-"""Replay/backtest library for trading_agents/macdbb_scanner_aggressive_hl."""
+"""Replay/backtest library for agents/macdbb_scanner_aggressive_hl."""
 
 from routines.macdbb_scanner_aggressive_hl_replay.models import (
     AdaptiveReplayConfig,

@@ -6,7 +6,7 @@ from typing import Any
 
 from routines.macdbb_scanner_aggressive_hl_replay.journal import parse_journal_ticks
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig, parse_session_selector
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.replay_data import is_report_driven_data_source
 from routines.macdbb_scanner_aggressive_hl_replay.session_builder import (
     build_session_parity_ticks,
@@ -25,8 +25,7 @@ def load_replay_sessions(
             return {}, {}, []
         return {0: tick_map}, {0: config}, [0]
 
-    strategy_dir = TRADING_AGENTS_DIR / config.strategy_slug
-    sessions_dir = strategy_dir / "sessions"
+    sessions_dir = strategy_sessions_dir(config.strategy_slug)
     selected = parse_session_selector(config.session_nums, sessions_dir)
 
     tick_maps: dict[int, dict[int, Any]] = {}

@@ -23,6 +23,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNS_DIR = REPO_ROOT / "data" / "routine_runs"
 DEFAULT_WORKER_RAM_GB = 3.0
 STOP_GRACE_SEC = 5.0
+LOG_TAIL_LINES = 40
+
+
+def _tail_log_file(log_path: Path, *, max_lines: int = LOG_TAIL_LINES) -> str:
+    if not log_path.is_file():
+        return ""
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    if not lines:
+        return ""
+    tail = lines[-max_lines:]
+    return "\n".join(tail)
 
 CompletionCallback = Callable[["RoutineRunOutcome"], Awaitable[None]]
 
@@ -157,6 +171,13 @@ class RoutineWorkerPool:
                 self._stopped_ids.discard(job.instance_id)
             self._queue.append((job, future))
             self._queued_ids.append(job.instance_id)
+        logger.info(
+            "Routine queued: %s[%s] server=%s queue_depth=%d",
+            job.routine_name,
+            job.instance_id,
+            job.server_name,
+            len(self._queued_ids),
+        )
         return future
 
     async def run_job(self, job: RoutineJob) -> RoutineRunOutcome:
@@ -252,6 +273,13 @@ class RoutineWorkerPool:
         env = os.environ.copy()
         env.setdefault("PYTHONPATH", str(REPO_ROOT))
 
+        logger.info(
+            "Routine worker starting: %s[%s] pid=pending log=%s",
+            job.routine_name,
+            job.instance_id,
+            log_path,
+        )
+
         log_file = log_path.open("w", encoding="utf-8")
         try:
             process = await asyncio.create_subprocess_exec(
@@ -264,6 +292,12 @@ class RoutineWorkerPool:
         except Exception as exc:
             log_file.close()
             self._semaphore.release()
+            logger.error(
+                "Routine worker spawn failed: %s[%s]: %s",
+                job.routine_name,
+                job.instance_id,
+                exc,
+            )
             if not future.done():
                 future.set_result(
                     RoutineRunOutcome(
@@ -276,6 +310,14 @@ class RoutineWorkerPool:
                     )
                 )
             return
+
+        logger.info(
+            "Routine worker started: %s[%s] pid=%s log=%s",
+            job.routine_name,
+            job.instance_id,
+            process.pid,
+            log_path,
+        )
 
         self._active[job.instance_id] = _ActiveRun(
             job=job,
@@ -298,6 +340,46 @@ class RoutineWorkerPool:
             self._stopped_ids.discard(job.instance_id)
 
         outcome = self._build_outcome(job, result_path, returncode, stopped=stopped)
+        if outcome.ok:
+            if outcome.report_id:
+                logger.info(
+                    "Routine finished: %s[%s] ok=true duration=%.1fs report_id=%s exit=%s",
+                    job.routine_name,
+                    job.instance_id,
+                    outcome.duration_sec,
+                    outcome.report_id,
+                    returncode,
+                )
+            else:
+                logger.warning(
+                    "Routine finished: %s[%s] ok=true but no report_id duration=%.1fs exit=%s result=%s log=%s",
+                    job.routine_name,
+                    job.instance_id,
+                    outcome.duration_sec,
+                    returncode,
+                    (outcome.result.text[:160] + "…")
+                    if len(outcome.result.text) > 160
+                    else outcome.result.text,
+                    log_path,
+                )
+        elif outcome.stopped:
+            logger.info(
+                "Routine stopped: %s[%s] exit=%s",
+                job.routine_name,
+                job.instance_id,
+                returncode,
+            )
+        else:
+            log_tail = _tail_log_file(log_path)
+            logger.error(
+                "Routine failed: %s[%s] exit=%s error=%s log=%s\n--- worker log tail ---\n%s",
+                job.routine_name,
+                job.instance_id,
+                returncode,
+                outcome.error or "unknown",
+                log_path,
+                log_tail or "(empty)",
+            )
         if not future.done():
             future.set_result(outcome)
 

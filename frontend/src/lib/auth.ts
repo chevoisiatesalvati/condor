@@ -6,6 +6,8 @@ import {
   useState,
 } from "react";
 
+import { TOKEN_KEY, authHeaders } from "./auth-token";
+
 export interface User {
   id: number;
   username: string;
@@ -18,10 +20,10 @@ export interface AuthState {
   token: string | null;
   isAuthenticated: boolean;
   loginWithToken: (loginToken: string) => Promise<void>;
+  loginDev: () => Promise<void>;
   logout: () => void;
 }
 
-const TOKEN_KEY = "condor_token";
 const USER_KEY = "condor_user";
 
 export const AuthContext = createContext<AuthState>({
@@ -29,6 +31,7 @@ export const AuthContext = createContext<AuthState>({
   token: null,
   isAuthenticated: false,
   loginWithToken: async () => {},
+  loginDev: async () => {},
   logout: () => {},
 });
 
@@ -62,6 +65,19 @@ export function useAuthState(): AuthState {
     setUser(data.user);
   }, []);
 
+  const loginDev = useCallback(async () => {
+    const res = await fetch("/api/v1/auth/dev-login", { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Dev login failed");
+    }
+    const data = await res.json();
+    localStorage.setItem(TOKEN_KEY, data.token);
+    localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+    setToken(data.token);
+    setUser(data.user);
+  }, []);
+
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
@@ -73,7 +89,7 @@ export function useAuthState(): AuthState {
   useEffect(() => {
     if (!token) return;
     fetch("/api/v1/auth/me", {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: authHeaders(),
     }).then((res) => {
       if (!res.ok) {
         logout();
@@ -88,6 +104,7 @@ export function useAuthState(): AuthState {
     token,
     isAuthenticated: !!token && !!user,
     loginWithToken,
+    loginDev,
     logout,
   };
 }

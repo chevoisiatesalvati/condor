@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
 import re
@@ -23,15 +24,16 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     _print_table,
     _write_sweep_csv,
     finalize_sweep_config,
+    prepare_shared_candle_stores,
     resolve_sweep_config_iterator,
     resolve_sweep_workers,
     run_sweep_config_batch,
+    sweep_base_config,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import warm_snapshot_caches
 from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
 from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     _DRIVER_TIMELINE,
     _DYNAMIC_PRESET_INFRA,
@@ -186,11 +188,24 @@ async def run_timeline_dynamic_sweep(
     parent_overrides: dict[str, Any] | None = None,
     config_items: list[tuple[str, dict[str, Any]]] | None = None,
     sweep_grid: str = "mega_v5",
+    sample_mode: str = "random",
     workers: int = 1,
     worker_ram_gb: float = 2.0,
     allow_non_fork: bool = False,
     start_index: int = 0,
     resume_results: list[SweepResult] | None = None,
+    auto_promote: bool = False,
+    telegram_chat_id: str | None = None,
+    run_refine: bool = True,
+    refine_workers: int = 2,
+    automation_state_path: Path | None = None,
+    repo_root: Path | None = None,
+    use_shared_candle_store: bool = True,
+    candle_prefetch_mode: str = "full",
+    snapshot_range_start_utc: str | None = None,
+    snapshot_range_end_utc: str | None = None,
+    chunk_days: int = 0,
+    max_configs: int | None = None,
 ) -> tuple[list[SweepResult], str, float, str, str]:
     timeline_fields = timeline_sweep_overrides(
         range_start_utc=range_start_utc,
@@ -203,8 +218,13 @@ async def run_timeline_dynamic_sweep(
     load_config = DynamicStrategyReplayConfig(
         **finalize_sweep_config(
             _merge(
-                _dynamic_sweep_base(dynamic_mode, parent_overrides=parent_overrides),
+                sweep_base_config(
+                    sweep_grid,
+                    dynamic_mode,
+                    parent_overrides=parent_overrides,
+                ),
                 **timeline_fields,
+                candle_prefetch_mode=candle_prefetch_mode,
             ),
             sweep_grid=sweep_grid,
         )
@@ -214,7 +234,11 @@ async def run_timeline_dynamic_sweep(
     )
 
     configure_replay_data_sources(load_config)
-    warm_snapshot_caches(snapshot_dir)
+    warm_snapshot_caches(
+        snapshot_dir,
+        range_start_utc=snapshot_range_start_utc or timeline_fields.get("range_start_utc"),
+        range_end_utc=snapshot_range_end_utc or timeline_fields.get("range_end_utc"),
+    )
     (
         parsed_sessions,
         hl_caches,
@@ -226,9 +250,53 @@ async def run_timeline_dynamic_sweep(
     tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
     reports_by_pair = build_reports_by_pair(load_reports_index())
 
+    hl_candle_store = None
+    hl_barrier_candle_store = None
+    hl_vol_candle_store = None
+    if candle_prefetch_mode == "lazy":
+        from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import prepare_lazy_candle_stores
+
+        (
+            hl_candle_cache,
+            hl_barrier_candle_cache,
+            hl_vol_candle_cache,
+            hl_candle_store,
+            hl_barrier_candle_store,
+            hl_vol_candle_store,
+        ) = prepare_lazy_candle_stores(
+            range_start_utc=str(timeline_fields["range_start_utc"]),
+            range_end_utc=str(timeline_fields["range_end_utc"]),
+            config=load_config,
+        )
+        print("Lazy candle stores enabled (on-demand parquet loads)", flush=True)
+    elif use_shared_candle_store and workers > 1:
+        (
+            hl_candle_cache,
+            hl_barrier_candle_cache,
+            hl_vol_candle_cache,
+            hl_candle_store,
+            hl_barrier_candle_store,
+            hl_vol_candle_store,
+        ) = prepare_shared_candle_stores(
+            hl_candle_cache,
+            hl_barrier_candle_cache,
+            hl_vol_candle_cache,
+            enabled=True,
+        )
+        print(
+            f"Shared candle stores: price={len(hl_candle_store or [])} "
+            f"barrier={len(hl_barrier_candle_store or [])} "
+            f"vol={len(hl_vol_candle_store or [])}",
+            flush=True,
+        )
+
     stem = (
         output_stem
-        or f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline"
+        or (
+            f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_entry_sltp_timeline"
+            if sweep_grid in ("entry_sltp", "entry_sltp_v6")
+            else f"macdbb_scanner_aggressive_hl_backtest_{dynamic_mode}_mega_timeline"
+        )
     )
     baseline = f"dyn_{dynamic_mode}_timeline_baseline_winner"
     benchmark_avg_notional = FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
@@ -249,6 +317,7 @@ async def run_timeline_dynamic_sweep(
                 dynamic_mode,
                 min_configs=min_configs,
                 seed=seed,
+                sample_mode=sample_mode,
                 parent_overrides=parent_overrides,
             )
         )
@@ -286,6 +355,9 @@ async def run_timeline_dynamic_sweep(
             f"Resuming sweep from config {start_index + 1}/{full_config_total} "
             f"({len(merged_items)} remaining)"
         )
+    if max_configs is not None and max_configs > 0:
+        merged_items = merged_items[:max_configs]
+        print(f"Batch limit: running {len(merged_items)} config(s) this invocation")
     config_total = full_config_total
     remaining_total = len(merged_items)
     sweep_started = time.monotonic()
@@ -298,6 +370,46 @@ async def run_timeline_dynamic_sweep(
     results: list[SweepResult] = list(resume_results or [])
     if results:
         print(f"Loaded {len(results)} prior sweep result(s) from checkpoint")
+
+    promote_queue = None
+    leader_tracker = None
+    if auto_promote:
+        from routines.macdbb_scanner_aggressive_hl_replay.sweep_automation import (
+            LeaderTracker,
+            PromoteAutomationConfig,
+            PromoteQueue,
+            default_telegram_chat_id,
+        )
+
+        resolved_output_dir = output_dir or Path("data/strategy_replay_sweeps")
+        state_path = automation_state_path or (resolved_output_dir / f"{stem}.automation.json")
+        leader_tracker = LeaderTracker(state_path)
+        promote_queue = PromoteQueue(
+            leader_tracker,
+            PromoteAutomationConfig(
+                enabled=True,
+                telegram_chat_id=telegram_chat_id or default_telegram_chat_id(),
+                run_refine=run_refine,
+                refine_workers=refine_workers,
+                dynamic_mode=dynamic_mode,
+                sweep_grid=sweep_grid,
+                frequency_sec=frequency_sec,
+                time_window_min=time_window_min,
+                range_start_utc=str(timeline_fields.get("range_start_utc") or ""),
+                range_end_utc=str(timeline_fields.get("range_end_utc") or ""),
+                snapshot_dir=str(snapshot_dir or ""),
+                candle_prefetch_mode=candle_prefetch_mode,
+                output_dir=resolved_output_dir,
+                automation_state_path=state_path,
+                repo_root=repo_root or Path(".").resolve(),
+            ),
+        )
+        promote_queue.start()
+        print(
+            f"Auto-promote enabled | state={state_path} | "
+            f"telegram={'yes' if (telegram_chat_id or default_telegram_chat_id()) else 'no'} | "
+            f"refine={'yes' if run_refine else 'no'}"
+        )
 
     def _record_progress(done: int, result: SweepResult) -> None:
         result.snapshot_dir = snap_label
@@ -362,23 +474,37 @@ async def run_timeline_dynamic_sweep(
         hl_candle_cache=hl_candle_cache,
         hl_barrier_candle_cache=hl_barrier_candle_cache,
         hl_vol_candle_cache=hl_vol_candle_cache,
+        hl_candle_store=hl_candle_store,
+        hl_barrier_candle_store=hl_barrier_candle_store,
+        hl_vol_candle_store=hl_vol_candle_store,
         reports_by_pair=reports_by_pair,
         parent_overrides=parent_overrides,
         benchmark_avg_notional=benchmark_avg_notional,
+        chunk_days=chunk_days,
     )
 
     def _on_batch_result(local_done: int, result: SweepResult) -> None:
         results.append(result)
+        if promote_queue is not None and leader_tracker is not None:
+            job = leader_tracker.consider(result)
+            promote_queue.submit(job)
         _record_progress(start_index + local_done, result)
 
-    run_sweep_config_batch(
-        merged_items,
-        sweep_ctx,
-        workers=workers,
-        worker_ram_gb=worker_ram_gb,
-        allow_non_fork=allow_non_fork,
-        on_result=_on_batch_result,
-    )
+    try:
+        await asyncio.to_thread(
+            run_sweep_config_batch,
+            merged_items,
+            sweep_ctx,
+            workers=workers,
+            worker_ram_gb=worker_ram_gb,
+            allow_non_fork=allow_non_fork,
+            on_result=_on_batch_result,
+        )
+    finally:
+        sweep_ctx.close_shared_stores()
+
+    if promote_queue is not None:
+        await promote_queue.shutdown()
 
     results.sort(key=lambda row: row.capital_normalized_pnl, reverse=True)
 

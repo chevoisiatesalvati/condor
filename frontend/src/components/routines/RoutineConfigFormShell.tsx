@@ -15,11 +15,17 @@ export function RoutineConfigFormShell({
   values,
   onChange,
 }: Props) {
-  if (groups && groups.length > 0) {
+  const useGrouped =
+    !!groups?.length &&
+    Object.values(fields).some(
+      (field) => !!field.group && groups.includes(field.group),
+    );
+
+  if (useGrouped) {
     return (
       <GroupedRoutineConfigForm
         fields={fields}
-        groups={groups}
+        groups={groups!}
         values={values}
         onChange={onChange}
       />

@@ -6,10 +6,9 @@ import type { RoutineFieldInfo } from "@/lib/api";
 import { api } from "@/lib/api";
 import { useServer } from "@/hooks/useServer";
 import {
-  addDaysToDateInput,
   dateInputToIso,
   isoToDateInput,
-  todayDateInput,
+  lastDaysRangeIso,
 } from "@/lib/replayDateUtils";
 import { RoutineFieldInput } from "@/components/routines/RoutineFieldInput";
 
@@ -81,18 +80,14 @@ function TimelineDateRangePicker({
     applyRange(snapshotRange?.start ?? null, snapshotRange?.end ?? null);
   };
 
-  const applyLastDays = (days: number, endIso?: string | null) => {
-    const end = endIso ? isoToDateInput(endIso) : todayDateInput();
-    const start = addDaysToDateInput(end, -days);
-    onChange("range_start_utc", dateInputToIso(start, false));
-    onChange("range_end_utc", endIso ?? dateInputToIso(end, true));
+  const applyLastDays = (days: number) => {
+    const range = lastDaysRangeIso(days);
+    onChange("range_start_utc", range.start);
+    onChange("range_end_utc", range.end);
   };
 
   const applyLastYears = (years: number) => {
-    const anchorEnd = usesSnapshots
-      ? snapshotRange?.end
-      : reportRange?.end;
-    applyLastDays(years * 365, anchorEnd);
+    applyLastDays(years * 365);
   };
 
   return (
@@ -120,6 +115,11 @@ function TimelineDateRangePicker({
           className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm focus:border-[var(--color-primary)] focus:outline-none"
         />
       </div>
+      {usesSnapshots && snapshotRange?.start && snapshotRange?.end && (
+        <p className="text-xs text-[var(--color-text-muted)]">
+          Snapshots cover {isoToDateInput(snapshotRange.start)} → {isoToDateInput(snapshotRange.end)}
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         {usesSnapshots ? (
           <button

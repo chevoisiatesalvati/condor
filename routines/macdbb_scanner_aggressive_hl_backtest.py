@@ -1,4 +1,4 @@
-"""Backtest simulator for trading_agents/macdbb_scanner_aggressive_hl (dynamic sizing + barriers)."""
+"""Backtest simulator for agents/macdbb_scanner_aggressive_hl (dynamic sizing + barriers)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.models import (
     write_csv,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay import presets
 from routines.macdbb_scanner_aggressive_hl_replay.presets import (
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
@@ -34,7 +34,23 @@ from routines.macdbb_scanner_aggressive_hl_replay.presets import (
 from routines.macdbb_scanner_aggressive_hl_replay.replay_data import (
     configure_replay_data_sources,
     is_report_driven_data_source,
+    refresh_snapshot_caches,
     should_prefetch_replay_candles,
+    uses_snapshot_store,
+)
+from routines.macdbb_scanner_aggressive_hl_replay.replay_range import (
+    requested_range_exceeds_coverage,
+    snapshot_coverage,
+)
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_build import (
+    build_snapshots_for_range,
+    settings_from_replay_config,
+)
+from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
+    MACDBB_FILENAME,
+    is_snapshot_store_active,
+    load_scanner_index,
+    snapshot_dir_or_default,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.reports import build_reports_by_pair, load_reports_index
 from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
@@ -110,6 +126,8 @@ TRADE_COLUMNS = [
     "sl_pct_used",
     "tp_pct_used",
     "volatility_proxy_pct",
+    "entry_time_utc",
+    "exit_time_utc",
     "entry_tick",
     "exit_tick",
     "hold_ticks",
@@ -137,6 +155,12 @@ def _trade_rows(trades: list[Any]) -> list[dict[str, Any]]:
             "sl_pct_used": round(trade.sl_pct_used, 3),
             "tp_pct_used": round(trade.tp_pct_used, 3),
             "volatility_proxy_pct": round(trade.volatility_proxy_pct, 4),
+            "entry_time_utc": (
+                trade.entry_time_utc.isoformat() if trade.entry_time_utc else ""
+            ),
+            "exit_time_utc": (
+                trade.exit_time_utc.isoformat() if trade.exit_time_utc else ""
+            ),
             "entry_tick": trade.entry_tick,
             "exit_tick": trade.exit_tick,
             "hold_ticks": trade.hold_ticks,
@@ -203,6 +227,105 @@ _REPLAY_MODE_LABELS = {
 }
 
 
+def _manual_snapshot_build_command(config: Config, gap_start: str, gap_end: str) -> str:
+    snapshot_dir = config.snapshot_dir or "data/replay_snapshots"
+    return (
+        "PYTHONPATH=. .venv/bin/python scripts/build_replay_snapshots.py "
+        f"--range-start {gap_start} --range-end {gap_end} "
+        f"--snapshot-dir {snapshot_dir} --candle-source {config.candle_source} "
+        f"--frequency-sec {config.frequency_sec}"
+    )
+
+
+def _snapshot_gap_error_message(config: Config, gap, *, capped: bool) -> str:
+    coverage = snapshot_coverage(config.snapshot_dir)
+    lines = [
+        "Requested timeline range extends past available snapshot coverage.",
+        f"  Snapshot coverage ends: {coverage.end_utc or 'unknown'}",
+        f"  Requested range: {config.range_start_utc} → {config.range_end_utc}",
+        f"  Missing sub-range: {gap.gap_start_utc} → {gap.gap_end_utc} ({gap.gap_days:.1f} days)",
+    ]
+    if capped:
+        lines.append(
+            f"  Auto-update cap: {config.max_auto_snapshot_days} days "
+            "(increase max_auto_snapshot_days or build manually)"
+        )
+    else:
+        lines.append("  Auto-update is disabled (set auto_update_snapshots=true).")
+    lines.append(f"Manual build:\n{_manual_snapshot_build_command(config, gap.gap_start_utc, gap.gap_end_utc)}")
+    return "\n".join(lines)
+
+
+async def _ensure_snapshot_coverage(config: Config) -> str | None:
+    if config.replay_mode != "timeline_backtest" or config.data_source != "snapshots":
+        return None
+    gap = requested_range_exceeds_coverage(config)
+    if gap is None:
+        return None
+    if not config.auto_update_snapshots:
+        return _snapshot_gap_error_message(config, gap, capped=False)
+    if gap.gap_days > config.max_auto_snapshot_days:
+        logger.warning(
+            "Snapshot auto-update skipped: build span %.1f days exceeds cap %d "
+            "(requested %s → %s, coverage ends %s)",
+            gap.gap_days,
+            config.max_auto_snapshot_days,
+            config.range_start_utc,
+            config.range_end_utc,
+            gap.coverage_end_utc or "unknown",
+        )
+        return _snapshot_gap_error_message(config, gap, capped=True)
+
+    logger.info(
+        "Snapshot auto-update: building %s → %s (%.1f days, coverage ended %s)…",
+        gap.gap_start_utc,
+        gap.gap_end_utc,
+        gap.gap_days,
+        gap.coverage_end_utc or "unknown",
+    )
+    settings = settings_from_replay_config(config)
+    result = await build_snapshots_for_range(
+        gap.gap_start_utc,
+        gap.gap_end_utc,
+        settings,
+        install_signal_handlers=False,
+    )
+    refresh_snapshot_caches(config)
+    logger.info(
+        "Snapshot auto-update complete: built=%d skipped=%d errors=%d",
+        result.built,
+        result.skipped,
+        result.errors,
+    )
+    if result.errors > 0 and result.built == 0:
+        return (
+            f"Snapshot auto-update failed ({result.errors} errors). "
+            f"Try building manually:\n"
+            f"{_manual_snapshot_build_command(config, gap.gap_start_utc, gap.gap_end_utc)}"
+        )
+    return None
+
+
+def _timeline_hydration_empty_warning(config: Config, parsed_sessions: dict) -> str | None:
+    if config.replay_mode != "timeline_backtest" or config.data_source != "snapshots":
+        return None
+    tick_map = parsed_sessions.get(0) or {}
+    if not tick_map:
+        return None
+    tradeable_ticks = sum(
+        1 for meta in tick_map.values() if (getattr(meta, "tradeable_count", 0) or 0) > 0
+    )
+    if tradeable_ticks > 0:
+        return None
+    coverage = snapshot_coverage(config.snapshot_dir)
+    return (
+        "Timeline replay produced ticks but no tradeable scanner snapshots matched. "
+        f"Snapshot coverage ends {coverage.end_utc or 'unknown'}; "
+        f"requested {config.range_start_utc} → {config.range_end_utc}. "
+        "Auto-update may have failed, been capped, or candle data is missing."
+    )
+
+
 def _backtest_report_title(config: Config) -> str:
     if config.report_label:
         return config.report_label
@@ -212,13 +335,37 @@ def _backtest_report_title(config: Config) -> str:
     return "MACDBB Backtest"
 
 
+async def _early_exit(message: str, config: Config) -> RoutineResult:
+    logger.warning("Backtest exiting early: %s", message.split("\n", 1)[0])
+    try:
+        from condor.reports import ReportBuilder
+
+        builder = ReportBuilder(f"{_backtest_report_title(config)} — did not run")
+        builder.source("routine", "macdbb_scanner_aggressive_hl_backtest")
+        preset_label = PRESET_LABELS.get(config.preset, config.preset)
+        builder.meta("Preset", preset_label)
+        builder.meta(
+            "Mode",
+            _REPLAY_MODE_LABELS.get(config.replay_mode, config.replay_mode),
+        )
+        builder.kpi("Status", "Did not run", trend="negative")
+        builder.markdown(message)
+        builder.params(config.model_dump())
+        await builder.save()
+    except Exception as exc:
+        logger.warning("Failed to save early-exit report: %s", exc)
+    return RoutineResult(text=message)
+
+
 async def run(
     config: Config, context: ContextTypes.DEFAULT_TYPE
-) -> str | RoutineResult:
+) -> RoutineResult:
     config = resolve_config_with_preset(config)
     configure_replay_data_sources(config)
-    strategy_dir = TRADING_AGENTS_DIR / config.strategy_slug
-    sessions_dir = strategy_dir / "sessions"
+    coverage_error = await _ensure_snapshot_coverage(config)
+    if coverage_error:
+        return await _early_exit(coverage_error, config)
+    sessions_dir = strategy_sessions_dir(config.strategy_slug)
 
     logger.info(
         "Dynamic replay: mode=%s data_source=%s preset=%s",
@@ -229,21 +376,26 @@ async def run(
 
     if config.replay_mode == "timeline_backtest":
         if not config.range_start_utc or not config.range_end_utc:
-            return (
+            return await _early_exit(
                 "timeline_backtest requires range_start_utc and range_end_utc "
-                "(ISO UTC datetimes). Leave empty to use full scanner report span."
+                "(ISO UTC datetimes). Leave empty to use full scanner report span.",
+                config,
             )
     elif not sessions_dir.is_dir():
-        return f"Sessions directory not found: {sessions_dir}"
+        return await _early_exit(f"Sessions directory not found: {sessions_dir}", config)
 
     parsed_sessions, session_configs, selected_sessions = load_replay_sessions(config)
+    hydration_warning = _timeline_hydration_empty_warning(config, parsed_sessions)
+    if hydration_warning:
+        return await _early_exit(hydration_warning, config)
     if not selected_sessions:
         if config.replay_mode == "timeline_backtest":
-            return (
+            return await _early_exit(
                 "Timeline backtest produced no ticks for the selected range. "
-                "Check range_start_utc / range_end_utc and frequency_sec."
+                "Check range_start_utc / range_end_utc and frequency_sec.",
+                config,
             )
-        return "No sessions matched the requested selector."
+        return await _early_exit("No sessions matched the requested selector.", config)
 
     tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
     logger.info(
@@ -254,9 +406,26 @@ async def run(
         config.range_end_utc or "?",
     )
 
+    if uses_snapshot_store(config):
+        refresh_snapshot_caches(config)
+
     reports = load_reports_index()
     if not reports and is_report_driven_data_source(config.data_source):
-        return "No macd_bb_analysis reports or snapshots found for replay."
+        if uses_snapshot_store(config):
+            root = snapshot_dir_or_default(config.snapshot_dir)
+            scanner_count = len(load_scanner_index(snapshot_dir=root))
+            macdbb_path = root / MACDBB_FILENAME
+            return await _early_exit(
+                "No MACD BB snapshot index found after auto-update. "
+                f"Snapshot dir: {root} (active={is_snapshot_store_active()}, "
+                f"scanner_ticks={scanner_count}, macdbb_parquet={macdbb_path.is_file()}). "
+                "The build may have produced scanner rows only; check worker logs for skipped ticks.",
+                config,
+            )
+        return await _early_exit(
+            "No macd_bb_analysis reports or snapshots found for replay.",
+            config,
+        )
     reports_by_pair = build_reports_by_pair(reports)
 
     all_pair_rows: list[dict[str, Any]] = []
@@ -384,16 +553,17 @@ async def run(
             )
 
     if not session_rollup_rows:
-        return "No session data could be replayed."
+        return await _early_exit("No session data could be replayed.", config)
 
     simulated_sessions = [
         row["Session"] for row in session_rollup_rows if row.get("Status") == "ok"
     ]
     if not simulated_sessions and skipped_sessions:
-        return (
+        return await _early_exit(
             f"No sessions had trusted prices (price_source={config.price_source}). "
             f"Skipped: {', '.join(str(value) for value in skipped_sessions)}. "
-            "Set require_price_data=false to replay signals without PnL."
+            "Set require_price_data=false to replay signals without PnL.",
+            config,
         )
 
     total_trades = len(all_trades)
@@ -455,25 +625,7 @@ async def run(
         "Win Rate %",
         "Sim PnL $",
     ]
-    trade_table_rows = [
-        {
-            "Session": row["session"],
-            "Pair": row["pair"],
-            "Side": row["side"],
-            "Entry Class": row["entry_class"],
-            "Trigger": row["entry_trigger"],
-            "Notional $": row["notional_quote"],
-            "Size Mult": row["sizing_multiplier"],
-            "SL %": row["sl_pct_used"],
-            "TP %": row["tp_pct_used"],
-            "Entry Tick": row["entry_tick"],
-            "Exit Tick": row["exit_tick"],
-            "Exit Reason": row["exit_reason"],
-            "Return %": row["return_pct"],
-            "PnL $": row["pnl_quote"],
-        }
-        for row in _trade_rows(all_trades)
-    ]
+    trade_table_rows: list[dict[str, Any]] = []
 
     pnl_trend = (
         "positive" if total_pnl > 0 else "negative" if total_pnl < 0 else "neutral"
@@ -519,6 +671,33 @@ async def run(
     try:
         from condor.reports import ReportBuilder
 
+        for row in _trade_rows(all_trades):
+            trade_table_rows.append(
+                {
+                    "Session": row["session"],
+                    "Pair": row["pair"],
+                    "Side": row["side"],
+                    "Trigger": row["entry_trigger"],
+                    "Notional $": row["notional_quote"],
+                    "Size Mult": row["sizing_multiplier"],
+                    "SL %": row["sl_pct_used"],
+                    "TP %": row["tp_pct_used"],
+                    "Entry Time": ReportBuilder.datetime_cell(
+                        row["entry_time_utc"] or None
+                    ),
+                    "Exit Time": ReportBuilder.datetime_cell(
+                        row["exit_time_utc"] or None
+                    ),
+                    "Entry Price": row["entry_price"],
+                    "Exit Price": row["exit_price"],
+                    "Entry Tick": row["entry_tick"],
+                    "Exit Tick": row["exit_tick"],
+                    "Exit Reason": row["exit_reason"],
+                    "Return %": row["return_pct"],
+                    "PnL $": row["pnl_quote"],
+                }
+            )
+
         builder = ReportBuilder(_backtest_report_title(config))
         builder.source("routine", "macdbb_scanner_aggressive_hl_backtest")
         preset_label = PRESET_LABELS.get(config.preset, config.preset)
@@ -562,18 +741,22 @@ async def run(
                     "Session",
                     "Pair",
                     "Side",
-                    "Entry Class",
                     "Trigger",
                     "Notional $",
                     "Size Mult",
                     "SL %",
                     "TP %",
+                    "Entry Time",
+                    "Exit Time",
+                    "Entry Price",
+                    "Exit Price",
                     "Entry Tick",
                     "Exit Tick",
                     "Exit Reason",
                     "Return %",
                     "PnL $",
                 ],
+                wide=True,
             )
         await builder.save()
     except Exception as error:

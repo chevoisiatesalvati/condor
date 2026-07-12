@@ -192,6 +192,8 @@ class SimTrade:
     tp_pct_used: float = 0.0
     volatility_proxy_pct: float = 0.0
     sizing_multiplier: float = 1.0
+    entry_time_utc: dt.datetime | None = None
+    exit_time_utc: dt.datetime | None = None
 
 
 class ReplayConfigBase(BaseModel):
@@ -205,7 +207,7 @@ class ReplayConfigBase(BaseModel):
     @field_validator("preset")
     @classmethod
     def _validate_preset(cls, value: str) -> str:
-        from trading_agents.macdbb_scanner_aggressive_hl.presets import known_preset_names
+        from agents.macdbb_scanner_aggressive_hl.presets import known_preset_names
 
         allowed = known_preset_names()
         if value not in allowed:
@@ -332,9 +334,21 @@ class ReplayConfigBase(BaseModel):
         default=None,
         description="Override default candle cache directory",
     )
+    candle_prefetch_mode: Literal["full", "lazy"] = Field(
+        default="full",
+        description="Prefetch all candle series (full) or session prices only with lazy loads (lazy)",
+    )
     snapshot_dir: str | None = Field(
         default=None,
         description="Parquet snapshot directory",
+    )
+    auto_update_snapshots: bool = Field(
+        default=True,
+        description="Build missing snapshot ticks before timeline replay",
+    )
+    max_auto_snapshot_days: int = Field(
+        default=14,
+        description="Max gap (days) for automatic snapshot builds",
     )
     require_price_data: bool = Field(
         default=True,

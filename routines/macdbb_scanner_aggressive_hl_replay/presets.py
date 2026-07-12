@@ -1,7 +1,7 @@
 """Re-export macdbb_scanner_aggressive_hl preset definitions (owned by the agent)."""
 
 # isort: off
-from trading_agents.macdbb_scanner_aggressive_hl.presets import (
+from agents.macdbb_scanner_aggressive_hl.presets import (
     DEFAULT_TIMELINE_SNAPSHOT_DIR as DEFAULT_TIMELINE_SNAPSHOT_DIR,
     DYNAMIC_PRESET_OVERRIDES as DYNAMIC_PRESET_OVERRIDES,
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL as FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,

@@ -17,7 +17,6 @@ from condor.fetchers.executors import (
     get_executor_volume,
     get_executor_type,
     get_executor_fees,
-    get_executor_entry_price,
     MAX_EXECUTORS_FETCH,
 )
 
@@ -42,7 +41,14 @@ def _build_executor_info(ex: dict) -> ExecutorInfo | None:
     config = ex.get("config", ex)
     custom_info = ex.get("custom_info") or {}
 
-    entry_price = get_executor_entry_price(ex)
+    # Entry price is display-only (PnL comes from get_executor_pnl(), independent of it).
+    # Only position executors carry a real entry_price (config > top-level > custom_info);
+    # grid/DCA executors expose break_even_price instead, so fall back to it for display.
+    _cfg_entry = float(config.get("entry_price") or 0)
+    _top_entry = float(ex.get("entry_price") or 0)
+    _ci_entry = float(custom_info.get("current_position_average_price") or 0)
+    _be_price = float(custom_info.get("break_even_price") or 0)
+    entry_price = _cfg_entry or _top_entry or _ci_entry or _be_price or 0.0
 
     # Current/close price: top-level > custom_info.close_price > held_position_orders fill price
     _top_cur = float(ex.get("current_price") or 0)

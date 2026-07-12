@@ -418,6 +418,43 @@ make dev   # Starts API/Telegram on :8088 and Vite on :5173
 
 Open `http://localhost:5173` for the dashboard. React changes hot-reload instantly. Python changes under `handlers/`, `routines/`, `condor/web/`, and other `condor/` modules reload automatically without restarting the Telegram bot.
 
+### Dual-instance dev (prod + feature branch)
+
+Run production Condor (Telegram + dashboard) on `main` while developing a feature branch in a separate git worktree — without Telegram polling conflicts or port collisions.
+
+| | Prod (`make run`) | Dev worktree (`make dev-local`) |
+|--|-------------------|----------------------------------|
+| Path | `~/projects/Hummingbot/condor` | `~/projects/Hummingbot/condor-dev` |
+| Branch | `main` | feature branch |
+| Telegram | Full polling | **Web-only** (no polling) |
+| Dashboard | `http://localhost:8088` | Vite `http://localhost:5174` → API `:8089` |
+| State | `config.yml`, `data/condor_bot_data.pickle` | `config.dev.yml`, `data/condor_dev.pickle`, `reports-dev/` |
+
+**One-time setup:**
+
+```bash
+# From prod checkout on main
+git checkout main
+./scripts/setup-dev-worktree.sh merge-upstream-2026-07-04
+```
+
+**Daily use:**
+
+```bash
+# Terminal 1 — prod
+cd ~/projects/Hummingbot/condor && make run
+
+# Terminal 2 — dev (web-only)
+cd ~/projects/Hummingbot/condor-dev && make dev-local
+```
+
+Open `http://localhost:5174` and click **Dev login (admin)**. Prod Telegram stays the only polling owner; use `/web` on prod for production dashboard links.
+
+**Warnings:**
+
+- Never set `CONDOR_WEB_ONLY=1` on prod.
+- Both instances can share Hummingbot API at `localhost:8000`; avoid starting live trading agents on dev unless intentional.
+
 **Still requires a full restart:**
 
 - Changes to `main.py` boot logic
@@ -431,6 +468,45 @@ cd ../hummingbot-api
 make setup    # answer y for Tailscale on production/VPS setups
 make deploy
 ```
+
+### Replay snapshots (timeline backtests & sweeps)
+
+Timeline backtests and parameter sweeps read pre-built **market snapshots** (scanner rankings + MACD/BB reports per tick) from parquet files under `data/replay_snapshots_*`. The default preset uses `data/replay_snapshots_binance_1y` (often a symlink to the prod `condor/data/` tree).
+
+**When to rebuild**
+
+- Before a sweep or backtest on a date range **past** the snapshot manifest `range_end_utc`
+- After refreshing the local Binance candle cache for new days
+- The backtest routine can **auto-extend** snapshots when `auto_update_snapshots=true` (see `macdbb_scanner_aggressive_hl_backtest` config); sweeps do **not** auto-build — run this script first
+
+**Check current coverage**
+
+```bash
+cat data/replay_snapshots_binance_1y/manifest.json | python -m json.tool
+```
+
+**Incremental build** (only missing ticks are processed):
+
+```bash
+cd /path/to/condor
+PYTHONPATH=. .venv/bin/python scripts/build_replay_snapshots.py \
+  --range-start 2026-07-09T00:00:00+00:00 \
+  --range-end   2026-07-10T23:59:59+00:00 \
+  --snapshot-dir data/replay_snapshots_binance_1y \
+  --cache-dir data/binance_candles \
+  --candle-source binance_perpetual \
+  --frequency-sec 1800
+```
+
+Use `--sessions 37-47` instead of `--range-start`/`--range-end` to build ticks from live session journals. Add `--force` to rebuild ticks that already exist. The script merges results into the existing parquet files and updates `manifest.json`.
+
+**Notes**
+
+- Requires network access when the candle cache has gaps (Binance API fill).
+- `frequency_sec` must match the replay preset (default **1800** = 30-minute ticks).
+- Entry/barrier prices come from the candle cache at replay time; snapshots supply scanner/MACD signals only.
+
+See also [`AGENTS.md`](AGENTS.md) for backtest vs sweep workflow.
 
 ### Flow Documentation
 
@@ -454,7 +530,7 @@ Tuned agent configs and sweep presets are **not** committed to the public repo. 
 ./scripts/init_strategies.sh
 ```
 
-See [`strategies/README.md`](strategies/README.md) and [`trading_agents/AGENTS.md`](trading_agents/AGENTS.md) for layout and workflow.
+See [`strategies/README.md`](strategies/README.md) and [`AGENTS.md`](AGENTS.md) for layout and workflow.
 
 ## Support
 

@@ -208,7 +208,8 @@ async def _main() -> int:
     if not args.skip_agent:
         params = apply_winner_to_agent(config, frequency_sec=args.frequency_sec)
         print(
-            f"\nUpdated trading_agents/macdbb_scanner_aggressive_hl/agent.md "
+            "\nUpdated agents/macdbb_scanner_aggressive_hl/strategies/"
+            f"macdbb_scanner_aggressive_hl/strategy.md "
             f"({len(params)} params)"
         )
 

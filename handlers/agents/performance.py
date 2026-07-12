@@ -11,45 +11,73 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from config_manager import get_client
-from condor.trading_agent.config import load_agent_config
-from condor.trading_agent.engine import get_all_engines
-from condor.trading_agent.performance_digest import (
+from condor.agents.config import load_agent_config
+from condor.agents.engine import get_all_engines
+from condor.agents.performance_digest import (
     build_strategy_digest,
     format_performance_report,
     format_performance_report_html,
 )
-from condor.trading_agent.strategy import StrategyStore
+from condor.agents.strategy import Strategy, StrategyStore
 from utils.auth import restricted
 
 log = logging.getLogger(__name__)
 
-_TRADING_AGENTS_ROOT = Path(__file__).resolve().parent.parent.parent / "trading_agents"
+def _resolve_strategy(store: StrategyStore, slug: str) -> Strategy | None:
+    """Resolve a strategy by flat slug (macdbb-style agent == strategy slug)."""
+    strategy = store.get(slug, slug)
+    if strategy is not None:
+        return strategy
+    for candidate in store.list_all():
+        if candidate.slug == slug:
+            return candidate
+    return None
 
 
-def _strategy_dir(slug: str) -> Path:
-    return _TRADING_AGENTS_ROOT / slug
+def _strategy_dir(strategy: Strategy | None, slug: str) -> Path | None:
+    if strategy is not None:
+        return strategy.data_dir
+    return None
 
 
-def _running_for_slug(slug: str) -> tuple[str | None, int | None]:
+def _run_key(strategy: Strategy | None, slug: str) -> str | None:
+    if strategy is not None:
+        return f"{strategy.agent_slug}.{strategy.slug}"
+    return None
+
+
+def _running_for_slug(slug: str, run_key: str | None = None) -> tuple[str | None, int | None]:
     """Return (agent_id, tick_count) if a live engine matches this strategy slug."""
-    prefix = f"{slug}_"
+    prefixes = []
+    if run_key:
+        prefixes.append(f"{run_key}_")
+    prefixes.append(f"{slug}_")
+    if run_key and "." in run_key:
+        _, sslug = run_key.split(".", 1)
+        if sslug != slug:
+            prefixes.append(f"{sslug}_")
     for eid, engine in get_all_engines().items():
-        if eid.startswith(prefix) and not eid[len(prefix) :].startswith("e"):
-            info = engine.get_info()
-            return eid, info.get("tick_count")
+        for prefix in prefixes:
+            if eid.startswith(prefix) and not eid[len(prefix) :].startswith("e"):
+                info = engine.get_info()
+                return eid, info.get("tick_count")
     return None, None
 
 
 async def _resolve_client_for_strategy(
-    slug: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE
+    slug: str,
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    strategy: Strategy | None = None,
 ):
     """Pick API client: strategy config server first, else user's default."""
-    agent_dir = _strategy_dir(slug)
     store = StrategyStore()
-    strategy = store.get_by_slug(slug)
+    if strategy is None:
+        strategy = _resolve_strategy(store, slug)
     defaults = strategy.default_config if strategy else None
+    agent_dir = _strategy_dir(strategy, slug)
 
-    if agent_dir.is_dir():
+    if agent_dir is not None and agent_dir.is_dir():
         cfg = load_agent_config(agent_dir, defaults)
         if cfg.server_name:
             from config_manager import get_config_manager
@@ -75,15 +103,19 @@ async def _send_performance_report(
     slug: str,
     session_filter: int | None = None,
 ) -> None:
-    agent_dir = _strategy_dir(slug)
-    if not agent_dir.is_dir():
+    store = StrategyStore()
+    strategy = _resolve_strategy(store, slug)
+    agent_dir = _strategy_dir(strategy, slug)
+    if agent_dir is None or not agent_dir.is_dir():
         msg = update.message or (update.callback_query.message if update.callback_query else None)
         if msg:
             await msg.reply_text(f"No agent directory for {slug}")
         return
 
     chat_id = update.effective_chat.id
-    client, total_quote = await _resolve_client_for_strategy(slug, chat_id, context)
+    client, total_quote = await _resolve_client_for_strategy(
+        slug, chat_id, context, strategy=strategy
+    )
 
     if not client:
         msg = update.message or update.callback_query.message
@@ -93,9 +125,13 @@ async def _send_performance_report(
             )
         return
 
-    running_id, running_tick = _running_for_slug(slug)
+    run_key = _run_key(strategy, slug)
+    running_id, running_tick = _running_for_slug(slug, run_key)
     if session_filter is not None:
-        running_id = f"{slug}_{session_filter}"
+        if run_key:
+            running_id = f"{run_key}_{session_filter}"
+        else:
+            running_id = f"{slug}_{session_filter}"
         eng = get_all_engines().get(running_id)
         running_tick = eng.get_info().get("tick_count") if eng else None
 
@@ -108,6 +144,7 @@ async def _send_performance_report(
             session_filter=session_filter,
             running_agent_id=running_id,
             running_tick=running_tick,
+            run_key=run_key,
         )
     except Exception as e:
         log.exception("build_strategy_digest(%s) failed", slug)
@@ -158,10 +195,12 @@ async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         engines = get_all_engines()
         for s in strategies[:12]:
             slug = s.slug
-            if not (_TRADING_AGENTS_ROOT / slug).is_dir():
-                slug = s.agent_dir.name
             label = s.name or slug
-            running = any(eid.startswith(f"{slug}_") for eid in engines)
+            run_key = f"{s.agent_slug}.{s.slug}"
+            running = any(
+                eid.startswith(f"{run_key}_") or eid.startswith(f"{slug}_")
+                for eid in engines
+            )
             if running:
                 label = f"● {label}"
             buttons.append(
@@ -182,8 +221,8 @@ async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("Session number must be an integer.")
             return
 
-    strategy = store.get_by_slug(slug)
-    if not strategy and not _strategy_dir(slug).is_dir():
+    strategy = _resolve_strategy(store, slug)
+    if strategy is None and _strategy_dir(None, slug) is None:
         await update.message.reply_text(f"Strategy not found: {slug}")
         return
 

@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     REFINE_DYNAMIC_MODE,
@@ -34,7 +36,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
     run_timeline_dynamic_sweep,
     timeline_range_from_reports,
 )
-from trading_agents.macdbb_scanner_aggressive_hl.presets import (
+from agents.macdbb_scanner_aggressive_hl.presets import (
     DEFAULT_AGENT_STRATEGY_PRESET,
     DYNAMIC_PRESET_OVERRIDES,
 )
@@ -50,6 +52,26 @@ def refine_output_slug(parent_label: str) -> str:
         slug = slug.removesuffix("_binance_1y")
     slug = slug.replace("/", "_").strip("_")
     return slug or "parent"
+
+
+def resolve_refine_timeline_range(
+    *,
+    parent_overrides: dict[str, Any],
+    snapshot_dir: Path,
+    range_start_utc: str | None = None,
+    range_end_utc: str | None = None,
+) -> tuple[str, str]:
+    """Pick the refine backtest window (CLI > parent JSON > manifest > reports)."""
+    if range_start_utc and range_end_utc:
+        return range_start_utc, range_end_utc
+    parent_start = parent_overrides.get("range_start_utc")
+    parent_end = parent_overrides.get("range_end_utc")
+    if parent_start and parent_end:
+        return str(parent_start), str(parent_end)
+    manifest = load_manifest(snapshot_dir=snapshot_dir)
+    if manifest and manifest.get("range_start_utc") and manifest.get("range_end_utc"):
+        return str(manifest["range_start_utc"]), str(manifest["range_end_utc"])
+    return timeline_range_from_reports()
 
 
 def _parse_args() -> argparse.Namespace:
@@ -72,6 +94,18 @@ def _parse_args() -> argparse.Namespace:
         help="Optional short tag for output filenames (default: derived from parent preset)",
     )
     parser.add_argument(
+        "--parent-overrides-json",
+        type=Path,
+        default=None,
+        help="JSON file with full merged parent config (alternative to --parent-preset)",
+    )
+    parser.add_argument(
+        "--automation-state-path",
+        type=Path,
+        default=None,
+        help="Automation state JSON for cancel-between-phases checks",
+    )
+    parser.add_argument(
         "--legacy-staged-parent",
         action="store_true",
         help="Use staged mega Phase A/B/C CSV chain instead of --parent-preset",
@@ -80,6 +114,16 @@ def _parse_args() -> argparse.Namespace:
         "--snapshot-dir",
         type=Path,
         default=Path("data/replay_snapshots_binance_1y"),
+    )
+    parser.add_argument(
+        "--range-start-utc",
+        default="",
+        help="Timeline start UTC (ISO). Default: parent JSON, else snapshot manifest",
+    )
+    parser.add_argument(
+        "--range-end-utc",
+        default="",
+        help="Timeline end UTC (ISO). Default: parent JSON, else snapshot manifest",
     )
     parser.add_argument(
         "--output-dir",
@@ -205,7 +249,37 @@ def _load_legacy_staged_parent(args: argparse.Namespace) -> tuple[str, dict]:
     return name, full
 
 
+def _load_json_parent(path: Path) -> tuple[str, dict]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"Parent overrides JSON must be an object: {path}")
+    full = dict(raw)
+    full["preset"] = "custom"
+    label = path.stem
+    print(f"Refine root parent from JSON: {path}")
+    return label, full
+
+
+def _check_refine_cancel(args: argparse.Namespace) -> bool:
+    if args.automation_state_path is None:
+        return False
+    from routines.macdbb_scanner_aggressive_hl_replay.sweep_automation import (
+        is_refine_cancel_requested,
+    )
+
+    if is_refine_cancel_requested(args.automation_state_path):
+        print("Refine cancel requested — exiting between phases")
+        return True
+    return False
+
+
 def _load_root_parent(args: argparse.Namespace) -> tuple[str, dict]:
+    if args.parent_overrides_json is not None:
+        if not args.parent_overrides_json.is_file():
+            raise FileNotFoundError(
+                f"Parent overrides JSON not found: {args.parent_overrides_json}"
+            )
+        return _load_json_parent(args.parent_overrides_json)
     if args.legacy_staged_parent:
         return _load_legacy_staged_parent(args)
     return _load_preset_parent(args.parent_preset)
@@ -239,12 +313,13 @@ async def _run_refine_phase(
             replay_mode="timeline_backtest",
         )
     )
-    manifest = load_manifest(snapshot_dir=args.snapshot_dir)
-    if manifest and manifest.get("range_start_utc") and manifest.get("range_end_utc"):
-        start = manifest["range_start_utc"]
-        end = manifest["range_end_utc"]
-    else:
-        start, end = timeline_range_from_reports()
+    start, end = resolve_refine_timeline_range(
+        parent_overrides=parent_overrides,
+        snapshot_dir=args.snapshot_dir,
+        range_start_utc=getattr(args, "range_start_utc", "") or None,
+        range_end_utc=getattr(args, "range_end_utc", "") or None,
+    )
+    print(f"Refine timeline range: {start} -> {end}")
 
     config_items = list(
         iter_refine_sweep_configs(
@@ -276,6 +351,8 @@ async def _run_refine_phase(
         config_items=config_items,
         workers=args.workers,
         worker_ram_gb=args.worker_ram_gb,
+        range_start_utc=start,
+        range_end_utc=end,
     )
     if results:
         winner = results[0]
@@ -294,12 +371,18 @@ async def _run_bcd(args: argparse.Namespace, root_parent: dict) -> None:
         raise FileNotFoundError(f"Refine phase A CSV not found: {refine_a_csv}")
     _name_a, parent_a = _load_refine_parent(refine_a_csv, parent_overrides=root_parent)
 
+    if _check_refine_cancel(args):
+        return
     refine_b_csv = await _run_refine_phase(args, "B", parent_overrides=parent_a)
     _name_b, parent_b = _load_refine_parent(refine_b_csv, parent_overrides=parent_a)
 
+    if _check_refine_cancel(args):
+        return
     refine_c_csv = await _run_refine_phase(args, "C", parent_overrides=parent_b)
     _name_c, parent_c = _load_refine_parent(refine_c_csv, parent_overrides=parent_b)
 
+    if _check_refine_cancel(args):
+        return
     await _run_refine_phase(args, "D", parent_overrides=parent_c)
 
 
@@ -310,6 +393,8 @@ async def _run_all(args: argparse.Namespace, root_parent: dict, root_label: str)
         parent_overrides=root_parent,
         root_parent_label=root_label,
     )
+    if _check_refine_cancel(args):
+        return
     args.refine_a_csv = refine_a_csv
     await _run_bcd(args, root_parent)
 
@@ -318,9 +403,13 @@ async def main() -> int:
     args = _parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.parent_overrides_json and args.legacy_staged_parent:
+        print("Use only one of --parent-overrides-json or --legacy-staged-parent", file=sys.stderr)
+        return 1
+
     try:
         root_label, root_parent = _load_root_parent(args)
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 

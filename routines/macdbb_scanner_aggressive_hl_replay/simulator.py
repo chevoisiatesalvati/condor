@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import dataclass, field
 from typing import Any
 
 from routines.macdbb_scanner_aggressive_hl_replay.models import (
@@ -18,7 +19,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import (
     EntryPolicyResult,
     resolve_fixed_entry_policy,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.paths import TRADING_AGENTS_DIR
+from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.replay_data import is_report_driven_data_source
 from routines.macdbb_scanner_aggressive_hl_replay.reports import ReportMeta, ScannerReportMeta, load_scanner_reports_index
 from routines.macdbb_scanner_aggressive_hl_replay.session_builder import (
@@ -28,6 +29,10 @@ from routines.macdbb_scanner_aggressive_hl_replay.session_builder import (
 )
 from routines.macdbb_scanner_aggressive_hl_replay.session_config import replay_config_from_session
 import logging
+from routines.macdbb_scanner_aggressive_hl_replay.candle_shared_store import (
+    LazyCandleStore,
+    SharedCandleStore,
+)
 from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import HlCandleCache, scan_barriers_between
 
 logger = logging.getLogger(__name__)
@@ -289,6 +294,7 @@ def _close_trade(
     exit_tick: int,
     exit_price: float,
     exit_reason: str,
+    exit_time: dt.datetime | None = None,
 ) -> SimTrade:
     return_pct = compute_return_pct(position.side, position.entry_price, exit_price)
     hold_ticks = exit_tick - position.entry_tick
@@ -314,6 +320,8 @@ def _close_trade(
         tp_pct_used=position.tp_pct,
         volatility_proxy_pct=position.volatility_proxy_pct,
         sizing_multiplier=position.sizing_multiplier,
+        entry_time_utc=position.entry_time,
+        exit_time_utc=exit_time,
     )
 
 
@@ -518,6 +526,7 @@ def _apply_journal_barrier_closes(
                 tick,
                 exit_price,
                 exit_reason,
+                exit_time=meta.timestamp,
             )
         )
         closes_this_tick.append(f"{event.pair}:{exit_reason}")
@@ -536,7 +545,7 @@ def _apply_intrabar_barriers(
     closes_this_tick: list[str],
     sl_cooldown_until: dict[str, int],
     config: StrategyReplayConfig,
-    hl_barrier_candle_cache: HlCandleCache | None,
+    hl_barrier_candle_cache: HlCandleCache | SharedCandleStore | LazyCandleStore | None,
 ) -> None:
     if not hl_barrier_candle_cache:
         return
@@ -560,7 +569,7 @@ def _apply_intrabar_barriers(
         )
         if hit is None:
             continue
-        exit_reason, exit_price = hit
+        exit_reason, exit_price, exit_time = hit
         simulated_trades.append(
             _close_trade(
                 session_num,
@@ -568,6 +577,7 @@ def _apply_intrabar_barriers(
                 tick,
                 exit_price,
                 exit_reason,
+                exit_time=exit_time,
             )
         )
         closes_this_tick.append(f"{pair}:{exit_reason}")
@@ -628,16 +638,28 @@ def _skipped_summary(reason: str) -> dict[str, Any]:
     }
 
 
+@dataclass
+class SimulationCarryState:
+    open_positions: dict[str, OpenPosition] = field(default_factory=dict)
+    sl_cooldown_until: dict[str, int] = field(default_factory=dict)
+    flip_cooldown_until: dict[str, int] = field(default_factory=dict)
+    simulated_streak: int = 0
+    adaptive_slot_fill_budget: int = 0
+
+
 def simulate_strategy_session(
     session_num: int,
     tick_meta_map: dict[int, TickMeta],
     reports_by_pair: dict[str, list[ReportMeta]],
     config: StrategyReplayConfig,
     hl_price_cache: dict[tuple[str, int], float] | None = None,
-    hl_candle_cache: HlCandleCache | None = None,
-    hl_barrier_candle_cache: HlCandleCache | None = None,
-    hl_vol_candle_cache: HlCandleCache | None = None,
+    hl_candle_cache: HlCandleCache | SharedCandleStore | LazyCandleStore | None = None,
+    hl_barrier_candle_cache: HlCandleCache | SharedCandleStore | LazyCandleStore | None = None,
+    hl_vol_candle_cache: HlCandleCache | SharedCandleStore | LazyCandleStore | None = None,
     replay_policy: DynamicReplayPolicy | None = None,
+    *,
+    initial_carry: SimulationCarryState | None = None,
+    include_carry_state: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[SimTrade], dict[str, Any]]:
     if config.require_price_data and not session_has_trusted_prices(
         tick_meta_map,
@@ -661,19 +683,26 @@ def simulate_strategy_session(
     open_positions: dict[str, OpenPosition] = {}
     sl_cooldown_until: dict[str, int] = {}
     flip_cooldown_until: dict[str, int] = {}
+    if initial_carry is not None:
+        open_positions = dict(initial_carry.open_positions)
+        sl_cooldown_until = dict(initial_carry.sl_cooldown_until)
+        flip_cooldown_until = dict(initial_carry.flip_cooldown_until)
+        simulated_streak = initial_carry.simulated_streak
+        adaptive_slot_fill_budget = initial_carry.adaptive_slot_fill_budget
+    else:
+        simulated_streak = 0
+        adaptive_slot_fill_budget = 0
     last_price_by_pair: dict[str, float] = {}
     last_signal_by_pair: dict[str, JournalSignal1h] = {}
     last_parsed_1h_by_pair: dict[str, ParsedReport] = {}
     last_metrics_by_pair: dict[str, dict[str, float | bool]] = {}
     last_seen_by_pair: dict[str, tuple[int, float]] = {}
-    simulated_streak = 0
-    adaptive_slot_fill_budget = 0
     filter_4h_cache: dict[tuple[str, int], tuple[bool | None, str | None]] = {}
 
     report_driven_params: dict[str, Any] | None = None
     scanner_reports: list[ScannerReportMeta] | None = None
     if is_report_driven_data_source(config.data_source):
-        session_dir = TRADING_AGENTS_DIR / config.strategy_slug / f"sessions/session_{session_num}"
+        session_dir = strategy_sessions_dir(config.strategy_slug) / f"session_{session_num}"
         if session_dir.is_dir():
             _, report_driven_params = replay_config_from_session(
                 session_dir,
@@ -906,6 +935,7 @@ def simulate_strategy_session(
                         tick,
                         exit_price,
                         exit_reason,
+                        exit_time=meta.timestamp,
                     )
                 )
                 closes_this_tick.append(f"{pair}:{exit_reason}")
@@ -959,15 +989,6 @@ def simulate_strategy_session(
         if entries_allowed:
             formal_candidates: list[tuple[str, str, Any]] = []
             adaptive_candidates: list[tuple[str, str, Any]] = []
-            barrier_reentry_this_tick = any(
-                token.endswith(
-                    (
-                        ":stop_loss_close_proxy",
-                        ":take_profit_close_proxy",
-                    )
-                )
-                for token in closes_this_tick
-            )
 
             for pair, snapshot in snapshots.items():
                 if pair in open_positions:
@@ -1138,6 +1159,10 @@ def simulate_strategy_session(
                     ),
                 )
                 pair, side, snapshot = ranked[0]
+                if pair in open_positions:
+                    continue
+                if len(open_positions) >= config.max_open_executors:
+                    continue
                 metrics = snapshot.metrics
                 trigger = f"adaptive_{side}"
                 opened_from_flat = len(open_before_entry) == 0
@@ -1251,6 +1276,7 @@ def simulate_strategy_session(
         if last_seen is None:
             continue
         exit_tick, exit_price = last_seen
+        exit_meta = tick_meta_map.get(exit_tick)
         simulated_trades.append(
             _close_trade(
                 session_num,
@@ -1258,10 +1284,19 @@ def simulate_strategy_session(
                 exit_tick,
                 exit_price,
                 "session_end_proxy",
+                exit_time=exit_meta.timestamp if exit_meta else None,
             )
         )
 
     summary = _build_summary(simulated_trades)
+    if include_carry_state:
+        summary["carry_state"] = SimulationCarryState(
+            open_positions=dict(open_positions),
+            sl_cooldown_until=dict(sl_cooldown_until),
+            flip_cooldown_until=dict(flip_cooldown_until),
+            simulated_streak=simulated_streak,
+            adaptive_slot_fill_budget=adaptive_slot_fill_budget,
+        )
     summary["status"] = "ok"
 
     from routines.macdbb_scanner_aggressive_hl_replay import monitor_macdbb
@@ -1324,3 +1359,66 @@ def _build_summary(trades: list[SimTrade]) -> dict[str, Any]:
             for trigger, values in sorted(by_trigger.items())
         },
     }
+
+
+def simulate_strategy_session_chunked(
+    session_num: int,
+    tick_meta_map: dict[int, TickMeta],
+    reports_by_pair: dict[str, list[ReportMeta]],
+    config: StrategyReplayConfig,
+    hl_price_cache: dict[tuple[str, int], float] | None = None,
+    hl_candle_cache: HlCandleCache | SharedCandleStore | LazyCandleStore | None = None,
+    hl_barrier_candle_cache: HlCandleCache | SharedCandleStore | LazyCandleStore | None = None,
+    hl_vol_candle_cache: HlCandleCache | SharedCandleStore | LazyCandleStore | None = None,
+    replay_policy: DynamicReplayPolicy | None = None,
+    *,
+    chunk_days: int = 28,
+    chunk_overlap_days: int = 7,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[SimTrade], dict[str, Any]]:
+    """Run timeline replay in overlapping time chunks with carry-over state."""
+    from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import iter_timeline_tick_chunks
+
+    if chunk_days <= 0:
+        return simulate_strategy_session(
+            session_num,
+            tick_meta_map,
+            reports_by_pair,
+            config,
+            hl_price_cache=hl_price_cache,
+            hl_candle_cache=hl_candle_cache,
+            hl_barrier_candle_cache=hl_barrier_candle_cache,
+            hl_vol_candle_cache=hl_vol_candle_cache,
+            replay_policy=replay_policy,
+        )
+
+    chunks = iter_timeline_tick_chunks(
+        tick_meta_map,
+        chunk_days=chunk_days,
+        overlap_days=chunk_overlap_days,
+    )
+    carry: SimulationCarryState | None = None
+    all_trades: list[SimTrade] = []
+    per_pair_rows: list[dict[str, Any]] = []
+    per_tick_rows: list[dict[str, Any]] = []
+    for chunk_map in chunks:
+        pair_rows, tick_rows, trades, summary = simulate_strategy_session(
+            session_num,
+            chunk_map,
+            reports_by_pair,
+            config,
+            hl_price_cache=hl_price_cache,
+            hl_candle_cache=hl_candle_cache,
+            hl_barrier_candle_cache=hl_barrier_candle_cache,
+            hl_vol_candle_cache=hl_vol_candle_cache,
+            replay_policy=replay_policy,
+            initial_carry=carry,
+            include_carry_state=True,
+        )
+        if summary.get("status") == "skipped_no_price_data":
+            continue
+        per_pair_rows.extend(pair_rows)
+        per_tick_rows.extend(tick_rows)
+        all_trades.extend(trades)
+        carry = summary.get("carry_state")
+    final_summary = _build_summary(all_trades)
+    return per_pair_rows, per_tick_rows, all_trades, final_summary
