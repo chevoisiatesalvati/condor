@@ -334,6 +334,10 @@ class ReplayConfigBase(BaseModel):
         default=None,
         description="Override default candle cache directory",
     )
+    candle_prefetch_mode: Literal["full", "lazy"] = Field(
+        default="full",
+        description="Prefetch all candle series (full) or session prices only with lazy loads (lazy)",
+    )
     snapshot_dir: str | None = Field(
         default=None,
         description="Parquet snapshot directory",

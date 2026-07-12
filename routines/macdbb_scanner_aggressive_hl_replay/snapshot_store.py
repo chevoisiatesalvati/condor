@@ -17,7 +17,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ScannerReportMeta,
     parse_dt,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import TickMarketState
+from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import parse_iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +85,20 @@ def snapshot_dir_or_default(snapshot_dir: Path | str | None = None) -> Path:
     return DEFAULT_SNAPSHOT_DIR.resolve()
 
 
-def warm_snapshot_caches(snapshot_dir: Path | str | None = None) -> None:
+def warm_snapshot_caches(
+    snapshot_dir: Path | str | None = None,
+    *,
+    range_start_utc: str | None = None,
+    range_end_utc: str | None = None,
+) -> None:
     """Eagerly load scanner + macdbb parsed caches and indexes (single pass each)."""
     root = snapshot_dir_or_default(snapshot_dir)
-    _ensure_parsed_scanner_cache(root)
-    _ensure_parsed_macdbb_cache(root)
+    start_ms = end_ms = None
+    if range_start_utc and range_end_utc:
+        start_ms = int(parse_iso_utc(range_start_utc).timestamp() * 1000)
+        end_ms = int(parse_iso_utc(range_end_utc).timestamp() * 1000)
+    _ensure_parsed_scanner_cache(root, tick_start_ms=start_ms, tick_end_ms=end_ms)
+    _ensure_parsed_macdbb_cache(root, tick_start_ms=start_ms, tick_end_ms=end_ms)
 
 
 def reload_snapshot_caches(snapshot_dir: Path | str | None = None) -> None:
@@ -318,13 +327,42 @@ def append_monitor_macdbb_rows(
     return len(rows)
 
 
-def _ensure_parsed_scanner_cache(root: Path) -> dict[str, ParsedScannerReport]:
-    global _parsed_scanner_by_tick, _scanner_index
+def _filter_frame_by_tick_ms(
+    frame: pd.DataFrame,
+    *,
+    tick_start_ms: int | None,
+    tick_end_ms: int | None,
+) -> pd.DataFrame:
+    if frame.empty or tick_start_ms is None or tick_end_ms is None:
+        return frame
+    if "tick_ts_ms" not in frame.columns:
+        return frame
+    return frame[
+        (frame["tick_ts_ms"] >= tick_start_ms) & (frame["tick_ts_ms"] <= tick_end_ms)
+    ]
+
+
+def _ensure_parsed_scanner_cache(
+    root: Path,
+    *,
+    tick_start_ms: int | None = None,
+    tick_end_ms: int | None = None,
+) -> dict[str, ParsedScannerReport]:
+    global _parsed_scanner_by_tick, _scanner_index, _scanner_frame
     resolved = root.resolve()
-    if _parsed_scanner_by_tick is not None and get_snapshot_dir() == resolved:
+    if (
+        _parsed_scanner_by_tick is not None
+        and get_snapshot_dir() == resolved
+        and tick_start_ms is None
+        and tick_end_ms is None
+    ):
         return _parsed_scanner_by_tick
 
-    frame = _load_scanner_frame(resolved)
+    frame = _filter_frame_by_tick_ms(
+        _load_scanner_frame(resolved),
+        tick_start_ms=tick_start_ms,
+        tick_end_ms=tick_end_ms,
+    )
     cache: dict[str, ParsedScannerReport] = {}
     metas: list[ScannerReportMeta] = []
     if frame.empty:
@@ -371,17 +409,32 @@ def _ensure_parsed_scanner_cache(root: Path) -> dict[str, ParsedScannerReport]:
     metas.sort(key=lambda item: item.created_at)
     _parsed_scanner_by_tick = cache
     _scanner_index = metas
+    _scanner_frame = None
     _activate_snapshot_dir(resolved)
     return cache
 
 
-def _ensure_parsed_macdbb_cache(root: Path) -> dict[str, ParsedReport]:
-    global _parsed_macdbb_by_id, _macdbb_index
+def _ensure_parsed_macdbb_cache(
+    root: Path,
+    *,
+    tick_start_ms: int | None = None,
+    tick_end_ms: int | None = None,
+) -> dict[str, ParsedReport]:
+    global _parsed_macdbb_by_id, _macdbb_index, _macdbb_frame
     resolved = root.resolve()
-    if _parsed_macdbb_by_id is not None and get_snapshot_dir() == resolved:
+    if (
+        _parsed_macdbb_by_id is not None
+        and get_snapshot_dir() == resolved
+        and tick_start_ms is None
+        and tick_end_ms is None
+    ):
         return _parsed_macdbb_by_id
 
-    frame = _load_macdbb_frame(resolved)
+    frame = _filter_frame_by_tick_ms(
+        _load_macdbb_frame(resolved),
+        tick_start_ms=tick_start_ms,
+        tick_end_ms=tick_end_ms,
+    )
     cache: dict[str, ParsedReport] = {}
     metas: list[ReportMeta] = []
     if frame.empty:
@@ -428,6 +481,7 @@ def _ensure_parsed_macdbb_cache(root: Path) -> dict[str, ParsedReport]:
     metas.sort(key=lambda item: item.created_at)
     _parsed_macdbb_by_id = cache
     _macdbb_index = metas
+    _macdbb_frame = None
     _activate_snapshot_dir(resolved)
     return cache
 

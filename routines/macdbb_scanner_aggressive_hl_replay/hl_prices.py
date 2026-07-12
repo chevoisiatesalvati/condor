@@ -8,7 +8,7 @@ import importlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 import numpy as np
@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 
 HlPriceCache = dict[tuple[str, int], float]
 HlCandleCache = dict[str, list[dict[str, float]]]
+
+if TYPE_CHECKING:
+    from routines.macdbb_scanner_aggressive_hl_replay.candle_shared_store import (
+        CandleSeriesView,
+        SharedCandleStore,
+    )
+
+CandleCacheLike = "HlCandleCache | SharedCandleStore"
+CandleSeriesLike = "list[dict[str, float]] | CandleSeriesView"
 ReplayHlPrefetch = tuple[
     dict[int, HlPriceCache],
     HlCandleCache,
@@ -59,6 +68,7 @@ class HlPrefetchSettings:
     cache_dir: Path | None = None
     candle_source: str = "hyperliquid"
     build_session_prices: bool = True
+    prefetch_mode: str = "full"  # "full" | "lazy"
 
 
 def _needs_session_price_cache(config: object) -> bool:
@@ -87,6 +97,7 @@ def hl_prefetch_settings_from_config(config: object) -> HlPrefetchSettings:
         cache_dir=cache_dir,
         candle_source=candle_source,
         build_session_prices=_needs_session_price_cache(config),
+        prefetch_mode=str(getattr(config, "candle_prefetch_mode", "full") or "full"),
     )
 
 
@@ -304,8 +315,34 @@ def _aggregate_pair_requests(
     return pair_requests
 
 
+def _scan_barriers_on_arrays(
+    lows: np.ndarray,
+    highs: np.ndarray,
+    timestamps_ms: np.ndarray,
+    side: str,
+    sl_price: float,
+    tp_price: float,
+) -> tuple[str, float, dt.datetime] | None:
+    for index in range(len(timestamps_ms)):
+        low = float(lows[index])
+        high = float(highs[index])
+        hit_ms = int(timestamps_ms[index])
+        hit_time = dt.datetime.fromtimestamp(hit_ms / 1000, tz=dt.timezone.utc)
+        if side == "long":
+            if low <= sl_price:
+                return ("stop_loss_close_proxy", sl_price, hit_time)
+            if high >= tp_price:
+                return ("take_profit_close_proxy", tp_price, hit_time)
+        else:
+            if high >= sl_price:
+                return ("stop_loss_close_proxy", sl_price, hit_time)
+            if low <= tp_price:
+                return ("take_profit_close_proxy", tp_price, hit_time)
+    return None
+
+
 def scan_barriers_between(
-    candles: list[dict[str, float]],
+    candles: list[dict[str, float]] | Any,
     start: dt.datetime,
     end: dt.datetime,
     side: str,
@@ -314,7 +351,17 @@ def scan_barriers_between(
     tp_pct: float,
 ) -> tuple[str, float, dt.datetime] | None:
     """Return (exit_reason, barrier_price, hit_time) for the first SL/TP hit in (start, end]."""
-    if entry_price <= 0 or not candles:
+    from routines.macdbb_scanner_aggressive_hl_replay.candle_shared_store import (
+        CandleSeriesView,
+        is_candle_series_view,
+    )
+
+    if entry_price <= 0:
+        return None
+    if is_candle_series_view(candles):
+        if len(candles) == 0:
+            return None
+    elif not candles:
         return None
 
     start_ms = int(start.timestamp() * 1000)
@@ -329,6 +376,20 @@ def scan_barriers_between(
         sl_price = entry_price * (1.0 + sl_threshold)
         tp_price = entry_price * (1.0 - tp_threshold)
 
+    if is_candle_series_view(candles):
+        assert isinstance(candles, CandleSeriesView)
+        window = candles.slice_by_ms(start_ms, end_ms, exclusive_start=True)
+        if len(window) == 0:
+            return None
+        return _scan_barriers_on_arrays(
+            window.low,
+            window.high,
+            window.timestamp_ms,
+            side,
+            sl_price,
+            tp_price,
+        )
+
     window = [
         candle
         for candle in candles
@@ -340,23 +401,8 @@ def scan_barriers_between(
 
     lows = np.array([float(candle["low"]) for candle in window], dtype=float)
     highs = np.array([float(candle["high"]) for candle in window], dtype=float)
-
-    for index in range(len(window)):
-        low = lows[index]
-        high = highs[index]
-        hit_ms = int(window[index]["timestamp_ms"])
-        hit_time = dt.datetime.fromtimestamp(hit_ms / 1000, tz=dt.timezone.utc)
-        if side == "long":
-            if low <= sl_price:
-                return ("stop_loss_close_proxy", sl_price, hit_time)
-            if high >= tp_price:
-                return ("take_profit_close_proxy", tp_price, hit_time)
-        else:
-            if high >= sl_price:
-                return ("stop_loss_close_proxy", sl_price, hit_time)
-            if low <= tp_price:
-                return ("take_profit_close_proxy", tp_price, hit_time)
-    return None
+    timestamps_ms = np.array([int(candle["timestamp_ms"]) for candle in window], dtype=np.int64)
+    return _scan_barriers_on_arrays(lows, highs, timestamps_ms, side, sl_price, tp_price)
 
 
 def hl_cache_has_prices(
@@ -674,6 +720,58 @@ async def prefetch_replay_hl_prices(
                     )
 
         total_pairs = len(pairs_sorted)
+        if opts.prefetch_mode == "lazy":
+            logger.info(
+                "%s lazy prefetch: session tick prices only (%d pairs)",
+                source_label,
+                total_pairs,
+            )
+            completed = 0
+            for pair in pairs_sorted:
+                try:
+                    requests = pair_requests[pair]
+                    tick_times = [tick_time for _, _, tick_time, _ in requests]
+                    latest_tick_ms = int(max(tick_times).timestamp() * 1000)
+                    price_coverage_end_ms = latest_tick_ms + (interval_ms or 300_000)
+                    candles = await _fetch_series(pair, opts.interval, price_coverage_end_ms)
+                    if not candles:
+                        barrier_1m = await _fetch_series(
+                            pair,
+                            opts.barrier_interval,
+                            latest_tick_ms + (barrier_interval_ms or 60_000),
+                        )
+                        candles = barrier_1m
+                    if candles and opts.build_session_prices:
+                        price_interval = (
+                            opts.barrier_interval
+                            if not _price_series_covers_ticks(
+                                candles,
+                                tick_times,
+                                _max_nearest_delta_ms(opts.interval, interval_ms),
+                            )
+                            else opts.interval
+                        )
+                        price_interval_ms = candle_mod._INTERVAL_MS.get(price_interval)
+                        fill_delta_ms = _max_nearest_delta_ms(price_interval, price_interval_ms)
+                        _fill_session_prices_for_pair(
+                            candles,
+                            requests,
+                            session_caches,
+                            max_delta_ms=fill_delta_ms,
+                        )
+                except Exception as error:
+                    logger.warning("Lazy prefetch failed for %s: %s", pair, error)
+                completed += 1
+                if completed == 1 or completed % 10 == 0 or completed == total_pairs:
+                    logger.info("Lazy prefetch progress: %d/%d pairs", completed, total_pairs)
+            total_prices = sum(len(cache) for cache in session_caches.values())
+            logger.info(
+                "%s lazy prefetch: %d session prices (candle series on demand)",
+                source_label,
+                total_prices,
+            )
+            return session_caches, {}, {}, {}
+
         logger.info(
             "%s replay prefetch: loading %d pairs (%s price, %s barrier/vol)...",
             source_label,

@@ -21,6 +21,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     SweepResult,
     _merge,
     finalize_sweep_config,
+    reconstruct_sweep_overrides,
     sweep_base_config,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
@@ -172,21 +173,29 @@ def build_full_config_from_result(
     range_end_utc: str | None = None,
     snapshot_dir: str | None = None,
 ) -> dict[str, Any]:
-    base = finalize_sweep_config(
-        sweep_base_config(sweep_grid, dynamic_mode),
-        sweep_grid=sweep_grid,
-    )
-    full = _merge(base, **dict(result.overrides))
-    merged = merge_timeline_config(
-        full,
-        frequency_sec=frequency_sec,
-        time_window_min=time_window_min,
-        range_start_utc=range_start_utc,
-        range_end_utc=range_end_utc,
-        sweep_grid=sweep_grid,
-    )
+    if result.overrides.get("replay_mode") == "timeline_backtest":
+        merged = dict(result.overrides)
+    else:
+        merged = reconstruct_sweep_overrides(
+            dynamic_mode,
+            dict(result.overrides),
+            sweep_grid=sweep_grid,
+            config_name=result.name,
+        )
+        merged = merge_timeline_config(
+            merged,
+            frequency_sec=frequency_sec,
+            time_window_min=time_window_min,
+            range_start_utc=range_start_utc,
+            range_end_utc=range_end_utc,
+            sweep_grid=sweep_grid,
+        )
     if snapshot_dir:
         merged["snapshot_dir"] = snapshot_dir
+    if range_start_utc and not merged.get("range_start_utc"):
+        merged["range_start_utc"] = range_start_utc
+    if range_end_utc and not merged.get("range_end_utc"):
+        merged["range_end_utc"] = range_end_utc
     return merged
 
 
@@ -236,20 +245,28 @@ def register_sweep_lead_preset(
 async def run_backtest_for_preset(
     preset_name: str,
     *,
+    full_overrides: dict[str, Any] | None = None,
     range_start_utc: str | None = None,
     range_end_utc: str | None = None,
     snapshot_dir: str | None = None,
+    candle_prefetch_mode: str | None = None,
 ) -> tuple[str | None, str]:
     from condor.reports import get_last_report_id
     from routines.macdbb_scanner_aggressive_hl_backtest import run as run_dynamic_replay
 
-    payload: dict[str, Any] = {"preset": preset_name}
+    if full_overrides is not None:
+        payload = dict(full_overrides)
+        payload["preset"] = "custom"
+    else:
+        payload = {"preset": preset_name}
     if range_start_utc:
         payload["range_start_utc"] = range_start_utc
     if range_end_utc:
         payload["range_end_utc"] = range_end_utc
     if snapshot_dir:
         payload["snapshot_dir"] = snapshot_dir
+    if candle_prefetch_mode:
+        payload["candle_prefetch_mode"] = candle_prefetch_mode
 
     config = resolve_config_with_preset(DynamicStrategyReplayConfig(**payload))
     result = await run_dynamic_replay(config, None)
@@ -265,13 +282,13 @@ async def send_promote_telegram(
     refine_started: bool = False,
 ) -> None:
     from condor.routine_hooks import _resolve_report_html
-    from condor.routine_store import TelegramApi
+    from condor.routine_store import _http_bot
 
     result = job.result
     lines = [
         "New sweep leader",
         f"Config: {result.name}",
-        f"Cap-norm: ${result.capital_normalized_pnl:+.2f}",
+        f"Sweep cap-norm: ${result.capital_normalized_pnl:+.2f}",
         f"Raw PnL: ${result.pnl:+.2f}",
         f"Trades: {result.trades}",
         f"Preset: {job.preset_name}",
@@ -281,12 +298,11 @@ async def send_promote_telegram(
     elif refine_started is False:
         lines.append("Refine: skipped")
 
-    api = TelegramApi()
-    await api.send_message(chat_id=chat_id, text="\n".join(lines))
+    await _http_bot.send_message(chat_id=chat_id, text="\n".join(lines))
 
     if report_id:
         html, filename = _resolve_report_html(report_id, None)
-        await api.send_document(
+        await _http_bot.send_document(
             chat_id=chat_id,
             document=html.encode("utf-8"),
             caption=f"Backtest report: {job.preset_name}",
@@ -410,6 +426,7 @@ class PromoteAutomationConfig:
     range_start_utc: str = ""
     range_end_utc: str = ""
     snapshot_dir: str = ""
+    candle_prefetch_mode: str = "full"
     output_dir: Path = field(default_factory=lambda: Path("data/strategy_replay_sweeps"))
     automation_state_path: Path = field(
         default_factory=lambda: Path("data/strategy_replay_sweeps/automation.json")
@@ -429,6 +446,7 @@ class PromoteQueue:
         self._config = config
         self._queue: asyncio.Queue[PromoteJob | None] = asyncio.Queue()
         self._worker_task: asyncio.Task[None] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._refine_manager = RefineSubprocessManager(
             repo_root=config.repo_root,
             output_dir=config.output_dir,
@@ -439,6 +457,7 @@ class PromoteQueue:
 
     def start(self) -> None:
         if self._worker_task is None:
+            self._loop = asyncio.get_running_loop()
             self._worker_task = asyncio.create_task(self._worker())
 
     async def shutdown(self) -> None:
@@ -451,10 +470,9 @@ class PromoteQueue:
     def submit(self, job: PromoteJob | None) -> None:
         if job is None:
             return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            logger.warning("Promote job dropped — no running event loop")
+        loop = getattr(self, "_loop", None)
+        if loop is None or loop.is_closed():
+            logger.warning("Promote job dropped — promote worker not started")
             return
         loop.call_soon_threadsafe(self._queue.put_nowait, job)
 
@@ -472,6 +490,11 @@ class PromoteQueue:
 
     async def _process_job(self, job: PromoteJob) -> None:
         cfg = self._config
+        print(
+            f"Auto-promote: processing {job.preset_name} ({job.result.name}) "
+            f"cap_norm=${job.result.capital_normalized_pnl:+.2f}",
+            flush=True,
+        )
         full_overrides = build_full_config_from_result(
             job.result,
             dynamic_mode=cfg.dynamic_mode,
@@ -488,9 +511,11 @@ class PromoteQueue:
 
         report_id, _text = await run_backtest_for_preset(
             job.preset_name,
+            full_overrides=full_overrides,
             range_start_utc=cfg.range_start_utc or None,
             range_end_utc=cfg.range_end_utc or None,
             snapshot_dir=cfg.snapshot_dir or None,
+            candle_prefetch_mode=cfg.candle_prefetch_mode,
         )
 
         refine_started = False

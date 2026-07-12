@@ -125,6 +125,55 @@ def test_build_full_config_from_result_uses_entry_sltp_base():
     assert full["range_start_utc"] == "2026-07-01T00:00:00+00:00"
 
 
+def test_build_full_config_roundtrip_preserves_sweep_config():
+    from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+        resolve_sweep_config_iterator,
+    )
+    from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
+        merge_timeline_config,
+    )
+
+    name = (
+        "dyn_both_on_entry_sltp_sl3.8_slmin1.4_tpmin10.0_L76_S78_sc3.5_td44_eps0.22"
+    )
+    items = dict(
+        resolve_sweep_config_iterator(
+            "entry_sltp",
+            "both_on",
+            min_configs=50000,
+            seed=42,
+        )
+    )
+    merged = merge_timeline_config(
+        items[name],
+        range_start_utc="2026-04-10T00:00:00Z",
+        range_end_utc="2026-07-10T23:59:59Z",
+        sweep_grid="entry_sltp",
+    )
+    result = SweepResult(
+        name=name,
+        pnl=1.0,
+        trades=680,
+        formal=1,
+        adaptive=0,
+        win_rate=0.5,
+        overrides=merged,
+        capital_normalized_pnl=66.82,
+        avg_notional=250.0,
+    )
+    full = build_full_config_from_result(
+        result,
+        dynamic_mode="both_on",
+        sweep_grid="entry_sltp",
+        range_start_utc="2026-04-10T00:00:00Z",
+        range_end_utc="2026-07-10T23:59:59Z",
+        snapshot_dir="data/replay_snapshots_binance_1y",
+    )
+    assert full["adaptive_short_bb_pos_min"] == merged["adaptive_short_bb_pos_min"]
+    assert full["sl_pct"] == merged["sl_pct"]
+    assert full["replay_mode"] == "timeline_backtest"
+
+
 def test_is_refine_cancel_requested(tmp_path: Path):
     state_path = tmp_path / "automation.json"
     assert is_refine_cancel_requested(state_path) is False
@@ -183,6 +232,43 @@ async def test_promote_queue_processes_job(tmp_path: Path):
     assert presets_path.is_file()
     bundle = yaml.safe_load(presets_path.read_text(encoding="utf-8"))
     assert f"{PRESET_NAME_PREFIX}001" in bundle["dynamic_preset_overrides"]
+
+
+@pytest.mark.asyncio
+async def test_promote_queue_submit_from_worker_thread(tmp_path: Path):
+    """Sweep on_result runs in a thread; promote jobs must still enqueue."""
+    import asyncio
+
+    state_path = tmp_path / "automation.json"
+    tracker = LeaderTracker(state_path)
+    tracker.consider(_result("anchor", 5.0))
+
+    config = PromoteAutomationConfig(
+        enabled=True,
+        telegram_chat_id=None,
+        run_refine=False,
+        dynamic_mode="both_on",
+        sweep_grid="entry_sltp",
+        output_dir=tmp_path,
+        automation_state_path=state_path,
+        repo_root=tmp_path,
+    )
+    queue = PromoteQueue(tracker, config)
+    queue.start()
+
+    job = tracker.consider(_result("leader", 25.0))
+    assert job is not None
+
+    processed: asyncio.Event = asyncio.Event()
+
+    async def fake_process(job: PromoteJob) -> None:
+        processed.set()
+
+    with patch.object(queue, "_process_job", side_effect=fake_process):
+        await asyncio.to_thread(queue.submit, job)
+        await asyncio.wait_for(processed.wait(), timeout=2.0)
+
+    await queue.shutdown()
 
 
 def test_refine_subprocess_manager_cancel(tmp_path: Path, monkeypatch):

@@ -67,8 +67,8 @@ class DynamicReplayPolicy:
         meta: TickMeta,
         entry_streak: int,
         journal_signal: JournalSignal1h | None = None,
-        hl_candle_cache: dict[str, list[dict[str, float]]] | None = None,
-        hl_vol_candle_cache: dict[str, list[dict[str, float]]] | None = None,
+        hl_candle_cache: HlCandleCache | SharedCandleStore | LazyCandleStore | None = None,
+        hl_vol_candle_cache: HlCandleCache | SharedCandleStore | LazyCandleStore | None = None,
         entry_time: dt.datetime | None = None,
     ) -> EntryPolicyResult:
         if (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
 import re
@@ -23,6 +24,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     _print_table,
     _write_sweep_csv,
     finalize_sweep_config,
+    prepare_shared_candle_stores,
     resolve_sweep_config_iterator,
     resolve_sweep_workers,
     run_sweep_config_batch,
@@ -198,6 +200,12 @@ async def run_timeline_dynamic_sweep(
     refine_workers: int = 2,
     automation_state_path: Path | None = None,
     repo_root: Path | None = None,
+    use_shared_candle_store: bool = True,
+    candle_prefetch_mode: str = "full",
+    snapshot_range_start_utc: str | None = None,
+    snapshot_range_end_utc: str | None = None,
+    chunk_days: int = 0,
+    max_configs: int | None = None,
 ) -> tuple[list[SweepResult], str, float, str, str]:
     timeline_fields = timeline_sweep_overrides(
         range_start_utc=range_start_utc,
@@ -216,6 +224,7 @@ async def run_timeline_dynamic_sweep(
                     parent_overrides=parent_overrides,
                 ),
                 **timeline_fields,
+                candle_prefetch_mode=candle_prefetch_mode,
             ),
             sweep_grid=sweep_grid,
         )
@@ -225,7 +234,11 @@ async def run_timeline_dynamic_sweep(
     )
 
     configure_replay_data_sources(load_config)
-    warm_snapshot_caches(snapshot_dir)
+    warm_snapshot_caches(
+        snapshot_dir,
+        range_start_utc=snapshot_range_start_utc or timeline_fields.get("range_start_utc"),
+        range_end_utc=snapshot_range_end_utc or timeline_fields.get("range_end_utc"),
+    )
     (
         parsed_sessions,
         hl_caches,
@@ -236,6 +249,46 @@ async def run_timeline_dynamic_sweep(
     ) = await _load_sessions(load_config)
     tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
     reports_by_pair = build_reports_by_pair(load_reports_index())
+
+    hl_candle_store = None
+    hl_barrier_candle_store = None
+    hl_vol_candle_store = None
+    if candle_prefetch_mode == "lazy":
+        from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import prepare_lazy_candle_stores
+
+        (
+            hl_candle_cache,
+            hl_barrier_candle_cache,
+            hl_vol_candle_cache,
+            hl_candle_store,
+            hl_barrier_candle_store,
+            hl_vol_candle_store,
+        ) = prepare_lazy_candle_stores(
+            range_start_utc=str(timeline_fields["range_start_utc"]),
+            range_end_utc=str(timeline_fields["range_end_utc"]),
+            config=load_config,
+        )
+        print("Lazy candle stores enabled (on-demand parquet loads)", flush=True)
+    elif use_shared_candle_store and workers > 1:
+        (
+            hl_candle_cache,
+            hl_barrier_candle_cache,
+            hl_vol_candle_cache,
+            hl_candle_store,
+            hl_barrier_candle_store,
+            hl_vol_candle_store,
+        ) = prepare_shared_candle_stores(
+            hl_candle_cache,
+            hl_barrier_candle_cache,
+            hl_vol_candle_cache,
+            enabled=True,
+        )
+        print(
+            f"Shared candle stores: price={len(hl_candle_store or [])} "
+            f"barrier={len(hl_barrier_candle_store or [])} "
+            f"vol={len(hl_vol_candle_store or [])}",
+            flush=True,
+        )
 
     stem = (
         output_stem
@@ -302,6 +355,9 @@ async def run_timeline_dynamic_sweep(
             f"Resuming sweep from config {start_index + 1}/{full_config_total} "
             f"({len(merged_items)} remaining)"
         )
+    if max_configs is not None and max_configs > 0:
+        merged_items = merged_items[:max_configs]
+        print(f"Batch limit: running {len(merged_items)} config(s) this invocation")
     config_total = full_config_total
     remaining_total = len(merged_items)
     sweep_started = time.monotonic()
@@ -342,6 +398,7 @@ async def run_timeline_dynamic_sweep(
                 range_start_utc=str(timeline_fields.get("range_start_utc") or ""),
                 range_end_utc=str(timeline_fields.get("range_end_utc") or ""),
                 snapshot_dir=str(snapshot_dir or ""),
+                candle_prefetch_mode=candle_prefetch_mode,
                 output_dir=resolved_output_dir,
                 automation_state_path=state_path,
                 repo_root=repo_root or Path(".").resolve(),
@@ -417,9 +474,13 @@ async def run_timeline_dynamic_sweep(
         hl_candle_cache=hl_candle_cache,
         hl_barrier_candle_cache=hl_barrier_candle_cache,
         hl_vol_candle_cache=hl_vol_candle_cache,
+        hl_candle_store=hl_candle_store,
+        hl_barrier_candle_store=hl_barrier_candle_store,
+        hl_vol_candle_store=hl_vol_candle_store,
         reports_by_pair=reports_by_pair,
         parent_overrides=parent_overrides,
         benchmark_avg_notional=benchmark_avg_notional,
+        chunk_days=chunk_days,
     )
 
     def _on_batch_result(local_done: int, result: SweepResult) -> None:
@@ -429,14 +490,18 @@ async def run_timeline_dynamic_sweep(
             promote_queue.submit(job)
         _record_progress(start_index + local_done, result)
 
-    run_sweep_config_batch(
-        merged_items,
-        sweep_ctx,
-        workers=workers,
-        worker_ram_gb=worker_ram_gb,
-        allow_non_fork=allow_non_fork,
-        on_result=_on_batch_result,
-    )
+    try:
+        await asyncio.to_thread(
+            run_sweep_config_batch,
+            merged_items,
+            sweep_ctx,
+            workers=workers,
+            worker_ram_gb=worker_ram_gb,
+            allow_non_fork=allow_non_fork,
+            on_result=_on_batch_result,
+        )
+    finally:
+        sweep_ctx.close_shared_stores()
 
     if promote_queue is not None:
         await promote_queue.shutdown()

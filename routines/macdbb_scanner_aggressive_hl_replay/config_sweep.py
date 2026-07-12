@@ -20,8 +20,15 @@ from pathlib import Path
 from typing import Any
 
 from condor.trading_agent.policies.macdbb_dynamic import compute_dynamic_barriers
+from routines.macdbb_scanner_aggressive_hl_replay.candle_shared_store import (
+    LazyCandleStore,
+    SharedCandleStore,
+    build_lazy_candle_stores,
+    pack_candle_caches,
+)
 from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import DynamicReplayPolicy
 from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
+    HlCandleCache,
     hl_prefetch_settings_from_config,
     prefetch_replay_hl_prices,
 )
@@ -488,17 +495,105 @@ class SweepResult:
     snapshot_dir: str = ""
 
 
+CandleCacheLike = HlCandleCache | SharedCandleStore | LazyCandleStore
+CandleStoreLike = SharedCandleStore | LazyCandleStore
+
+
+def prepare_shared_candle_stores(
+    price_cache: HlCandleCache,
+    barrier_cache: HlCandleCache,
+    vol_cache: HlCandleCache,
+    *,
+    enabled: bool = True,
+) -> tuple[
+    HlCandleCache,
+    HlCandleCache,
+    HlCandleCache,
+    SharedCandleStore | None,
+    SharedCandleStore | None,
+    SharedCandleStore | None,
+]:
+    """Pack dict candle caches into shared memory and drop heap copies."""
+    if not enabled:
+        return price_cache, barrier_cache, vol_cache, None, None, None
+    stores = pack_candle_caches(price_cache, barrier_cache, vol_cache)
+    price_cache.clear()
+    barrier_cache.clear()
+    vol_cache.clear()
+    gc.collect()
+    return {}, {}, {}, stores[0], stores[1], stores[2]
+
+
+def prepare_lazy_candle_stores(
+    *,
+    range_start_utc: str,
+    range_end_utc: str,
+    config: DynamicStrategyReplayConfig,
+) -> tuple[
+    HlCandleCache,
+    HlCandleCache,
+    HlCandleCache,
+    LazyCandleStore,
+    LazyCandleStore,
+    LazyCandleStore,
+]:
+    settings = hl_prefetch_settings_from_config(config)
+    cache_dir = settings.cache_dir
+    stores = build_lazy_candle_stores(
+        range_start_utc=range_start_utc,
+        range_end_utc=range_end_utc,
+        price_interval=settings.interval,
+        barrier_interval=settings.barrier_interval,
+        cache_dir=cache_dir,
+        candle_source=settings.candle_source,
+        buffer_hours=settings.buffer_hours,
+    )
+    return {}, {}, {}, stores[0], stores[1], stores[2]
+
+
+def _resolve_candle_cache(
+    store: CandleStoreLike | None,
+    cache: CandleCacheLike,
+) -> CandleCacheLike:
+    return store if store is not None else cache
+
+
 @dataclass
 class SweepRunContext:
     dynamic_mode: str
     parsed_sessions: dict[int, dict[int, Any]]
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]]
-    hl_candle_cache: dict[str, list[dict[str, float]]]
-    hl_barrier_candle_cache: dict[str, list[dict[str, float]]]
-    hl_vol_candle_cache: dict[str, list[dict[str, float]]]
-    reports_by_pair: dict[str, list[ReportMeta]]
-    parent_overrides: dict[str, Any] | None
-    benchmark_avg_notional: float
+    hl_candle_cache: HlCandleCache = field(default_factory=dict)
+    hl_barrier_candle_cache: HlCandleCache = field(default_factory=dict)
+    hl_vol_candle_cache: HlCandleCache = field(default_factory=dict)
+    hl_candle_store: SharedCandleStore | LazyCandleStore | None = None
+    hl_barrier_candle_store: SharedCandleStore | LazyCandleStore | None = None
+    hl_vol_candle_store: SharedCandleStore | LazyCandleStore | None = None
+    reports_by_pair: dict[str, list[ReportMeta]] = field(default_factory=dict)
+    parent_overrides: dict[str, Any] | None = None
+    benchmark_avg_notional: float = FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
+    chunk_days: int = 0
+
+    def price_candles(self) -> CandleCacheLike:
+        return _resolve_candle_cache(self.hl_candle_store, self.hl_candle_cache)
+
+    def barrier_candles(self) -> CandleCacheLike:
+        return _resolve_candle_cache(self.hl_barrier_candle_store, self.hl_barrier_candle_cache)
+
+    def vol_candles(self) -> CandleCacheLike:
+        return _resolve_candle_cache(self.hl_vol_candle_store, self.hl_vol_candle_cache)
+
+    def close_shared_stores(self) -> None:
+        for store in (
+            self.hl_candle_store,
+            self.hl_barrier_candle_store,
+            self.hl_vol_candle_store,
+        ):
+            if store is not None:
+                store.close_unlink()
+        self.hl_candle_store = None
+        self.hl_barrier_candle_store = None
+        self.hl_vol_candle_store = None
 
 
 _SWEEP_CTX: SweepRunContext | None = None
@@ -519,10 +614,14 @@ def _available_ram_gb() -> float:
 def resolve_sweep_workers(
     requested: int,
     *,
-    worker_ram_gb: float = 2.0,
+    worker_ram_gb: float = 3.0,
     allow_non_fork: bool = False,
 ) -> int:
-    """Resolve worker count capped by CPU and available RAM."""
+    """Resolve worker count capped by CPU and available RAM.
+
+    Timeline sweeps with shared candle stores typically need ~12 GB parent +
+    ~3 GB per worker for simulation scratch (not full candle duplication).
+    """
     if requested <= 1:
         return 1
     start_method = mp.get_start_method(allow_none=True)
@@ -557,11 +656,12 @@ def _parallel_sweep_worker(item: tuple[str, dict[str, Any]]) -> SweepResult:
         ctx.dynamic_mode,
         ctx.parsed_sessions,
         ctx.hl_caches_by_session,
-        ctx.hl_candle_cache,
-        ctx.hl_barrier_candle_cache,
-        ctx.hl_vol_candle_cache,
+        ctx.price_candles(),
+        ctx.barrier_candles(),
+        ctx.vol_candles(),
         ctx.reports_by_pair,
         parent_overrides=ctx.parent_overrides,
+        chunk_days=ctx.chunk_days,
     )
     return _apply_capital_metrics(result, ctx.benchmark_avg_notional)
 
@@ -590,11 +690,12 @@ def run_sweep_config_batch(
                 ctx.dynamic_mode,
                 ctx.parsed_sessions,
                 ctx.hl_caches_by_session,
-                ctx.hl_candle_cache,
-                ctx.hl_barrier_candle_cache,
-                ctx.hl_vol_candle_cache,
+                ctx.price_candles(),
+                ctx.barrier_candles(),
+                ctx.vol_candles(),
                 ctx.reports_by_pair,
                 parent_overrides=ctx.parent_overrides,
+                chunk_days=ctx.chunk_days,
             )
             result = _apply_capital_metrics(result, ctx.benchmark_avg_notional)
             results.append(result)
@@ -750,15 +851,65 @@ def extract_barrier_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _entry_sltp_overrides_from_config_name(name: str) -> dict[str, Any]:
+    """Recover grid-encoded params from entry_sltp config names (legacy diff CSVs)."""
+    marker = "_entry_sltp_"
+    if marker not in name:
+        return {}
+    suffix = name.split(marker, 1)[1]
+    if suffix.endswith("_baseline_winner"):
+        return {}
+    tokens = suffix.split("_")
+    if len(tokens) < 8:
+        return {}
+    parsed: dict[str, Any] = {}
+    key_map = [
+        ("slmin", "sl_min_pct"),
+        ("tpmin", "tp_min_pct"),
+        ("sl", "sl_pct"),
+        ("L", "adaptive_long_bb_pos_max"),
+        ("S", "adaptive_short_bb_pos_min"),
+        ("sc", "adaptive_score_open_min"),
+        ("td", "thesis_decay_exit_ticks"),
+        ("eps", "bb_proximity_epsilon_pct"),
+    ]
+    for token in tokens:
+        for prefix, field in key_map:
+            if token.startswith(prefix) and token != prefix:
+                raw = token[len(prefix) :]
+                try:
+                    parsed[field] = float(raw)
+                except ValueError:
+                    return {}
+                break
+        else:
+            return {}
+    return parsed
+
+
 def reconstruct_sweep_overrides(
     mode: str,
     diff: dict[str, Any],
     *,
     parent_overrides: dict[str, Any] | None = None,
+    sweep_grid: str = "mega_v5",
+    config_name: str | None = None,
 ) -> dict[str, Any]:
-    """Rebuild full config from sweep CSV diff + optional staged parent."""
-    base = _dynamic_sweep_base(mode, parent_overrides=parent_overrides)
-    return _finalize_mega_dynamic_config(_merge(base, **diff))
+    """Rebuild full config from sweep CSV overrides + optional staged parent."""
+    if diff.get("replay_mode") == "timeline_backtest":
+        return dict(diff)
+    base = sweep_base_config(
+        sweep_grid,
+        mode,
+        parent_overrides=parent_overrides,
+    )
+    merged_diff = dict(diff)
+    if sweep_grid in ("entry_sltp", "entry_sltp_v6") and config_name:
+        merged_diff = _merge(
+            _entry_sltp_overrides_from_config_name(config_name),
+            **merged_diff,
+        )
+    return finalize_sweep_config(_merge(base, **merged_diff), sweep_grid=sweep_grid)
 
 
 def load_sweep_winner_from_csv(
@@ -776,6 +927,8 @@ def load_sweep_winner_from_csv(
         winner_mode,
         diff,
         parent_overrides=parent_overrides,
+        sweep_grid=row.get("sweep_grid") or "mega_v5",
+        config_name=row["name"],
     )
     return row["name"], diff, full
 
@@ -1366,12 +1519,13 @@ def _run_dynamic_config(
     dynamic_mode: str,
     parsed_sessions: dict[int, dict[int, Any]],
     hl_caches_by_session: dict[int, dict[tuple[str, int], float]],
-    hl_candle_cache: dict[str, list[dict[str, float]]],
-    hl_barrier_candle_cache: dict[str, list[dict[str, float]]],
-    hl_vol_candle_cache: dict[str, list[dict[str, float]]],
+    hl_candle_cache: CandleCacheLike,
+    hl_barrier_candle_cache: CandleCacheLike,
+    hl_vol_candle_cache: CandleCacheLike,
     reports_by_pair: dict[str, list[ReportMeta]],
     *,
     parent_overrides: dict[str, Any] | None = None,
+    chunk_days: int = 0,
 ) -> SweepResult:
     config = resolve_config_with_preset(DynamicStrategyReplayConfig(**overrides))
     policy = DynamicReplayPolicy(config)
@@ -1388,9 +1542,19 @@ def _run_dynamic_config(
     sl_at_max = 0
     tp_at_max = 0
 
+    from routines.macdbb_scanner_aggressive_hl_replay.simulator import (
+        simulate_strategy_session,
+        simulate_strategy_session_chunked,
+    )
+
+    sim_fn = simulate_strategy_session_chunked if chunk_days > 0 else simulate_strategy_session
+    sim_kwargs: dict[str, Any] = {}
+    if chunk_days > 0:
+        sim_kwargs["chunk_days"] = chunk_days
+
     for session_num, tick_meta_map in parsed_sessions.items():
         hl_price_cache = hl_caches_by_session.get(session_num)
-        _, _, trades, summary = simulate_strategy_session(
+        _, _, trades, summary = sim_fn(
             session_num=session_num,
             tick_meta_map=tick_meta_map,
             reports_by_pair=reports_by_pair,
@@ -1400,6 +1564,7 @@ def _run_dynamic_config(
             hl_barrier_candle_cache=hl_barrier_candle_cache,
             hl_vol_candle_cache=hl_vol_candle_cache,
             replay_policy=policy,
+            **sim_kwargs,
         )
         if summary.get("status") == "skipped_no_price_data":
             continue
@@ -1423,12 +1588,6 @@ def _run_dynamic_config(
             exit_counts[trade.exit_reason] += 1
 
     win_rate = (wins / total_trades) if total_trades else 0.0
-    base = _dynamic_sweep_base(dynamic_mode, parent_overrides=parent_overrides)
-    diff_keys = {
-        key: value
-        for key, value in overrides.items()
-        if key not in base or base[key] != value
-    }
     avg_notional = (notional_sum / total_trades) if total_trades else 0.0
 
     return SweepResult(
@@ -1439,7 +1598,7 @@ def _run_dynamic_config(
         adaptive=adaptive,
         win_rate=win_rate,
         exits=dict(exit_counts),
-        overrides=diff_keys,
+        overrides=dict(overrides),
         total_exposure=notional_sum,
         avg_notional=avg_notional,
         avg_size_mult=(size_mult_sum / total_trades) if total_trades else 0.0,

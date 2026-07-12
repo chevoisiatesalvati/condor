@@ -257,6 +257,19 @@ def estimate_pair_volatility(
         candles = vol_cache.get(_canonical_trading_pair(pair))
         if not candles:
             return None
+        from routines.macdbb_scanner_aggressive_hl_replay.candle_shared_store import (
+            is_candle_series_view,
+            scanner_natr_from_candle_view,
+        )
+
+        if is_candle_series_view(candles):
+            return scanner_natr_from_candle_view(
+                candles,
+                entry_time,
+                lookback_hours=lookback_hours,
+                natr_period=NATR_LOOKBACK_PERIODS,
+                min_bars=SCANNER_NATR_MIN_BARS,
+            )
         return scanner_natr_mean_from_candles(
             candles,
             entry_time,
