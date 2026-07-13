@@ -4,12 +4,11 @@ import {
   ChevronRight,
   Wrench,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { AgentPnlChart, metricsToDataPoints } from "@/components/agent/AgentPnlChart";
 import { DetailPanel, ExecutorTable, type SortDir, type SortKey } from "@/components/executor/ExecutorTable";
 import { StopConfirmDialog } from "@/components/executor/StopConfirmDialog";
-import { useAgentExecutors } from "@/hooks/useAgentExecutors";
 import { type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
 import {
   controllerIdsForLookup,
@@ -17,7 +16,6 @@ import {
   enrichExecutorFromPositions,
   enrichExecutorWithSessionDefaults,
   executorInfoFromAgentRow,
-  getCachedExecutorsById,
   mergeExecutorOverlay,
   normalizePositionHeld,
   type ExecutorEnrichmentContext,
@@ -128,24 +126,6 @@ export function SessionExecutors({
   journalExecutors?: ExecutorEntry[];
 }) {
   const queryClient = useQueryClient();
-  const [executorCacheTick, setExecutorCacheTick] = useState(0);
-
-  useEffect(() => {
-    const unsub = queryClient.getQueryCache().subscribe((event) => {
-      const key = event.query?.queryKey;
-      if (!key || key[1] !== serverName) return;
-      if (key[0] === "executors-infinite" || (key[0] === "executors" && key[2] === "")) {
-        setExecutorCacheTick((n) => n + 1);
-      }
-    });
-    return unsub;
-  }, [queryClient, serverName]);
-
-  const cachedExecutorsById = useMemo(
-    () => getCachedExecutorsById((key) => queryClient.getQueryData(key), serverName),
-    [queryClient, serverName, executorCacheTick],
-  );
-
   const { data: sessionDetail } = useQuery({
     queryKey: ["strategy-session-executors", slug, sslug, sessionNum],
     queryFn: () => api.getStrategySessionExecutors(slug, sslug, sessionNum),
@@ -175,16 +155,12 @@ export function SessionExecutors({
     return Array.from(ids);
   }, [slug, sslug, sessionNum, controllerIds]);
 
-  const { executors: wsExecutors } = useAgentExecutors(
-    serverName || null,
-    sessionControllerIds,
-  );
-
   const { data: liveExecutorsCache } = useQuery({
     queryKey: ["executors", serverName, ""],
     queryFn: () => api.getExecutors(serverName),
-    enabled: !!serverName,
-    refetchInterval: 60000,
+    enabled: !!serverName && sessionControllerIds.length > 0,
+    refetchInterval: 30000,
+    staleTime: 15000,
   });
 
   const liveById = useMemo(
@@ -223,24 +199,8 @@ export function SessionExecutors({
 
   const executorInfos = useMemo(() => {
     const restInfos = restExecutors.map(executorInfoFromAgentRow);
-    let merged: ExecutorInfo[];
-    if (wsExecutors.length === 0) {
-      merged = restInfos;
-    } else {
-      const wsMap = new Map(wsExecutors.map((ex) => [ex.id, ex]));
-      merged = restInfos.map((ex) => {
-        const wsEx = wsMap.get(ex.id);
-        return wsEx ? mergeExecutorOverlay(ex, wsEx) : ex;
-      });
-      const restIds = new Set(restInfos.map((ex) => ex.id));
-      for (const ex of wsExecutors) {
-        if (!restIds.has(ex.id)) merged.push(ex);
-      }
-    }
     const enrich = (ex: ExecutorInfo): ExecutorInfo => {
       let row = ex;
-      const cached = cachedExecutorsById.get(ex.id);
-      if (cached) row = mergeExecutorOverlay(row, cached);
       const live = liveById.get(ex.id);
       if (live) row = mergeExecutorOverlay(row, live);
       row = enrichExecutorFromJournal(row, journalById);
@@ -252,8 +212,8 @@ export function SessionExecutors({
       if (side) row = { ...row, side };
       return row;
     };
-    return merged.map(enrich);
-  }, [restExecutors, wsExecutors, normalizedPositions, liveById, cachedExecutorsById, journalById, sessionConfig]);
+    return restInfos.map(enrich);
+  }, [restExecutors, normalizedPositions, liveById, journalById, sessionConfig]);
 
   const sessionEnrichment = useMemo<ExecutorEnrichmentContext>(
     () => ({

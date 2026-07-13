@@ -246,6 +246,7 @@ export function PerformancePanel({
     queryFn: () => api.getStrategyPerformance(slug, sslug),
     refetchInterval: 10000,
   });
+
   const totals = data?.totals || {};
   const allRows = data?.sessions || [];
   const sessions = allRows.filter((s) => s.kind === "session");

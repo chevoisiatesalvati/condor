@@ -154,6 +154,9 @@ def _detect_barrier_closes(
             continue
         if _is_barrier_close_type(str(ex.get("close_type") or "")):
             closes.append(ex)
+            from condor.sl_barrier_debug import log_barrier_close_executor
+
+            log_barrier_close_executor(ex)
     return closes
 
 

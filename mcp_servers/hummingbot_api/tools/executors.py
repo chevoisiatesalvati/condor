@@ -706,6 +706,15 @@ async def manage_executors(client: Any, request: ManageExecutorsRequest) -> dict
 
             executor_id = result.get("executor_id") or result.get("id")
 
+            if executor_type == "position_executor":
+                from condor.sl_barrier_debug import log_position_executor_create
+
+                log_position_executor_create(
+                    executor_id=executor_id,
+                    merged_config=merged_config,
+                    controller_id=controller_id,
+                )
+
             formatted = f"Executor created successfully!\n\n"
             formatted += f"Executor ID: {executor_id or 'N/A'}\n"
             formatted += f"Type: {executor_type}\n"
