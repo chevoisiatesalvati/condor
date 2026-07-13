@@ -159,8 +159,8 @@ export function SessionExecutors({
     queryKey: ["executors", serverName, ""],
     queryFn: () => api.getExecutors(serverName),
     enabled: !!serverName && sessionControllerIds.length > 0,
-    refetchInterval: 30000,
-    staleTime: 15000,
+    refetchInterval: 5000,
+    staleTime: 3000,
   });
 
   const liveById = useMemo(
