@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   Activity,
   Bot,
@@ -18,7 +18,6 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { useCredentials } from "@/hooks/useCredentials";
 import { usePrefetchData } from "@/hooks/usePrefetchData";
-import { useCondorWebSocket } from "@/hooks/useWebSocket";
 import { useServer } from "@/hooks/useServer";
 import { useTheme } from "@/hooks/useTheme";
 import { AgentToggleButton } from "./AgentToggleButton";
@@ -44,13 +43,10 @@ export function AppShell() {
   const exemptRoutes = ["/routines", "/settings"];
   const showKeysOverlay = server && !keysLoading && !hasKeys && !exemptRoutes.some((r) => pathname.startsWith(r));
 
-  // Prefetch core data (executors, bots) and subscribe to WS channels early
+  // Prefetch core data (executors, bots). Executors WS is subscribed only on
+  // pages that need live executor streams — not globally — to avoid ~600KB
+  // payload processing every 2s on agent/strategy pages.
   usePrefetchData();
-  const executorWsChannels = useMemo(
-    () => (server ? [`executors:${server}`] : []),
-    [server],
-  );
-  useCondorWebSocket(executorWsChannels, server);
 
   return (
     <div className="flex h-screen flex-col">

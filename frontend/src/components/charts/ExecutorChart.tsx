@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import { useCondorWebSocket } from "@/hooks/useWebSocket";
 import { api, type ExecutorInfo } from "@/lib/api";
 import {
   computeMultiOverlays,
@@ -119,12 +118,7 @@ export function ExecutorChart({
   const provisionalOverlays = useMemo(() => computeMultiOverlays(executors), [executors]);
   const timeRange = useMemo(() => getOverlayTimeRange(provisionalOverlays), [provisionalOverlays]);
 
-  // Determine if any executor is active (for WS subscription)
   const hasActive = executors.some((ex) => isActive(ex.status));
-
-  // WS for non-candle updates (candle streams managed by candleStore)
-  const channels = useMemo(() => [] as string[], []);
-  useCondorWebSocket(channels, server);
 
   // Pad time range for candle fetch. Live executor end uses Date.now() — keep out of queryKey.
   const paddingSeconds = 1800;

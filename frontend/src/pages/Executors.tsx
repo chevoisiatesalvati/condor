@@ -26,6 +26,7 @@ import {
 } from "@/components/executor/ExecutorTable";
 import { StopConfirmDialog } from "@/components/executor/StopConfirmDialog";
 import { FallbackSpinner } from "@/components/ui/FallbackSpinner";
+import { useCondorWebSocket } from "@/hooks/useWebSocket";
 import { useRates } from "@/hooks/useRates";
 import { useServer } from "@/hooks/useServer";
 import { api, type ExecutorInfo } from "@/lib/api";
@@ -271,7 +272,11 @@ export function Executors() {
   const [stopError, setStopError] = useState<string | null>(null);
   const [kpiPeriod, setKpiPeriod] = useState<string>("3M");
 
-  // WebSocket for executors is subscribed globally in AppShell (useCondorWebSocket)
+  const executorWsChannels = useMemo(
+    () => (server ? [`executors:${server}`] : []),
+    [server],
+  );
+  useCondorWebSocket(executorWsChannels, server);
 
   // Live WS-backed cache (same key Portfolio uses — updated every ~2s by useWebSocket)
   const { data: liveExecutors } = useQuery({

@@ -22,6 +22,8 @@ export class CondorWebSocket {
   private shouldConnect = false;
   /** Increments on each successful reconnect */
   version = 0;
+  /** Skip JSON.parse when full executors payload string is unchanged */
+  private lastExecutorRawByChannel = new Map<string, string>();
 
   constructor(token: string) {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -93,7 +95,17 @@ export class CondorWebSocket {
 
     this.ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data);
+        const raw = typeof ev.data === "string" ? ev.data : "";
+        if (raw.includes('"channel":"executors:')) {
+          const chMatch = raw.match(/"channel":"(executors:[^"]+)"/);
+          if (chMatch && this.lastExecutorRawByChannel.get(chMatch[1]) === raw) {
+            return;
+          }
+          if (chMatch) {
+            this.lastExecutorRawByChannel.set(chMatch[1], raw);
+          }
+        }
+        const msg = JSON.parse(raw);
         for (const handler of this.handlers) {
           handler(msg.channel, msg.data, msg.ts);
         }

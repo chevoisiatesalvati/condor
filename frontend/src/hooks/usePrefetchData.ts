@@ -30,8 +30,10 @@ function getTradeDefaults() {
  * Prefetches core data when the app loads so pages render instantly
  * instead of showing a loading state on first visit.
  *
- * Executors, bots, connectors, trading rules, and default candles
- * are all fetched eagerly as soon as a server is selected.
+ * Bots, connectors, trading rules, and default candles are fetched eagerly
+ * as soon as a server is selected. Executors are loaded on demand by pages
+ * that need them (Executors, Portfolio, session reviewer) to avoid retaining
+ * ~600KB of executor payloads on every route.
  */
 export function usePrefetchData() {
   const { server } = useServer();
@@ -41,12 +43,6 @@ export function usePrefetchData() {
     if (!server) return;
 
     const defaults = getTradeDefaults();
-
-    // Core data
-    queryClient.prefetchQuery({
-      queryKey: ["executors", server, ""],
-      queryFn: () => api.getExecutors(server),
-    });
 
     queryClient.prefetchQuery({
       queryKey: ["bots", server],
