@@ -241,6 +241,7 @@ def test_private_frontmatter_wins_for_tuned_config(tmp_path, monkeypatch):
 
     loaded = StrategyStore().get(slug, slug)
     assert loaded is not None
+    assert loaded.instructions.strip() == "Private playbook."
     cfg = loaded.default_config
     assert cfg["strategy_preset"] == "hl_dynamic_timeline_refine_v6_sltp_winner_binance_1y"
     assert cfg["strategy_params"]["sl_pct"] == 3.4
@@ -286,6 +287,7 @@ def test_strategy_save_writes_private_and_strips_preset_params(tmp_path, monkeyp
     store = StrategyStore()
     loaded = store.get(slug, slug)
     assert loaded is not None
+    assert loaded.instructions.strip() == "Private playbook."
     loaded.default_config = {
         "frequency_sec": 1800,
         "strategy_preset": "hl_dynamic_timeline_refine_lead_013",

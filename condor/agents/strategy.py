@@ -161,6 +161,22 @@ def public_stub_config(default_config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _resolve_strategy_instructions(sslug: str, public_body: str) -> str:
+    """Prefer private strategies/{sslug}/agent.md body for live tick instructions."""
+    from condor.agents.strategy_paths import resolve_agent_md
+
+    private_path = resolve_agent_md(sslug)
+    if private_path is None:
+        return public_body
+    try:
+        _, private_body = _parse_frontmatter(private_path.read_text())
+        if private_body.strip():
+            return private_body
+    except Exception:
+        log.exception("Failed to load private playbook body for %s", sslug)
+    return public_body
+
+
 def _merge_private_frontmatter(meta: dict, sslug: str) -> dict:
     """Overlay private strategies/{sslug}/agent.md frontmatter when present."""
     from condor.agents.strategy_paths import resolve_agent_md
@@ -211,12 +227,13 @@ def _load_strategy_from_file(path: Path, agent_slug: str) -> Strategy | None:
         sslug = path.parent.name
         meta, body = _parse_frontmatter(path.read_text())
         meta = _merge_private_frontmatter(meta, sslug)
+        instructions = _resolve_strategy_instructions(sslug, body)
         return Strategy(
             agent_slug=agent_slug,
             slug=sslug,
             name=meta.get("name", sslug),
             description=meta.get("description", ""),
-            instructions=body,
+            instructions=instructions,
             agent_key=meta.get("agent_key") or None,
             skills=meta.get("skills", []) or [],
             default_config=meta.get("default_config", {}) or {},
