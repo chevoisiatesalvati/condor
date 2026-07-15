@@ -29,7 +29,7 @@ import {
 } from "@/components/agent/SessionLifecycleActions";
 import { MODE_STYLES } from "@/components/agent/modeStyles";
 import { type ExperimentInfo, type RunningInstance, type SessionInfo, api } from "@/lib/api";
-import { formatCurrencyPnl, formatDateTime, formatToolName } from "@/lib/formatters";
+import { formatDateTime, formatToolName } from "@/lib/formatters";
 import { type ParsedJournal, type ParsedSnapshot, parseJournal, parseSnapshot } from "@/lib/parse-agent";
 
 const SUB_TABS = [
@@ -219,10 +219,6 @@ export function SessionReviewer({
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
-  // PnL for current session
-  const pnl = sessionPerf?.total_pnl ?? 0;
-  const pnlColor = pnl >= 0 ? "text-[var(--color-green)]" : "text-[var(--color-red)]";
-
   // Visible sub-tabs depend on kind
   const visibleSubTabs = isExperiment
     ? SUB_TABS.filter((t) => t.id === "overview")
@@ -355,11 +351,6 @@ export function SessionReviewer({
             {isExperiment && (
               <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-400">
                 experiment
-              </span>
-            )}
-            {!isExperiment && (
-              <span className={`text-sm font-mono font-semibold ${pnlColor}`}>
-                {formatCurrencyPnl(pnl)}
               </span>
             )}
             {!isExperiment && activeInstance && (
