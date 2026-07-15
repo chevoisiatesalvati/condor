@@ -83,6 +83,41 @@ def is_running_status(status: str) -> bool:
 
 _is_running_status = is_running_status
 
+# HB often strips custom_info on these terminations, so entry_price is absent by design.
+_EXPECTED_ZERO_ENTRY_CLOSE_TYPES = frozenset({"recovery_failed", "stale_duplicate"})
+# Avoid WARNING spam when the same dead executor is re-polled every few seconds.
+_ZERO_ENTRY_WARNED_IDS: set[str] = set()
+
+
+def _log_missing_entry_price(ex: dict) -> None:
+    """Warn only for actionable cases; expected failed recoveries stay at debug."""
+    ex_id = str(ex.get("id") or ex.get("executor_id") or "?")
+    status = str(ex.get("status") or "").lower()
+    close_type = str(ex.get("close_type") or "").lower()
+    expected_missing = (
+        not is_running_status(status)
+        and (
+            close_type in _EXPECTED_ZERO_ENTRY_CLOSE_TYPES
+            or ex.get("custom_info") is None
+        )
+    )
+    if expected_missing:
+        log.debug(
+            "entry_price unavailable for terminated position executor %s "
+            "(status=%s close_type=%s) — skipping warning",
+            ex_id,
+            status,
+            close_type or "?",
+        )
+        return
+    if ex_id in _ZERO_ENTRY_WARNED_IDS:
+        return
+    _ZERO_ENTRY_WARNED_IDS.add(ex_id)
+    log.warning(
+        "entry_price fell back to 0.0 for position executor %s — PnL may be wrong",
+        ex_id,
+    )
+
 
 def _executor_row(ex: dict) -> dict[str, Any]:
     from condor.fetchers.executors import (
@@ -105,10 +140,7 @@ def _executor_row(ex: dict) -> dict[str, Any]:
     entry_price = get_executor_entry_price(ex)
     _ex_type = str(cfg.get("type") or ex.get("type") or "").lower()
     if entry_price == 0.0 and "position" in _ex_type:
-        log.warning(
-            "entry_price fell back to 0.0 for position executor %s — PnL may be wrong",
-            ex.get("id") or ex.get("executor_id") or "?",
-        )
+        _log_missing_entry_price(ex)
 
     notional_quote = _executor_notional_quote(cfg, entry_price)
 

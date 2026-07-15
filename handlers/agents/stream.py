@@ -12,6 +12,7 @@ from condor.acp import (
     Heartbeat,
     PromptDone,
     TextChunk,
+    ThoughtChunk,
     ToolCallEvent,
     ToolCallUpdate,
 )
