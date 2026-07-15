@@ -9,30 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 log = logging.getLogger(__name__)
 
-_LEGACY_AGENT_ID_RE = re.compile(r"^([^.]+)\.([^.]+)_(e?\d+)$")
-
 
 def controller_ids_for_lookup(agent_id: str) -> list[str]:
     """HB API ``controller_id`` tags to try for a session agent_id.
 
-    Post-merge ids look like ``{agent}.{strategy}_{N}``; pre-merge live
-    executors on Hyperliquid were tagged ``{strategy}_{N}`` (no dot).
+    Exact match only. Legacy flat ``{strategy}_{N}`` aliases were removed —
+    they collided with recycled session numbers after the agent/strategy path
+    merge renumbered sessions on disk.
     """
-    ids = [agent_id]
-    m = _LEGACY_AGENT_ID_RE.match(agent_id)
-    if not m:
-        return ids
-    agent_slug, sslug, suffix = m.group(1), m.group(2), m.group(3)
-    for candidate in (f"{sslug}_{suffix}", f"{agent_slug}_{suffix}"):
-        if candidate not in ids:
-            ids.append(candidate)
-    return ids
+    return [agent_id]
 
 
 @dataclass

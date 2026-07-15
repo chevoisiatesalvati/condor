@@ -66,14 +66,7 @@ export function parseControllerSession(
 
 /** Mirror backend controller_ids_for_lookup for WS filtering. */
 export function controllerIdsForLookup(agentId: string): string[] {
-  const ids = [agentId];
-  const m = /^([^.]+)\.([^.]+)_(e?\d+)$/.exec(agentId);
-  if (!m) return ids;
-  const [, agentSlug, sslug, suffix] = m;
-  for (const candidate of [`${sslug}_${suffix}`, `${agentSlug}_${suffix}`]) {
-    if (!ids.includes(candidate)) ids.push(candidate);
-  }
-  return ids;
+  return [agentId];
 }
 
 function configRichness(config: Record<string, unknown> | undefined): number {
