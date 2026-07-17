@@ -394,7 +394,10 @@ export interface AgentExecutorRow {
   fees: number;
   entry_price: number;
   current_price: number;
+  /** Quote notional (USD); never raw base size. */
   amount: number;
+  /** Explicit quote notional from Condor performance rows. */
+  notional_quote?: number;
   timestamp: number;
   close_timestamp: number;
   created_at?: string;

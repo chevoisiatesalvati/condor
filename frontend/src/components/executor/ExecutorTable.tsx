@@ -654,22 +654,24 @@ export function DetailPanel({
           )}
 
           {/* Price Info */}
-          {(executor.entry_price > 0 || executor.current_price > 0) && (
+          {(displayExecutor.entry_price > 0 || displayExecutor.current_price > 0) && (
             <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-3">
               <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
                 Price Info
               </h3>
               <div className="grid grid-cols-2 gap-3 text-sm">
-                {executor.entry_price > 0 && (
+                {displayExecutor.entry_price > 0 && (
                   <div>
                     <div className="text-[var(--color-text-muted)] text-xs mb-0.5">Entry</div>
-                    <div className="font-medium tabular-nums">{formatPrice(executor.entry_price)}</div>
+                    <div className="font-medium tabular-nums">{formatPrice(displayExecutor.entry_price)}</div>
                   </div>
                 )}
-                {executor.current_price > 0 && (
+                {displayExecutor.current_price > 0 && (
                   <div>
-                    <div className="text-[var(--color-text-muted)] text-xs mb-0.5">Current</div>
-                    <div className="font-medium tabular-nums">{formatPrice(executor.current_price)}</div>
+                    <div className="text-[var(--color-text-muted)] text-xs mb-0.5">
+                      {isExecutorActive(displayExecutor.status) ? "Current" : "Close"}
+                    </div>
+                    <div className="font-medium tabular-nums">{formatPrice(displayExecutor.current_price)}</div>
                   </div>
                 )}
               </div>
@@ -684,27 +686,27 @@ export function DetailPanel({
             <div className="grid grid-cols-4 gap-3 text-sm">
               <div>
                 <div className="text-[var(--color-text-muted)] text-xs mb-0.5">Net PnL</div>
-                <div className="font-medium tabular-nums" style={{ color: pnlColor(executor.pnl) }}>
-                  {fmtPnl(executor.pnl)}
+                <div className="font-medium tabular-nums" style={{ color: pnlColor(displayExecutor.pnl) }}>
+                  {fmtPnl(displayExecutor.pnl)}
                 </div>
               </div>
               <div>
                 <div className="text-[var(--color-text-muted)] text-xs mb-0.5">PnL %</div>
                 <div
                   className="font-medium tabular-nums"
-                  style={{ color: executor.net_pnl_pct ? pnlColor(executor.net_pnl_pct) : undefined }}
+                  style={{ color: displayExecutor.net_pnl_pct ? pnlColor(displayExecutor.net_pnl_pct) : undefined }}
                 >
-                  {formatPct(executor.net_pnl_pct)}
+                  {formatPct(displayExecutor.net_pnl_pct)}
                 </div>
               </div>
               <div>
                 <div className="text-[var(--color-text-muted)] text-xs mb-0.5">Volume</div>
-                <div className="font-medium tabular-nums">{fmtVal(executor.volume)}</div>
+                <div className="font-medium tabular-nums">{fmtVal(displayExecutor.volume)}</div>
               </div>
               <div>
                 <div className="text-[var(--color-text-muted)] text-xs mb-0.5">Fees</div>
                 <div className="font-medium tabular-nums">
-                  {executor.cum_fees_quote ? fmtDet(executor.cum_fees_quote) : "\u2014"}
+                  {displayExecutor.cum_fees_quote ? fmtDet(displayExecutor.cum_fees_quote) : "\u2014"}
                 </div>
               </div>
             </div>

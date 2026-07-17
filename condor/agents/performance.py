@@ -144,14 +144,17 @@ def _executor_row(ex: dict) -> dict[str, Any]:
         else (_ci_cur if _ci_cur > 0 else (_ci_close if _ci_close > 0 else 0.0))
     )
 
-    amount = float(cfg.get("total_amount_quote") or cfg.get("amount") or 0)
+    # Amount for UI must be quote notional — never raw base `amount` (e.g. 110152 kBONK).
+    amount = float(cfg.get("total_amount_quote") or 0)
     if amount <= 0:
-        amount = float(
-            custom_info.get("total_value_quote") or 0
-        )
+        amount = float(custom_info.get("total_value_quote") or 0)
+    if amount <= 0:
+        amount = notional_quote
+
+    _ex_id = str(ex.get("id") or ex.get("executor_id") or "")
 
     return {
-        "id": str(ex.get("id") or ex.get("executor_id") or ""),
+        "id": _ex_id,
         "type": get_executor_type(ex),
         "connector": cfg.get("connector_name")
         or ex.get("connector_name")

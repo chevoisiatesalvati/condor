@@ -191,7 +191,14 @@ export function enrichExecutorFromJournal(
 
   const config = { ...(executor.config || {}) };
   let configChanged = false;
-  if (row.amount && row.amount > 0 && !config.total_amount_quote && !config.amount) {
+  // Journal `amount` is often base size; only fill quote when nothing else exists and
+  // the value is already in quote range (handled by session row notional first).
+  if (
+    row.amount &&
+    row.amount > 0 &&
+    !config.total_amount_quote &&
+    config.amount == null
+  ) {
     config.total_amount_quote = row.amount;
     configChanged = true;
   }
@@ -249,9 +256,15 @@ export function mergeSessionConfigSources(
 
 export function executorInfoFromAgentRow(row: AgentExecutorRow): ExecutorInfo {
   const config = { ...(row.config ?? {}) };
-  if (row.amount > 0) {
-    if (!config.total_amount_quote) config.total_amount_quote = row.amount;
-    if (!config.amount) config.amount = row.amount;
+  // Prefer quote notional. Never promote raw base `config.amount` (e.g. 110152 kBONK)
+  // into total_amount_quote — that made the UI show Amount $110.2K for a ~$376 position.
+  const quoteNotional =
+    Number(config.total_amount_quote) ||
+    Number(row.notional_quote) ||
+    Number(row.amount) ||
+    0;
+  if (quoteNotional > 0) {
+    config.total_amount_quote = quoteNotional;
   }
   const info: ExecutorInfo = {
     id: row.id,
