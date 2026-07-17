@@ -300,6 +300,7 @@ def register_handlers(application: Application) -> None:
     from handlers.memory import memory_callback_handler, memory_command
     from handlers.portfolio import get_portfolio_callback_handler, portfolio_command
     from handlers.routines import routines_callback_handler, routines_command
+    from handlers.sessions import sessions_callback_handler, sessions_command
     from handlers.trading import trade_command as unified_trade_command
     from handlers.trading.router import unified_trade_callback_handler
 
@@ -320,6 +321,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("lp", lp_command))
     application.add_handler(CommandHandler("routines", routines_command))
     application.add_handler(CommandHandler("executors", executors_command))
+    application.add_handler(CommandHandler("sessions", sessions_command))
     application.add_handler(CommandHandler("agent", agent_command))
     application.add_handler(CommandHandler("performance", performance_command))
     application.add_handler(CommandHandler("delegations", delegations_command))
@@ -354,6 +356,9 @@ def register_handlers(application: Application) -> None:
     )
     application.add_handler(
         CallbackQueryHandler(executors_callback_handler, pattern="^executors:")
+    )
+    application.add_handler(
+        CallbackQueryHandler(sessions_callback_handler, pattern="^sessions:")
     )
 
     # Add agent callback handler
@@ -461,6 +466,7 @@ async def register_bot_commands(application: Application) -> None:
         BotCommand("portfolio", "View balances across exchanges"),
         BotCommand("agent", "AI trading assistant"),
         BotCommand("performance", "Trading agent performance stats"),
+        BotCommand("sessions", "Browse strategy session executors"),
         BotCommand("delegations", "Monitor background agent tasks"),
         BotCommand("memory", "Review what the assistant remembers about you"),
         BotCommand("executors", "Deploy and manage trading executors"),
@@ -474,10 +480,15 @@ async def register_bot_commands(application: Application) -> None:
         BotCommand("gateway", "Gateway for DEX trading"),
         BotCommand("web", "Open the web dashboard"),
     ]
-    try:
-        await application.bot.set_my_commands(commands)
-    except Exception as e:
-        logger.warning(f"Failed to set public commands: {e}", exc_info=True)
+    # Set default + private-chat scopes. Some Telegram clients resolve the Menu
+    # button from AllPrivateChats rather than falling back to Default alone.
+    for scope in (BotCommandScopeDefault(), BotCommandScopeAllPrivateChats()):
+        try:
+            await application.bot.set_my_commands(commands, scope=scope)
+        except Exception as e:
+            logger.warning(
+                "Failed to set public commands (scope=%s): %s", scope, e, exc_info=True
+            )
 
     # 2) Admin-only commands — layered on top of the public ones, visible only in
     #    the admin user's own command menu (chat scope overrides the default).

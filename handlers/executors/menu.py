@@ -545,6 +545,7 @@ async def _render_executor_detail(
     context: ContextTypes.DEFAULT_TYPE,
     executor: Dict[str, Any],
     back_callback: str = "executors:menu",
+    callback_prefix: str = "executors",
 ) -> None:
     """Render executor detail view with configurable back button.
 
@@ -553,6 +554,7 @@ async def _render_executor_detail(
         context: Telegram context
         executor: Executor data dict
         back_callback: Callback data for the back button
+        callback_prefix: Callback namespace for Stop/Refresh buttons
     """
     query = update.callback_query
 
@@ -740,16 +742,16 @@ async def _render_executor_detail(
         keyboard.append(
             [
                 InlineKeyboardButton(
-                    "🛑 Stop", callback_data=f"executors:stop:{full_id[:20]}"
+                    "🛑 Stop",
+                    callback_data=f"{callback_prefix}:stop:{full_id[:20]}",
                 ),
             ]
         )
 
-    refresh_callback = (
-        f"executors:detail:{full_id[:20]}"
-        if is_running
-        else f"executors:hist_detail:{full_id[:20]}"
-    )
+    if not is_running and "history" in (back_callback or ""):
+        refresh_callback = f"{callback_prefix}:hist_detail:{full_id[:20]}"
+    else:
+        refresh_callback = f"{callback_prefix}:detail:{full_id[:20]}"
     keyboard.append(
         [
             InlineKeyboardButton("🔄 Refresh", callback_data=refresh_callback),
@@ -787,7 +789,10 @@ async def _render_executor_detail(
 
 
 async def handle_stop_executor(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, executor_id: str
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    executor_id: str,
+    callback_prefix: str = "executors",
 ) -> None:
     """Handle stop executor request - show confirmation
 
@@ -795,6 +800,7 @@ async def handle_stop_executor(
         update: Telegram update
         context: Telegram context
         executor_id: ID of executor to stop
+        callback_prefix: Callback namespace for confirm/cancel buttons
     """
     query = update.callback_query
 
@@ -809,10 +815,12 @@ async def handle_stop_executor(
     keyboard = [
         [
             InlineKeyboardButton(
-                "🛑 Yes, Stop", callback_data=f"executors:confirm_stop:{executor_id}"
+                "🛑 Yes, Stop",
+                callback_data=f"{callback_prefix}:confirm_stop:{executor_id}",
             ),
             InlineKeyboardButton(
-                "⬅️ Cancel", callback_data=f"executors:detail:{executor_id}"
+                "⬅️ Cancel",
+                callback_data=f"{callback_prefix}:detail:{executor_id}",
             ),
         ],
     ]
@@ -832,8 +840,21 @@ async def handle_stop_executor(
     )
 
 
+def _list_callback_for_prefix(callback_prefix: str, context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Return the 'back to list' callback for a stop result screen."""
+    if callback_prefix == "sessions":
+        slug = context.user_data.get("sessions_slug")
+        session_num = context.user_data.get("sessions_num")
+        if slug is not None and session_num is not None:
+            return f"sessions:view:{slug}:{session_num}"
+    return f"{callback_prefix}:menu"
+
+
 async def handle_confirm_stop_executor(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, executor_id: str
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    executor_id: str,
+    callback_prefix: str = "executors",
 ) -> None:
     """Actually stop the executor
 
@@ -841,9 +862,11 @@ async def handle_confirm_stop_executor(
         update: Telegram update
         context: Telegram context
         executor_id: ID of executor to stop
+        callback_prefix: Callback namespace for post-stop navigation
     """
     query = update.callback_query
     chat_id = update.effective_chat.id
+    list_callback = _list_callback_for_prefix(callback_prefix, context)
 
     await query.answer("Stopping...")
 
@@ -857,11 +880,17 @@ async def handle_confirm_stop_executor(
 
         # If we still have a short ID, search in cached executors for the full ID
         if len(full_id) <= 20:
-            executors = context.user_data.get("running_executors", [])
-            for ex in executors:
-                ex_id = ex.get("id", ex.get("executor_id", ""))
-                if ex_id.startswith(executor_id) or executor_id.startswith(ex_id[:20]):
-                    full_id = ex_id
+            cached_keys = ("running_executors", "sessions_executors_raw")
+            for cache_key in cached_keys:
+                executors = context.user_data.get(cache_key, [])
+                for ex in executors:
+                    ex_id = ex.get("id", ex.get("executor_id", ""))
+                    if ex_id.startswith(executor_id) or executor_id.startswith(
+                        ex_id[:20]
+                    ):
+                        full_id = ex_id
+                        break
+                if len(full_id) > 20:
                     break
 
             # If still not found, fetch fresh list to find the full ID
@@ -887,6 +916,7 @@ async def handle_confirm_stop_executor(
             or "stop" in str(result).lower()
         ):
             context.user_data.pop("running_executors", None)
+            context.user_data.pop("sessions_executors_raw", None)
 
         if (
             result.get("status") in ("success", "stopping", "stopped")
@@ -895,7 +925,7 @@ async def handle_confirm_stop_executor(
             keyboard = [
                 [
                     InlineKeyboardButton(
-                        "📋 Back to List", callback_data="executors:menu"
+                        "📋 Back to List", callback_data=list_callback
                     )
                 ]
             ]
@@ -912,10 +942,11 @@ async def handle_confirm_stop_executor(
                 keyboard = [
                     [
                         InlineKeyboardButton(
-                            "🔄 Refresh List", callback_data="executors:menu"
+                            "🔄 Refresh List", callback_data=list_callback
                         ),
                         InlineKeyboardButton(
-                            "⬅️ Back", callback_data=f"executors:detail:{executor_id}"
+                            "⬅️ Back",
+                            callback_data=f"{callback_prefix}:detail:{executor_id}",
                         ),
                     ]
                 ]
@@ -923,7 +954,8 @@ async def handle_confirm_stop_executor(
                 keyboard = [
                     [
                         InlineKeyboardButton(
-                            "⬅️ Back", callback_data=f"executors:detail:{executor_id}"
+                            "⬅️ Back",
+                            callback_data=f"{callback_prefix}:detail:{executor_id}",
                         )
                     ]
                 ]
@@ -936,7 +968,7 @@ async def handle_confirm_stop_executor(
 
     except Exception as e:
         logger.error(f"Error stopping executor: {e}", exc_info=True)
-        keyboard = [[InlineKeyboardButton("Back", callback_data="executors:menu")]]
+        keyboard = [[InlineKeyboardButton("Back", callback_data=list_callback)]]
         await query.message.edit_text(
             f"*Error*\n\n{escape_markdown_v2(str(e)[:200])}",
             parse_mode="MarkdownV2",
