@@ -26,6 +26,7 @@ import {
   formatExecutorSide,
   formatCurrencyPnl,
   formatCompactUsd,
+  isPnlExcludedCloseType,
 } from "@/lib/formatters";
 import { useRates } from "@/hooks/useRates";
 
@@ -237,6 +238,7 @@ export function SessionExecutors({
     let totalFees = 0;
     let activeCount = 0;
     for (const ex of executorInfos) {
+      if (isPnlExcludedCloseType(ex.close_type)) continue;
       totalPnl += ex.pnl ?? 0;
       totalVolume += ex.volume ?? 0;
       totalFees += ex.cum_fees_quote ?? 0;

@@ -75,8 +75,15 @@ _is_running_status = is_running_status
 
 # HB often strips custom_info on these terminations, so entry_price is absent by design.
 _EXPECTED_ZERO_ENTRY_CLOSE_TYPES = frozenset({"recovery_failed", "stale_duplicate"})
+# Duplicate / intentional junk rows must not move session or strategy PnL.
+_PNL_EXCLUDED_CLOSE_TYPES = frozenset({"stale_duplicate", "mistake"})
 # Avoid WARNING spam when the same dead executor is re-polled every few seconds.
 _ZERO_ENTRY_WARNED_IDS: set[str] = set()
+
+
+def is_pnl_excluded_close_type(close_type: str | None) -> bool:
+    """Return True when this close_type must not contribute to Condor PnL totals."""
+    return (close_type or "").lower().replace(" ", "_") in _PNL_EXCLUDED_CLOSE_TYPES
 
 
 def _log_missing_entry_price(ex: dict) -> None:
@@ -152,6 +159,14 @@ def _executor_row(ex: dict) -> dict[str, Any]:
         amount = notional_quote
 
     _ex_id = str(ex.get("id") or ex.get("executor_id") or "")
+    close_type = str(ex.get("close_type") or "").lower()
+    pnl = get_executor_pnl(ex)
+    fees = get_executor_fees(ex)
+    volume = get_executor_volume(ex)
+    # Stale duplicates (and similar) keep showing in the table but contribute $0.
+    if is_pnl_excluded_close_type(close_type):
+        pnl = 0.0
+        fees = 0.0
 
     return {
         "id": _ex_id,
@@ -164,11 +179,13 @@ def _executor_row(ex: dict) -> dict[str, Any]:
         "pair": cfg.get("trading_pair") or ex.get("trading_pair") or "",
         "side": get_executor_side(ex),
         "status": str(ex.get("status") or "").lower(),
-        "close_type": str(ex.get("close_type") or "").lower(),
-        "pnl": get_executor_pnl(ex),
-        "net_pnl_pct": float(ex.get("net_pnl_pct") or 0),
-        "volume": get_executor_volume(ex),
-        "fees": get_executor_fees(ex),
+        "close_type": close_type,
+        "pnl": pnl,
+        "net_pnl_pct": float(ex.get("net_pnl_pct") or 0)
+        if not is_pnl_excluded_close_type(close_type)
+        else 0.0,
+        "volume": volume,
+        "fees": fees,
         "notional_quote": notional_quote,
         "amount": amount,
         "entry_price": entry_price,
@@ -221,8 +238,13 @@ def _build_perf_from_rows(
     # performance_report endpoint returns net_pnl_quote which already includes
     # open-position PnL; using it as "realized" and then adding unrealized on
     # top double-counts open positions.
+    # Rows with excluded close_types (e.g. stale_duplicate) already have pnl/fees
+    # zeroed in ``_executor_row``.
     running = [r for r in rows if is_running_status(r["status"])]
     closed = [r for r in rows if not is_running_status(r["status"])]
+    scored_closed = [
+        r for r in closed if not is_pnl_excluded_close_type(str(r.get("close_type") or ""))
+    ]
 
     unrealized = sum(r["pnl"] for r in running)
     realized_pnl = sum(r["pnl"] for r in closed)
@@ -230,9 +252,9 @@ def _build_perf_from_rows(
     fees = sum(r["fees"] for r in rows)
 
     win_rate = 0.0
-    if closed:
-        wins = sum(1 for r in closed if r["pnl"] > 0)
-        win_rate = wins / len(closed)
+    if scored_closed:
+        wins = sum(1 for r in scored_closed if r["pnl"] > 0)
+        win_rate = wins / len(scored_closed)
 
     return AgentPerformance(
         agent_id=agent_id,

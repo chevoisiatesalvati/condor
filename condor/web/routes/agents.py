@@ -43,13 +43,27 @@ from condor.web.models import ReportSummary, WebUser
 _PERF_CACHE: dict[str, tuple[float, Any]] = {}
 _PERF_TTL = 30.0  # seconds
 
-# Long-lived cache for CLOSED sessions/experiments, keyed by agent_id.
-# A closed session's executors are immutable (no engine running, no open
-# executors), so its performance never changes — fetch it once and freeze it.
-# Only ids that are inactive (no registered engine, not the newest session),
-# fetched successfully, with open_count == 0, and not in controller mode land
-# here; everything else keeps flowing through the 30s TTL path above.
-_CLOSED_PERF_CACHE: dict[str, Any] = {}
+# Long-lived cache for CLOSED sessions/experiments, keyed by agent_id → (ts, perf).
+# Closed sessions are mostly immutable, but PnL can still be corrected in HB
+# (fill repair, stale zeroing). A short TTL lets Overview pick up corrections
+# without refetching every 30s rollup; active ids never use this cache.
+_CLOSED_PERF_CACHE: dict[str, tuple[float, Any]] = {}
+_CLOSED_PERF_TTL = 120.0  # seconds
+
+
+def _closed_cache_get(agent_id: str) -> Any | None:
+    entry = _CLOSED_PERF_CACHE.get(agent_id)
+    if not entry:
+        return None
+    ts, perf = entry
+    if time.time() - ts > _CLOSED_PERF_TTL:
+        _CLOSED_PERF_CACHE.pop(agent_id, None)
+        return None
+    return perf
+
+
+def _closed_cache_set(agent_id: str, perf: Any) -> None:
+    _CLOSED_PERF_CACHE[agent_id] = (time.time(), perf)
 
 
 def _cache_get(key: str) -> Any | None:
@@ -515,7 +529,7 @@ async def _compute_strategy_performance(
             fetch_ids = [
                 aid
                 for aid, _, _ in ids
-                if aid in active_ids or aid not in _CLOSED_PERF_CACHE
+                if aid in active_ids or _closed_cache_get(aid) is None
             ]
 
         perf_map: dict[str, Any] = {}
@@ -533,7 +547,7 @@ async def _compute_strategy_performance(
         for agent_id, num, kind in ids:
             perf = perf_map.get(agent_id)
             if perf is None:
-                perf = _CLOSED_PERF_CACHE.get(agent_id)
+                perf = _closed_cache_get(agent_id)
             if perf is None:
                 continue
             # Freeze immutable results: fetched fine, no engine, not the newest
@@ -545,7 +559,7 @@ async def _compute_strategy_performance(
                 and agent_id not in failed_ids
                 and perf.open_count == 0
             ):
-                _CLOSED_PERF_CACHE[agent_id] = perf
+                _closed_cache_set(agent_id, perf)
             if kind == "experiment" and perf.trade_count == 0:
                 continue
             sessions.append(
@@ -1426,6 +1440,9 @@ async def get_session_executors(
             "session_config": session_config,
         }
     perf = await fetch_agent_performance(client, agent_id)
+    # Keep Overview in sync when a closed session is opened after HB PnL repairs.
+    _closed_cache_set(agent_id, perf)
+    _PERF_CACHE.pop(f"perf:{_runkey(slug, sslug)}", None)
     model = AgentPerformanceModel(
         agent_id=agent_id,
         session_num=session_num,

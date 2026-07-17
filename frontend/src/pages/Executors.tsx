@@ -34,6 +34,7 @@ import { dedupeExecutorsById, getCachedExecutorsById, mergeExecutorOverlay } fro
 import {
   pnlColor,
   isExecutorActive,
+  isPnlExcludedCloseType,
   formatCurrency,
   formatCurrencyPnl,
   formatCurrencyVolume,
@@ -447,9 +448,14 @@ export function Executors() {
     [paginatedExecutors, filters, liveById, cachedExecutorsById],
   );
 
-  // Aggregate stats (archived only for win rate), filtered by kpiPeriod
-  const activePnl = useMemo(() => activeExecutors.reduce((s, ex) => s + convert(ex.pnl, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [activeExecutors, convert]);
-  const activeVolume = useMemo(() => activeExecutors.reduce((s, ex) => s + convert(ex.volume, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [activeExecutors, convert]);
+  // Aggregate stats (archived only for win rate), filtered by kpiPeriod.
+  // STALE_DUPLICATE / MISTAKE must not move KPI totals.
+  const scoredActive = useMemo(
+    () => activeExecutors.filter((ex) => !isPnlExcludedCloseType(ex.close_type)),
+    [activeExecutors],
+  );
+  const activePnl = useMemo(() => scoredActive.reduce((s, ex) => s + convert(ex.pnl, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [scoredActive, convert]);
+  const activeVolume = useMemo(() => scoredActive.reduce((s, ex) => s + convert(ex.volume, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [scoredActive, convert]);
 
   const periodFilteredArchived = useMemo(() => {
     const now = Date.now() / 1000;
@@ -460,13 +466,18 @@ export function Executors() {
     return archivedExecutors.filter((ex) => ex.timestamp >= cutoff);
   }, [archivedExecutors, kpiPeriod]);
 
-  const archivedPnl = useMemo(() => periodFilteredArchived.reduce((s, ex) => s + convert(ex.pnl, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [periodFilteredArchived, convert]);
-  const archivedVolume = useMemo(() => periodFilteredArchived.reduce((s, ex) => s + convert(ex.volume, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [periodFilteredArchived, convert]);
-  const archivedFees = useMemo(() => periodFilteredArchived.reduce((s, ex) => s + convert(ex.cum_fees_quote, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [periodFilteredArchived, convert]);
+  const scoredArchived = useMemo(
+    () => periodFilteredArchived.filter((ex) => !isPnlExcludedCloseType(ex.close_type)),
+    [periodFilteredArchived],
+  );
+
+  const archivedPnl = useMemo(() => scoredArchived.reduce((s, ex) => s + convert(ex.pnl, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [scoredArchived, convert]);
+  const archivedVolume = useMemo(() => scoredArchived.reduce((s, ex) => s + convert(ex.volume, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [scoredArchived, convert]);
+  const archivedFees = useMemo(() => scoredArchived.reduce((s, ex) => s + convert(ex.cum_fees_quote, ex.trading_pair?.split("-")[1] || "USDT").value, 0), [scoredArchived, convert]);
   const winRate = useMemo(() => {
-    if (periodFilteredArchived.length === 0) return 0;
-    return periodFilteredArchived.filter((ex) => ex.pnl > 0).length / periodFilteredArchived.length;
-  }, [periodFilteredArchived]);
+    if (scoredArchived.length === 0) return 0;
+    return scoredArchived.filter((ex) => ex.pnl > 0).length / scoredArchived.length;
+  }, [scoredArchived]);
 
   // Keep detail sidebar in sync with live WS data
   useEffect(() => {

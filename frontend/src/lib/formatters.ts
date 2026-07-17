@@ -216,6 +216,12 @@ export function isExecutorActive(status: string) {
   return s === "active" || s === "running" || s === "active_position";
 }
 
+/** Close types that must not affect Condor / Executors PnL KPIs. */
+export function isPnlExcludedCloseType(closeType: string | undefined | null) {
+  const ct = (closeType || "").toLowerCase().replace(/[\s-]+/g, "_");
+  return ct === "stale_duplicate" || ct === "mistake";
+}
+
 export function executorSideRaw(ex: {
   side?: string;
   config?: { side?: unknown };
