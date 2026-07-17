@@ -181,3 +181,17 @@ Agents and assistants use MCP tools at runtime — do not grep the codebase unle
 - `trading_agent_journal_read` / `trading_agent_journal_write` — session memory
 
 Assistant personas: `assistants/condor.md`, `assistants/agent_builder.md`.
+
+---
+
+## Cursor Cloud specific instructions
+
+Repo root is `/workspace` (ignore the `/home/saul/...` paths in the Build section — run everything from `/workspace`). Dependencies are refreshed automatically by the startup update script (`uv sync --extra dev` + `frontend` `npm install`); `uv` lives at `~/.local/bin/uv` and `node`/`npm` are already on PATH. `make setup` / `setup-environment.sh` is an **interactive wizard** (prompts on `/dev/tty`, installs system tooling, optionally deploys Docker) — do not run it here.
+
+**Test suite:** `.venv/bin/pytest tests/ -q` from `/workspace`. The core suite passes, but ~19 tests under `tests/routines/` and `tests/trading_agent/` fail on a clean checkout because their fixtures (session journals/snapshots under `trading_agents/*/sessions/…`) live in the **private `strategies/` git submodule** (`condor-strategies`), which needs SSH access to a private repo and is not checked out. These failures are expected without that submodule — not an environment problem.
+
+**Lint:** `make lint` runs `black .` + `isort .` in **auto-format** mode (not `--check`). Running `black --check .` / `isort --check-only .` and `frontend` `npm run lint` currently report many **pre-existing** findings; treat those as repo state, not a broken environment.
+
+**Running the app:** the full process (`make run` / `make dev` → `python main.py`) requires a real `TELEGRAM_TOKEN` (it long-polls Telegram) and a reachable Hummingbot Backend API on `:8000` (external Docker; not in this repo) for any trading data. Neither is available by default in cloud.
+
+**Running just the web dashboard (no Telegram bot, no Hummingbot API):** the FastAPI app `condor.web.app:create_app()` runs standalone and does not need Telegram polling. Put a dummy `TELEGRAM_TOKEN` (any `digits:string` value — it only seeds the JWT secret) and an `ADMIN_USER_ID` in `.env` (both are gitignored; `config.yml` is auto-created and grants `ADMIN_USER_ID` the admin role). Serve `create_app()` via uvicorn on `:8088` with `CONDOR_DEV=1`, and run `npm run dev` in `frontend/` (Vite `:5173` proxies `/api`, `/reports`, `/ws` → `:8088`). Dashboard auth: mint a one-time login token with `condor.web.auth.create_login_token(admin_id)` **in the same process that serves requests** (the token store is an in-process dict, TTL 5 min), then open `http://localhost:5173/login?token=<token>` to exchange it for a JWT. Endpoints that only touch `config.yml` (e.g. `POST /api/v1/settings/servers`) work offline; portfolio/bots data needs a live Hummingbot API.
