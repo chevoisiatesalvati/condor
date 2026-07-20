@@ -209,6 +209,16 @@ def clear_all_input_states(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("executor_wizard_type", None)
     context.user_data.pop("history_executors", None)
 
+    # Sessions states (/sessions strategy session browser)
+    context.user_data.pop("sessions_slug", None)
+    context.user_data.pop("sessions_num", None)
+    context.user_data.pop("sessions_run_key", None)
+    context.user_data.pop("sessions_server_name", None)
+    context.user_data.pop("sessions_executors", None)
+    context.user_data.pop("sessions_executors_raw", None)
+    context.user_data.pop("sessions_perf", None)
+    context.user_data.pop("sessions_history", None)
+
     # Clear SDS subscriptions for this user (resets active polling)
     user_id = context.user_data.get("_user_id")
     if user_id:
