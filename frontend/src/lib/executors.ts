@@ -93,23 +93,96 @@ export function mergeExecutorConfigs(
   return { ...base, ...overlay };
 }
 
+/** Count real client order ids in custom_info (fill richness signal). */
+export function executorOrderIdCount(customInfo: Record<string, unknown> | undefined): number {
+  const ids = customInfo?.order_ids;
+  if (!Array.isArray(ids)) return 0;
+  return ids.filter((id) => id != null && String(id).length > 0).length;
+}
+
+/**
+ * Score fill-price quality in custom_info. Higher is better for terminated display.
+ * Mid-flight WS snapshots often have 1 order id and entry==close (live mid).
+ * Persisted fills have open+close ids and distinct entry/close VWAPs.
+ */
+export function executorFillInfoQuality(customInfo: Record<string, unknown> | undefined): number {
+  const avg = Number(customInfo?.current_position_average_price) || 0;
+  const close = Number(customInfo?.close_price) || 0;
+  let score = executorOrderIdCount(customInfo) * 10;
+  if (avg > 0) score += 1;
+  if (close > 0) score += 1;
+  if (avg > 0 && close > 0 && Math.abs(avg - close) / Math.max(avg, 1e-18) > 1e-9) {
+    score += 5;
+  }
+  return score;
+}
+
+/**
+ * Merge custom_info without letting a mid-flight WS snapshot overwrite
+ * richer persisted fill prices (open+close order ids / distinct VWAP).
+ */
+export function mergeExecutorCustomInfo(
+  base: Record<string, unknown> | undefined,
+  overlay: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const baseInfo = base ?? {};
+  const overlayInfo = overlay ?? {};
+  if (executorFillInfoQuality(overlayInfo) >= executorFillInfoQuality(baseInfo)) {
+    return { ...baseInfo, ...overlayInfo };
+  }
+  return {
+    ...overlayInfo,
+    ...baseInfo,
+    current_position_average_price:
+      baseInfo.current_position_average_price ?? overlayInfo.current_position_average_price,
+    close_price: baseInfo.close_price ?? overlayInfo.close_price,
+    order_ids:
+      executorOrderIdCount(baseInfo) >= executorOrderIdCount(overlayInfo)
+        ? (baseInfo.order_ids ?? overlayInfo.order_ids)
+        : (overlayInfo.order_ids ?? baseInfo.order_ids),
+    open_order_last_update:
+      baseInfo.open_order_last_update ?? overlayInfo.open_order_last_update,
+  };
+}
+
+function pricesFromCustomInfo(customInfo: Record<string, unknown>): {
+  entry: number;
+  close: number;
+} {
+  return {
+    entry: Number(customInfo.current_position_average_price) || 0,
+    close: Number(customInfo.close_price) || 0,
+  };
+}
+
 /**
  * Merge live WS executor fields onto a REST session row without dropping
  * chart-critical data (timestamps, config, custom_info) when WS is sparse.
+ * Prefers richer fill custom_info so mid-flight WS cache cannot flatten
+ * terminated entry/close back to the live mid.
  */
 export function mergeExecutorOverlay(restEx: ExecutorInfo, wsEx: ExecutorInfo): ExecutorInfo {
+  const mergedCustom = mergeExecutorCustomInfo(restEx.custom_info, wsEx.custom_info);
+  const preferBaseFills =
+    executorFillInfoQuality(restEx.custom_info) > executorFillInfoQuality(wsEx.custom_info);
+  const fillPrices = pricesFromCustomInfo(mergedCustom);
+
   const merged: ExecutorInfo = {
     ...restEx,
     ...wsEx,
     timestamp: wsEx.timestamp || restEx.timestamp,
-    entry_price: wsEx.entry_price || restEx.entry_price,
-    current_price: wsEx.current_price || restEx.current_price,
+    entry_price: preferBaseFills
+      ? restEx.entry_price || wsEx.entry_price || fillPrices.entry
+      : wsEx.entry_price || restEx.entry_price || fillPrices.entry,
+    current_price: preferBaseFills
+      ? restEx.current_price || wsEx.current_price || fillPrices.close
+      : wsEx.current_price || restEx.current_price || fillPrices.close,
     close_timestamp: wsEx.close_timestamp || restEx.close_timestamp,
     connector: wsEx.connector || restEx.connector,
     trading_pair: wsEx.trading_pair || restEx.trading_pair,
     type: wsEx.type || restEx.type,
     controller_id: wsEx.controller_id || restEx.controller_id,
-    custom_info: { ...restEx.custom_info, ...wsEx.custom_info },
+    custom_info: mergedCustom,
     config: mergeExecutorConfigs(restEx.config || {}, wsEx.config || {}),
     cum_fees_quote: wsEx.cum_fees_quote ?? restEx.cum_fees_quote,
   };
@@ -555,15 +628,17 @@ export function cloneExecutorList<T>(executors: T[]): T[] {
 /**
  * Patch every cached page with live WS fields by executor ID.
  * Replacing only page 0 misses executors that live on later REST pages.
+ * Uses mergeExecutorOverlay (not full replace) so a mid-flight WS snapshot
+ * cannot wipe persisted open+close fill prices after termination.
  */
 export function mergeExecutorPagesWithWs(
   pages: ExecutorPage[],
   wsExecs: unknown[],
 ): ExecutorPage[] {
-  const wsById = new Map<string, unknown>();
+  const wsById = new Map<string, ExecutorInfo>();
   for (const ex of wsExecs) {
     const id = executorId(ex);
-    if (id) wsById.set(id, ex);
+    if (id && ex && typeof ex === "object") wsById.set(id, ex as ExecutorInfo);
   }
 
   const seenInPages = new Set<string>();
@@ -573,7 +648,11 @@ export function mergeExecutorPagesWithWs(
       const id = executorId(ex);
       if (id) seenInPages.add(id);
       const live = id ? wsById.get(id) : undefined;
-      return live ?? ex;
+      if (!live) return ex;
+      if (ex && typeof ex === "object") {
+        return mergeExecutorOverlay(ex as ExecutorInfo, live);
+      }
+      return live;
     }),
   }));
 
