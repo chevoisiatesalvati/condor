@@ -672,6 +672,112 @@ class TickEngine:
                 self._agent_closed_executor_ids,
             )
             barrier_closes_section = _format_barrier_closes_section(barrier_closes)
+            # #region agent log
+            try:
+                import json as _json
+                from condor.agents.performance import _executor_row as _ex_row
+                from condor.fetchers.market_data import fetch_candles as _fetch_candles
+
+                for _ex in barrier_closes:
+                    _row = _ex_row(_ex)
+                    _ct = str(_row.get("close_type") or "").upper()
+                    _pnl = float(_row.get("pnl") or 0)
+                    _entry = float(_row.get("entry_price") or 0)
+                    _ci = _row.get("custom_info") or {}
+                    _close = float(_ci.get("close_price") or 0)
+                    _side = str(_row.get("side") or _ex.get("side") or "")
+                    _move = ((_close - _entry) / _entry) if _entry and _close else None
+                    _anom = _ct == "STOP_LOSS" and _pnl > 0
+                    _cfg = _row.get("config") or {}
+                    _sl = float(
+                        ((_cfg.get("triple_barrier_config") or {}).get("stop_loss"))
+                        or (_cfg.get("stop_loss"))
+                        or 0
+                    )
+                    _sl_px = (
+                        (_entry * (1.0 - _sl))
+                        if _entry and _sl and str(_side).upper() in ("BUY", "LONG", "")
+                        else (
+                            (_entry * (1.0 + _sl))
+                            if _entry and _sl
+                            else None
+                        )
+                    )
+                    _candle_hit_sl = None
+                    _deepest_adverse = None
+                    if _ct == "STOP_LOSS" and _entry and _sl_px:
+                        try:
+                            _conn = (
+                                _row.get("connector")
+                                or _cfg.get("connector_name")
+                                or "hyperliquid_perpetual"
+                            )
+                            _pair = _row.get("pair") or ""
+                            _raw = await _fetch_candles(
+                                client,
+                                connector_name=_conn,
+                                trading_pair=_pair,
+                                interval="1m",
+                                max_records=360,
+                            )
+                            _bars = (
+                                _raw
+                                if isinstance(_raw, list)
+                                else ((_raw or {}).get("data") or [])
+                            )
+                            _lows = []
+                            _highs = []
+                            for _b in _bars:
+                                if isinstance(_b, dict):
+                                    _lows.append(float(_b.get("low") or _b.get("l") or 0))
+                                    _highs.append(float(_b.get("high") or _b.get("h") or 0))
+                                elif isinstance(_b, (list, tuple)) and len(_b) >= 5:
+                                    _lows.append(float(_b[3]))
+                                    _highs.append(float(_b[2]))
+                            _lows = [x for x in _lows if x > 0]
+                            _highs = [x for x in _highs if x > 0]
+                            if str(_side).upper() in ("BUY", "LONG", ""):
+                                _candle_hit_sl = any(l <= _sl_px for l in _lows)
+                                _deepest_adverse = min(_lows) if _lows else None
+                            else:
+                                _candle_hit_sl = any(h >= _sl_px for h in _highs)
+                                _deepest_adverse = max(_highs) if _highs else None
+                        except Exception:
+                            pass
+                    _payload = {
+                        "sessionId": "c80b00",
+                        "runId": "live",
+                        "hypothesisId": "A-false-sl-positive-pnl" if _anom else "A-barrier-close",
+                        "location": "engine.py:barrier_close",
+                        "message": "barrier close diagnostic (condor-side)",
+                        "timestamp": int(time.time() * 1000),
+                        "data": {
+                            "executor_id": _row.get("id") or _ex.get("id"),
+                            "pair": _row.get("pair"),
+                            "side": _side,
+                            "close_type": _ct,
+                            "net_pnl_quote": _pnl,
+                            "net_pnl_pct": _row.get("net_pnl_pct"),
+                            "entry_price": _entry,
+                            "close_price": _close,
+                            "price_move_pct": _move,
+                            "stop_loss": _sl,
+                            "sl_trigger_price": _sl_px,
+                            "candle_hit_sl": _candle_hit_sl,
+                            "deepest_adverse_price": _deepest_adverse,
+                            "positive_pnl_stop_loss": _anom,
+                            "retries": _ci.get("current_retries"),
+                        },
+                    }
+                    with open(
+                        "/home/saul/projects/Hummingbot/.cursor/debug-c80b00.log",
+                        "a",
+                        encoding="utf-8",
+                    ) as _f:
+                        _f.write(_json.dumps(_payload) + "\n")
+            except Exception:
+                pass
+            # #endregion
             for ex in barrier_closes:
                 eid = ex.get("id")
                 if eid:

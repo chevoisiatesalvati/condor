@@ -4,6 +4,7 @@ import {
   dedupeExecutorsById,
   enrichExecutorForTerminatedDisplay,
   mergeExecutorConfigs,
+  mergeExecutorOverlay,
   mergeExecutorPagesWithWs,
   mergeSessionConfigSources,
   parseControllerSession,
@@ -29,7 +30,7 @@ describe("mergeExecutorPagesWithWs", () => {
     ];
     const ws = [{ id: "active", pnl: 5, status: "running" }];
     const merged = mergeExecutorPagesWithWs(pages, ws);
-    expect(merged[1].executors[0]).toEqual({ id: "active", pnl: 5, status: "running" });
+    expect(merged[1].executors[0]).toMatchObject({ id: "active", pnl: 5, status: "running" });
     expect(merged[0].executors[0]).toEqual({ id: "x", pnl: 0 });
   });
 
@@ -43,6 +44,80 @@ describe("mergeExecutorPagesWithWs", () => {
       "new",
       "old",
     ]);
+  });
+
+  it("does not let mid-flight WS wipe persisted open+close fill prices", () => {
+    const pages: ExecutorPage[] = [
+      {
+        executors: [
+          {
+            id: "cashcat",
+            status: "terminated",
+            pnl: -7.55,
+            entry_price: 0.070362,
+            current_price: 0.065692,
+            custom_info: {
+              current_position_average_price: 0.070362,
+              close_price: 0.065692,
+              order_ids: ["open", "close"],
+            },
+          },
+        ],
+        next_cursor: null,
+      },
+    ];
+    const ws = [
+      {
+        id: "cashcat",
+        status: "terminated",
+        pnl: -7.55,
+        entry_price: 0.07016,
+        current_price: 0.07016,
+        custom_info: {
+          current_position_average_price: 0.07016,
+          close_price: 0.07016,
+          order_ids: ["open"],
+        },
+      },
+    ];
+    const merged = mergeExecutorPagesWithWs(pages, ws);
+    const ex = merged[0].executors[0] as ExecutorInfo;
+    expect(ex.custom_info?.current_position_average_price).toBe(0.070362);
+    expect(ex.custom_info?.close_price).toBe(0.065692);
+    expect(ex.entry_price).toBe(0.070362);
+    expect(ex.current_price).toBe(0.065692);
+    expect(ex.custom_info?.order_ids).toEqual(["open", "close"]);
+  });
+});
+
+describe("mergeExecutorOverlay fill preference", () => {
+  it("keeps richer REST fills when overlay is a flat mid snapshot", () => {
+    const rest = {
+      id: "x",
+      status: "terminated",
+      entry_price: 0.070362,
+      current_price: 0.065692,
+      custom_info: {
+        current_position_average_price: 0.070362,
+        close_price: 0.065692,
+        order_ids: ["a", "b"],
+      },
+    } as unknown as ExecutorInfo;
+    const ws = {
+      id: "x",
+      status: "terminated",
+      entry_price: 0.07016,
+      current_price: 0.07016,
+      custom_info: {
+        current_position_average_price: 0.07016,
+        close_price: 0.07016,
+        order_ids: ["a"],
+      },
+    } as unknown as ExecutorInfo;
+    const merged = mergeExecutorOverlay(rest, ws);
+    expect(merged.entry_price).toBe(0.070362);
+    expect(merged.current_price).toBe(0.065692);
+    expect(merged.custom_info?.close_price).toBe(0.065692);
   });
 });
 

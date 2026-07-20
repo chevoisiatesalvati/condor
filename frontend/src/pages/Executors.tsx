@@ -441,7 +441,9 @@ export function Executors() {
         .map((ex) => {
           let row = liveById.get(ex.id) ?? ex;
           const cached = cachedExecutorsById.get(ex.id);
-          if (cached) row = mergeExecutorOverlay(row, cached);
+          // Merge either direction with fill-quality preference so a stale
+          // mid-flight WS cache cannot flatten terminated entry/close.
+          if (cached) row = mergeExecutorOverlay(cached, row);
           return row;
         })
         .filter((ex) => !isExecutorActive(ex.status)),
