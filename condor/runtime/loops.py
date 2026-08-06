@@ -110,6 +110,32 @@ class LoopSupervisor:
             if e.agent.slug == agent_slug and e.strategy.slug == strategy_slug
         ]
 
+    def for_deterministic_slug(self, slug: str) -> list:
+        """Deterministic runners for a Strategies catalog slug (duck-typed).
+
+        Avoids ``isinstance`` so hot-reload of ``runner.py`` does not hide live
+        engines still registered under a previous class object.
+        """
+        out = []
+        for engine in self._engines.values():
+            strategy = getattr(engine, "strategy", None)
+            if strategy is None or getattr(strategy, "slug", None) != slug:
+                continue
+            if not hasattr(engine, "is_running"):
+                continue
+            kind = getattr(engine, "runner_kind", None)
+            if kind is not None:
+                if kind != "deterministic":
+                    continue
+            else:
+                # Legacy / hot-reloaded instances without the marker: exclude
+                # TickEngines (real Agent with a data dir).
+                agent = getattr(engine, "agent", None)
+                if agent is not None and hasattr(agent, "dir"):
+                    continue
+            out.append(engine)
+        return out
+
     # ── Status recording ──
 
     def record(self, engine, state: str) -> None:

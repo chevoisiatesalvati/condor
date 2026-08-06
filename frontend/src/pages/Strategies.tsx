@@ -3,7 +3,18 @@ import { Activity, Loader2, Play, Square } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { api, type DeterministicStrategySummary } from "@/lib/api";
+import { formatCurrencyPnl } from "@/lib/formatters";
 import { useServer } from "@/hooks/useServer";
+
+function statusBadgeClass(status: string) {
+  if (status === "running") return "bg-emerald-500/15 text-emerald-400";
+  if (status === "orphaned") return "bg-amber-500/15 text-amber-400";
+  if (status === "paused") return "bg-sky-500/15 text-sky-400";
+  if (status === "interrupted" || status === "error") {
+    return "bg-red-500/15 text-red-400";
+  }
+  return "bg-[var(--color-bg)]";
+}
 
 function StrategyCard({ strategy }: { strategy: DeterministicStrategySummary }) {
   const queryClient = useQueryClient();
@@ -11,7 +22,15 @@ function StrategyCard({ strategy }: { strategy: DeterministicStrategySummary }) 
 
   const needsPromote =
     strategy.require_promoted && !strategy.promoted_preset;
-  const canQuickStart = strategy.status !== "running" && !needsPromote;
+  const isLive = strategy.status === "running" || strategy.status === "paused";
+  const isOrphaned = strategy.status === "orphaned";
+  const canQuickStart = strategy.status === "idle" && !needsPromote;
+
+  const { data: performance } = useQuery({
+    queryKey: ["deterministic-strategy-performance", strategy.slug],
+    queryFn: () => api.getDeterministicStrategyPerformance(strategy.slug),
+    refetchInterval: 30_000,
+  });
 
   const startMutation = useMutation({
     mutationFn: () =>
@@ -29,6 +48,20 @@ function StrategyCard({ strategy }: { strategy: DeterministicStrategySummary }) 
     },
   });
 
+  const resumeMutation = useMutation({
+    mutationFn: () =>
+      api.startDeterministicStrategy(strategy.slug, {
+        config: {
+          ...(strategy.default_config || {}),
+          server_name: server || strategy.default_config?.server_name || "local",
+        },
+        session_num: strategy.session_num ?? undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["deterministic-strategies"] });
+    },
+  });
+
   const stopMutation = useMutation({
     mutationFn: () => api.stopDeterministicStrategy(strategy.slug),
     onSuccess: () => {
@@ -36,10 +69,15 @@ function StrategyCard({ strategy }: { strategy: DeterministicStrategySummary }) 
     },
   });
 
-  const busy = startMutation.isPending || stopMutation.isPending;
+  const busy =
+    startMutation.isPending || stopMutation.isPending || resumeMutation.isPending;
   const err =
     (startMutation.error as Error | null)?.message ||
-    (stopMutation.error as Error | null)?.message;
+    (stopMutation.error as Error | null)?.message ||
+    (resumeMutation.error as Error | null)?.message;
+
+  const totalPnl = Number(performance?.totals?.total_pnl ?? 0);
+  const openPos = Number(performance?.totals?.open_positions ?? 0);
 
   return (
     <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
@@ -61,13 +99,7 @@ function StrategyCard({ strategy }: { strategy: DeterministicStrategySummary }) 
             <span className="rounded-md bg-[var(--color-bg)] px-2 py-1">
               {strategy.connector}
             </span>
-            <span
-              className={`rounded-md px-2 py-1 ${
-                strategy.status === "running"
-                  ? "bg-emerald-500/15 text-emerald-400"
-                  : "bg-[var(--color-bg)]"
-              }`}
-            >
+            <span className={`rounded-md px-2 py-1 ${statusBadgeClass(strategy.status)}`}>
               {strategy.status}
             </span>
             {strategy.promoted_preset ? (
@@ -79,13 +111,25 @@ function StrategyCard({ strategy }: { strategy: DeterministicStrategySummary }) 
                 promote required
               </span>
             ) : null}
+            {performance?.totals ? (
+              <span className="rounded-md bg-[var(--color-bg)] px-2 py-1 font-mono">
+                PnL {formatCurrencyPnl(totalPnl)} · open {openPos}
+              </span>
+            ) : null}
           </div>
-          <p className="mt-2 text-xs text-[var(--color-text-muted)]">
-            Open the detail page to choose presets, edit params, and promote before live Start.
-          </p>
+          {isOrphaned ? (
+            <p className="mt-2 text-xs text-amber-400">
+              Session looks live on disk but no engine is registered (often after hot-reload).
+              Resume session {strategy.session_num} or open the detail page.
+            </p>
+          ) : (
+            <p className="mt-2 text-xs text-[var(--color-text-muted)]">
+              Open the detail page to choose presets, edit params, and promote before live Start.
+            </p>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {strategy.status === "running" ? (
+          {isLive ? (
             <button
               type="button"
               disabled={busy}
@@ -94,6 +138,16 @@ function StrategyCard({ strategy }: { strategy: DeterministicStrategySummary }) 
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
               Stop
+            </button>
+          ) : isOrphaned ? (
+            <button
+              type="button"
+              disabled={busy || strategy.session_num == null}
+              onClick={() => resumeMutation.mutate()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-sm text-white hover:bg-emerald-500 disabled:opacity-50"
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+              Resume
             </button>
           ) : (
             <button

@@ -658,7 +658,15 @@ async def post_init(application: Application) -> None:
 
 # ── Web server hot-reload (dev) ──
 
-_WEB_RELOAD_SKIP = frozenset({"condor.web.ws_manager"})
+# Never reload the loop supervisor singleton — it holds live engines.
+# Also keep process-start timestamp stable across web reloads.
+_WEB_RELOAD_SKIP = frozenset(
+    {
+        "condor.web.ws_manager",
+        "condor.runtime.loops",
+        "condor.runtime.lifecycle",
+    }
+)
 _web_reload_event: asyncio.Event | None = None
 
 
@@ -772,6 +780,34 @@ class WebServerRunner:
                 except Exception as exc:
                     logger.warning(
                         "Failed to stop %s before hot-reload: %s", engine.agent_id, exc
+                    )
+        # Deterministic runners: stop before reloading their module so the UI
+        # cannot hide an orphaned loop behind a new DeterministicRunner class.
+        runner_modules = {
+            m
+            for m in modules
+            if m == "condor.strategy_runners.runner"
+            or m.startswith("condor.strategy_runners.runner.")
+            or m == "condor.strategy_runners"
+        }
+        if runner_modules:
+            from condor.runtime.loops import get_supervisor
+
+            for engine in list(get_supervisor().all().values()):
+                if getattr(engine, "runner_kind", None) != "deterministic":
+                    # Duck-type pre-marker instances: Strategies runners lack Agent.dir.
+                    agent = getattr(engine, "agent", None)
+                    if agent is not None and hasattr(agent, "dir"):
+                        continue
+                    if not hasattr(engine, "strategy") or not hasattr(engine, "stop"):
+                        continue
+                try:
+                    await engine.stop()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to stop deterministic runner %s before hot-reload: %s",
+                        getattr(engine, "agent_id", "?"),
+                        exc,
                     )
         await self.stop()
         reload_web_modules(extra_modules)

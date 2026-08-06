@@ -20,7 +20,12 @@ from condor.strategy_runners.macdbb import (
     SignalSnapshot,
     decide,
 )
-from condor.strategy_runners.macdbb.sessions import create_session, load_default_config
+from condor.strategy_runners.macdbb.sessions import (
+    create_session,
+    find_session_dir,
+    load_default_config,
+    open_existing_session,
+)
 from condor.strategy_runners.macdbb.state_store import (
     PENDING_OPEN_TTL_TICKS,
     load_runner_state,
@@ -122,6 +127,10 @@ class DeterministicRunner:
     config: dict[str, Any]
     chat_id: int
     user_id: int
+    resume_session_num: int | None = None
+
+    # Stable marker for LoopSupervisor.for_deterministic_slug (survives class reload).
+    runner_kind: str = field(default="deterministic", init=False)
 
     agent_id: str = field(init=False)
     session_num: int = field(init=False)
@@ -150,13 +159,22 @@ class DeterministicRunner:
 
     def __post_init__(self) -> None:
         run_key = self.strategy.key
-        self.session_num, self.session_dir, self.journal = create_session(
-            slug=self.strategy.data_slug,
-            strategy_name=self.strategy.name,
-            strategy_description=self.strategy.description,
-            config=self.config,
-            run_key=run_key,
-        )
+        if self.resume_session_num is not None:
+            self.session_num, self.session_dir, self.journal = open_existing_session(
+                slug=self.strategy.data_slug,
+                session_num=int(self.resume_session_num),
+                strategy_name=self.strategy.name,
+                strategy_description=self.strategy.description,
+                run_key=run_key,
+            )
+        else:
+            self.session_num, self.session_dir, self.journal = create_session(
+                slug=self.strategy.data_slug,
+                strategy_name=self.strategy.name,
+                strategy_description=self.strategy.description,
+                config=self.config,
+                run_key=run_key,
+            )
         self.agent_id = f"{run_key}_{self.session_num}"
         self.risk = RiskEngine(resolve_risk_limits(self.config))
         maybe_cleanup(self.strategy.data_slug, config=self.config, force=True)
@@ -209,9 +227,13 @@ class DeterministicRunner:
 
     def pause(self) -> None:
         self._paused = True
+        if self._running:
+            _supervisor().record(self, LoopState.PAUSED)
 
     def resume(self) -> None:
         self._paused = False
+        if self._running:
+            _supervisor().record(self, LoopState.RUNNING)
 
     async def start(self, bot=None) -> None:
         if self._running:
@@ -443,7 +465,9 @@ class DeterministicRunner:
             decision.journal_fields["hold_reason"] = "inventory_unavailable"
             decision.journal_fields["inventory_available"] = False
 
-        apply_result = await self._apply_decision(decision)
+        apply_result = await self._apply_decision(
+            decision, open_positions=open_positions
+        )
 
         for pair, executor_id, side, entry_class in apply_result.created_pairs:
             self._pending_opens[pair] = {
@@ -675,27 +699,82 @@ class DeterministicRunner:
             )
             return [], None, 0
 
-    async def _apply_decision(self, decision) -> ApplyResult:
+    def _pnl_snapshot_for_stop(
+        self,
+        stop,
+        open_positions: list[OpenPosition],
+        executors_by_id: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Best-effort PnL/side for a stop notification."""
+        ex = executors_by_id.get(stop.executor_id) or {}
+        pnl = ex.get("pnl")
+        net_pnl_pct = ex.get("net_pnl_pct")
+        side = str(ex.get("side") or "")
+        volume = ex.get("volume")
+        if pnl is None:
+            for pos in open_positions:
+                if pos.executor_id == stop.executor_id or pos.pair == stop.pair:
+                    pnl = pos.pnl
+                    if not side:
+                        side = pos.side
+                    break
+        return {
+            "pnl": float(pnl) if pnl is not None else None,
+            "net_pnl_pct": float(net_pnl_pct) if net_pnl_pct is not None else None,
+            "side": side,
+            "volume": float(volume) if volume is not None else None,
+        }
+
+    async def _apply_decision(
+        self,
+        decision,
+        *,
+        open_positions: list[OpenPosition] | None = None,
+    ) -> ApplyResult:
+        from condor.strategy_runners.macdbb.notifications import (
+            format_close_notification,
+            format_open_notification,
+        )
+
+        positions = list(open_positions or [])
+        barrier_closes = [
+            n.text
+            for n in decision.notifications
+            if "CLOSED" in n.text.upper()
+        ]
+
         if not decision.creates and not decision.stops:
-            # Barrier-close notifications are informational (already closed on venue).
-            closes = [
-                n.text
-                for n in decision.notifications
-                if "CLOSED" in n.text.upper()
-            ]
-            return ApplyResult(ok=True, notified_closes=closes)
+            return ApplyResult(ok=True, notified_closes=barrier_closes)
 
         client = await self._get_client()
         if client is None:
             return ApplyResult(
                 ok=False,
                 error=self._last_error or "No API client available",
+                notified_closes=barrier_closes,
             )
 
         from condor.fetchers.executors import create_executor, stop_executor
 
-        result = ApplyResult(ok=True)
+        executors_by_id: dict[str, dict[str, Any]] = {}
+        try:
+            from condor.agents.performance import fetch_agent_performance
+
+            perf = await fetch_agent_performance(client, self.agent_id)
+            for ex in perf.executors:
+                eid = str(ex.get("id") or "")
+                if eid:
+                    executors_by_id[eid] = ex
+        except Exception:
+            log.debug(
+                "DeterministicRunner %s: pre-stop perf lookup failed",
+                self.agent_id,
+                exc_info=True,
+            )
+
+        result = ApplyResult(ok=True, notified_closes=list(barrier_closes))
         for stop in decision.stops:
+            snap = self._pnl_snapshot_for_stop(stop, positions, executors_by_id)
             try:
                 stop_res = await stop_executor(client, stop.executor_id)
                 if isinstance(stop_res, dict) and stop_res.get("status") == "error":
@@ -704,8 +783,38 @@ class DeterministicRunner:
                     result.ok = False
                 else:
                     result.stopped_ids.append(stop.executor_id)
+                    # Prefer post-stop executor row when available.
+                    refreshed = executors_by_id.get(stop.executor_id) or {}
+                    if isinstance(stop_res, dict):
+                        data = stop_res.get("data")
+                        if isinstance(data, dict):
+                            refreshed = {**refreshed, **data}
+                        for key in ("pnl", "net_pnl_pct", "side", "volume", "close_type"):
+                            if stop_res.get(key) is not None:
+                                refreshed[key] = stop_res[key]
+                    if refreshed.get("pnl") is not None:
+                        snap["pnl"] = float(refreshed["pnl"])
+                    if refreshed.get("net_pnl_pct") is not None:
+                        snap["net_pnl_pct"] = float(refreshed["net_pnl_pct"])
+                    if refreshed.get("side"):
+                        snap["side"] = str(refreshed["side"])
+                    if refreshed.get("volume") is not None:
+                        snap["volume"] = float(refreshed["volume"])
+                    close_type = str(
+                        refreshed.get("close_type") or stop.close_type or ""
+                    )
                     result.notified_closes.append(
-                        f"⚡ CLOSED {stop.pair} | {stop.reason} | id: {stop.executor_id}"
+                        format_close_notification(
+                            pair=stop.pair,
+                            reason=stop.reason,
+                            close_type=close_type,
+                            side=str(snap.get("side") or ""),
+                            pnl=snap.get("pnl"),
+                            net_pnl_pct=snap.get("net_pnl_pct"),
+                            executor_id=stop.executor_id,
+                            session_num=self.session_num,
+                            volume=snap.get("volume"),
+                        )
                     )
             except Exception as exc:
                 log.exception(
@@ -742,6 +851,7 @@ class DeterministicRunner:
                 if raw_leverage is not None and str(raw_leverage).strip() != "":
                     create_cfg["leverage"] = raw_leverage
                 apply_hyperliquid_leverage_cap(create_cfg)
+                leverage_used = create_cfg.get("leverage")
                 create_res = await create_executor(
                     client,
                     create_cfg,
@@ -773,10 +883,17 @@ class DeterministicRunner:
                 result.created_pairs.append(
                     (create.pair, executor_id or create.pair, create.side, create.entry_class)
                 )
-                note = (
-                    f"⚡ OPEN {create.side.upper()} {create.pair} | "
-                    f"{create.entry_class} | notional ${create.notional_quote:.2f} | "
-                    f"SL {create.sl_pct:.2f}% TP {create.tp_pct:.2f}%"
+                note = format_open_notification(
+                    side=create.side,
+                    pair=create.pair,
+                    entry_class=create.entry_class,
+                    notional_quote=create.notional_quote,
+                    sl_pct=create.sl_pct,
+                    tp_pct=create.tp_pct,
+                    session_num=self.session_num,
+                    leverage=leverage_used,
+                    score=float(create.score or 0) or None,
+                    base_amount=create.base_amount,
                 )
                 for candidate in decision.notifications:
                     text = candidate.text
@@ -785,7 +902,12 @@ class DeterministicRunner:
                         and create.pair in text
                         and create.side.upper() in text.upper()
                     ):
+                        # Prefer engine text; append leverage/session if missing.
                         note = text
+                        if leverage_used is not None and "x |" not in note and f"{leverage_used}" not in note:
+                            note = f"{note} | {float(leverage_used):.0f}x"
+                        if f"session_{self.session_num}" not in note:
+                            note = f"{note} | session_{self.session_num}"
                         break
                 result.notified_opens.append(note)
                 log.info(
@@ -846,6 +968,7 @@ async def start_deterministic_strategy(
     user_id: int,
     chat_id: int = 0,
     bot=None,
+    resume_session_num: int | None = None,
 ) -> DeterministicRunner:
     """Factory used by Strategies API."""
     strategy = get_strategy(slug)
@@ -859,6 +982,19 @@ async def start_deterministic_strategy(
             merged.update(persisted)
     except Exception:
         log.debug("Could not load strategy.yaml defaults for %s", slug, exc_info=True)
+
+    if resume_session_num is not None:
+        session_dir = find_session_dir(strategy.data_slug, int(resume_session_num))
+        if session_dir is None:
+            raise FileNotFoundError(
+                f"Session {resume_session_num} not found for '{slug}'"
+            )
+        from condor.agents.config import load_session_config
+
+        session_cfg = load_session_config(session_dir)
+        if session_cfg:
+            merged.update(session_cfg)
+
     merged.update(config or {})
     preset = str(merged.get("strategy_preset") or "")
     freq = int(merged.get("frequency_sec") or 1800)
@@ -877,6 +1013,7 @@ async def start_deterministic_strategy(
         config=merged,
         chat_id=chat_id or user_id,
         user_id=user_id,
+        resume_session_num=resume_session_num,
     )
     await runner.start(bot=bot)
     return runner

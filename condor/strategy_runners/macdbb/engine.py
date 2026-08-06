@@ -17,6 +17,10 @@ from condor.strategy_runners.macdbb.metrics import (
     compute_live_signal_metrics,
     infer_signal_label,
 )
+from condor.strategy_runners.macdbb.notifications import (
+    format_barrier_close_notification,
+    format_open_notification,
+)
 from condor.strategy_runners.macdbb.types import (
     CreateAction,
     EntryClass,
@@ -502,10 +506,8 @@ def decide(tick: MacdbbTickInput, state: MacdbbState | None = None) -> MacdbbDec
 
     notifications = [
         NotifyAction(
-            text=(
-                f"⚡ CLOSED {close.get('side', '')} {close.get('pair', '?')} | "
-                f"{close.get('close_type', '')} | PnL ${float(close.get('pnl') or 0):+.2f} | "
-                f"id: {close.get('id', '')}"
+            text=format_barrier_close_notification(
+                close, session_num=getattr(tick, "session_num", None)
             )
         )
         for close in tick.barrier_closes
@@ -564,10 +566,18 @@ def decide(tick: MacdbbTickInput, state: MacdbbState | None = None) -> MacdbbDec
                 )
                 notifications.append(
                     NotifyAction(
-                        text=(
-                            f"⚡ OPEN {side.upper()} {signal.pair} | {entry_class} | "
-                            f"notional ${create.notional_quote:.2f} | "
-                            f"SL {create.sl_pct:.2f}% TP {create.tp_pct:.2f}%"
+                        text=format_open_notification(
+                            side=side,
+                            pair=signal.pair,
+                            entry_class=entry_class,
+                            notional_quote=create.notional_quote,
+                            sl_pct=create.sl_pct,
+                            tp_pct=create.tp_pct,
+                            price=float(signal.price or 0) or None,
+                            bb_pos_pct=float(signal.bb_pos_pct),
+                            score=float(score),
+                            base_amount=create.base_amount,
+                            session_num=getattr(tick, "session_num", None),
                         )
                     )
                 )
@@ -580,10 +590,17 @@ def decide(tick: MacdbbTickInput, state: MacdbbState | None = None) -> MacdbbDec
             continue
         notifications.append(
             NotifyAction(
-                text=(
-                    f"⚡ OPEN {create.side.upper()} {create.pair} | {create.entry_class} | "
-                    f"flip_reverse | notional ${create.notional_quote:.2f} | "
-                    f"SL {create.sl_pct:.2f}% TP {create.tp_pct:.2f}%"
+                text=format_open_notification(
+                    side=create.side,
+                    pair=create.pair,
+                    entry_class=create.entry_class,
+                    notional_quote=create.notional_quote,
+                    sl_pct=create.sl_pct,
+                    tp_pct=create.tp_pct,
+                    score=float(create.score or 0) or None,
+                    base_amount=create.base_amount,
+                    flip_reverse=True,
+                    session_num=getattr(tick, "session_num", None),
                 )
             )
         )

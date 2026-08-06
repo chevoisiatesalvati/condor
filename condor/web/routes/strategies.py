@@ -42,6 +42,7 @@ class StartStrategyBody(BaseModel):
     chat_id: int = 0
     strategy_preset: str = ""
     strategy_params: dict[str, Any] = Field(default_factory=dict)
+    session_num: int | None = None
 
 
 class PromoteBody(BaseModel):
@@ -56,14 +57,55 @@ class DefaultsBody(BaseModel):
 
 
 def _running_for(slug: str) -> list[Any]:
+    """Live deterministic runners for ``slug`` (duck-typed; survives class reload)."""
     from condor.runtime.loops import get_supervisor
-    from condor.strategy_runners.runner import DeterministicRunner
 
-    out = []
-    for engine in get_supervisor().all().values():
-        if isinstance(engine, DeterministicRunner) and engine.strategy.slug == slug:
-            out.append(engine)
-    return out
+    return get_supervisor().for_deterministic_slug(slug)
+
+
+def _is_registered(agent_id: str) -> bool:
+    from condor.runtime.loops import get_supervisor
+
+    return get_supervisor().get(agent_id) is not None
+
+
+def _orphaned_sessions(strat) -> list[int]:
+    from condor.strategy_runners.macdbb.sessions import find_orphaned_strategy_sessions
+
+    return find_orphaned_strategy_sessions(
+        data_slug=strat.data_slug,
+        run_key=strat.key,
+        is_registered=_is_registered,
+    )
+
+
+def _session_disk_status(strat, session_num: int, *, running_ids: set[str]) -> str:
+    """Infer per-session status for list/performance rows."""
+    agent_id = f"{strat.key}_{session_num}"
+    if agent_id in running_ids:
+        for engine in _running_for(strat.slug):
+            if getattr(engine, "agent_id", None) == agent_id:
+                if getattr(engine, "is_running", False):
+                    return "running"
+                if getattr(engine, "is_active", False):
+                    return "paused"
+                return "running"
+        return "running"
+    from condor.strategy_runners.macdbb.sessions import find_session_dir
+
+    session_dir = find_session_dir(strat.data_slug, session_num)
+    if session_dir is None:
+        return "closed"
+    from condor.agents.session_status import session_appears_orphaned
+    from condor.runtime.registry_file import read_status
+
+    if session_appears_orphaned(session_dir):
+        return "orphaned"
+    status = read_status(session_dir) or {}
+    state = str(status.get("state") or "").lower()
+    if state in {"interrupted", "paused", "running", "error"}:
+        return state if state != "running" else "interrupted"
+    return "closed"
 
 
 def _merged_default_config(strat) -> dict[str, Any]:
@@ -134,23 +176,65 @@ def _summary_for(strat) -> StrategySummary:
     running = _running_for(strat.slug)
     manifest = load_manifest(strat.slug)
     engine = running[0] if running else None
+    status = "idle"
+    agent_id = None
+    session_num = None
+    last_tick_at = None
+    tick_count = None
+    last_error = None
+    last_tick_summary = None
+
+    if engine is not None:
+        if getattr(engine, "is_running", False):
+            status = "running"
+        elif getattr(engine, "is_active", False):
+            status = "paused"
+        else:
+            status = "idle"
+        agent_id = getattr(engine, "agent_id", None)
+        session_num = getattr(engine, "session_num", None)
+        last_tick_at = getattr(engine, "last_tick_at", None) or None
+        tick_count = getattr(engine, "tick_count", None)
+        last_error = getattr(engine, "last_error", None) or None
+        last_tick_summary = getattr(engine, "last_tick_summary", None) or None
+    else:
+        orphaned = _orphaned_sessions(strat)
+        if orphaned:
+            status = "orphaned"
+            session_num = orphaned[-1]
+            agent_id = f"{strat.key}_{session_num}"
+        else:
+            from condor.agents.sessions_index import infer_latest_session_status
+            from condor.strategy_runners.macdbb.sessions import strategy_runs_root
+
+            disk = infer_latest_session_status(
+                strategy_runs_root(strat.data_slug), strat.key
+            )
+            if disk:
+                disk_status = str(disk.get("status") or "idle").lower()
+                if disk_status in {"interrupted", "error", "paused"}:
+                    status = disk_status
+                    agent_id = disk.get("agent_id")
+                    session_num = disk.get("session_num")
+                    tick_count = disk.get("tick_count")
+
     return StrategySummary(
         slug=strat.slug,
         name=strat.name,
         description=strat.description,
         connector=strat.connector,
         require_promoted=strat.require_promoted,
-        status="running" if engine and engine.is_running else "idle",
-        agent_id=engine.agent_id if engine else None,
-        session_num=engine.session_num if engine else None,
+        status=status,
+        agent_id=agent_id,
+        session_num=session_num,
         promoted_preset=manifest.preset if manifest else None,
         promoted_preset_hash=manifest.preset_hash if manifest else None,
         default_config=_merged_default_config(strat),
         strategy_presets=_preset_catalog(strat.data_slug),
-        last_tick_at=getattr(engine, "last_tick_at", None) or None,
-        tick_count=getattr(engine, "tick_count", None),
-        last_error=getattr(engine, "last_error", None) or None,
-        last_tick_summary=getattr(engine, "last_tick_summary", None) or None,
+        last_tick_at=last_tick_at,
+        tick_count=tick_count,
+        last_error=last_error,
+        last_tick_summary=last_tick_summary,
     )
 
 
@@ -319,7 +403,7 @@ async def list_strategy_sessions(
     from condor.strategy_runners.macdbb.sessions import list_session_dirs
 
     running = _running_for(slug)
-    running_num = running[0].session_num if running else None
+    running_ids = {e.agent_id for e in running}
     out: list[dict[str, Any]] = []
     for path in list_session_dirs(strat.data_slug):
         try:
@@ -334,7 +418,9 @@ async def list_strategy_sessions(
                 "path": str(path),
                 "has_journal": journal.is_file(),
                 "mtime": path.stat().st_mtime,
-                "status": "running" if num == running_num else "closed",
+                "status": _session_disk_status(
+                    strat, num, running_ids=running_ids
+                ),
             }
         )
     return {"sessions": out}
@@ -450,11 +536,15 @@ async def get_strategy_performance(
             row = {
                 "agent_id": agent_id,
                 "session_num": num,
-                "status": "running" if agent_id in running_ids else "closed",
+                "status": _session_disk_status(
+                    strat, num, running_ids=running_ids
+                ),
                 "realized_pnl": perf.realized_pnl,
                 "unrealized_pnl": perf.unrealized_pnl,
                 "total_pnl": perf.total_pnl,
                 "volume": perf.volume,
+                "fees": getattr(perf, "fees", 0) or 0,
+                "trade_count": getattr(perf, "trade_count", 0) or 0,
                 "open_count": perf.open_count,
                 "closed_count": perf.closed_count,
             }
@@ -472,13 +562,26 @@ async def get_strategy_performance(
 async def get_live_executors(
     slug: str, user: WebUser = Depends(get_current_user)
 ):
-    """Open executors for the currently running DeterministicRunner session."""
+    """Open executors for the live or orphaned DeterministicRunner session."""
     _ = user
     strat = get_strategy(slug)
     if strat is None:
         raise HTTPException(status_code=404, detail=f"Strategy '{slug}' not found")
     running = _running_for(slug)
-    if not running:
+    session_num: int | None = None
+    agent_id: str | None = None
+    is_live = False
+    if running:
+        engine = running[0]
+        session_num = int(engine.session_num)
+        agent_id = engine.agent_id
+        is_live = True
+    else:
+        orphaned = _orphaned_sessions(strat)
+        if orphaned:
+            session_num = int(orphaned[-1])
+            agent_id = f"{strat.key}_{session_num}"
+    if session_num is None:
         return {
             "running": False,
             "agent_id": None,
@@ -486,12 +589,11 @@ async def get_live_executors(
             "executors": [],
             "performance": None,
         }
-    engine = running[0]
-    payload = await get_session_executors(slug, engine.session_num, user)
+    payload = await get_session_executors(slug, session_num, user)
     return {
-        "running": True,
-        "agent_id": engine.agent_id,
-        "session_num": engine.session_num,
+        "running": is_live,
+        "agent_id": agent_id,
+        "session_num": session_num,
         "executors": payload.get("executors") or [],
         "performance": payload.get("performance"),
     }
@@ -508,6 +610,26 @@ async def start_strategy(
         raise HTTPException(status_code=404, detail=f"Strategy '{slug}' not found")
     if _running_for(slug):
         raise HTTPException(status_code=409, detail=f"Strategy '{slug}' already running")
+
+    orphaned = _orphaned_sessions(strat)
+    resume_session_num = body.session_num
+    if resume_session_num is not None:
+        from condor.strategy_runners.macdbb.sessions import find_session_dir
+
+        if find_session_dir(strat.data_slug, int(resume_session_num)) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session {resume_session_num} not found for '{slug}'",
+            )
+    elif orphaned:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot start a new session: session(s) {orphaned} journal shows "
+                f"Running/Paused but no engine is registered (likely orphaned after "
+                f"hot-reload). Resume session {orphaned[-1]} or fully restart Condor."
+            ),
+        )
 
     config = dict(body.config or {})
     preset = body.strategy_preset or str(config.get("strategy_preset") or "")
@@ -543,9 +665,12 @@ async def start_strategy(
             config=config,
             user_id=user.id,
             chat_id=body.chat_id or user.id,
+            resume_session_num=resume_session_num,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -557,6 +682,7 @@ async def start_strategy(
         "slug": slug,
         "agent_id": runner.agent_id,
         "session_num": runner.session_num,
+        "resumed": resume_session_num is not None,
     }
 
 
@@ -571,6 +697,33 @@ async def stop_strategy(
     for engine in list(running):
         await engine.stop()
     return {"stopped": True, "slug": slug}
+
+
+@router.post("/{slug}/pause")
+async def pause_strategy(
+    slug: str, user: WebUser = Depends(get_current_user)
+):
+    _ = user
+    running = _running_for(slug)
+    if not running:
+        raise HTTPException(status_code=404, detail=f"No running instance of '{slug}'")
+    for engine in running:
+        engine.pause()
+    return {"paused": True, "slug": slug}
+
+
+@router.post("/{slug}/resume")
+async def resume_strategy_loop(
+    slug: str, user: WebUser = Depends(get_current_user)
+):
+    """In-process resume (unpause) — not the same as Resuming a session_num."""
+    _ = user
+    running = _running_for(slug)
+    if not running:
+        raise HTTPException(status_code=404, detail=f"No running instance of '{slug}'")
+    for engine in running:
+        engine.resume()
+    return {"resumed": True, "slug": slug}
 
 
 @router.get("/{slug}/promote")

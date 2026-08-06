@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Loader2, Play, Save, Square } from "lucide-react";
+import { ArrowLeft, Loader2, Pause, Play, Save, Square } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
@@ -12,12 +12,38 @@ import {
 import { StrategyParamsForm } from "@/components/agent/StrategyParamsForm";
 import { StrategyPresetSelect } from "@/components/agent/StrategyPresetSelect";
 import { api } from "@/lib/api";
+import {
+  formatCurrencyPnl,
+  formatCurrencyVolume,
+} from "@/lib/formatters";
 import { useServer } from "@/hooks/useServer";
 
 function formatTs(ts?: number | null) {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleString();
 }
+
+function statusBadgeClass(status: string) {
+  if (status === "running") return "bg-emerald-500/15 text-emerald-400";
+  if (status === "orphaned") return "bg-amber-500/15 text-amber-400";
+  if (status === "paused") return "bg-sky-500/15 text-sky-400";
+  if (status === "interrupted" || status === "error") {
+    return "bg-red-500/15 text-red-400";
+  }
+  return "bg-[var(--color-bg)] text-[var(--color-text-muted)]";
+}
+
+type SessionPerfRow = {
+  agent_id?: string;
+  session_num: number;
+  status?: string;
+  total_pnl?: number;
+  realized_pnl?: number;
+  unrealized_pnl?: number;
+  volume?: number;
+  trade_count?: number;
+  open_count?: number;
+};
 
 export function StrategyRunnerDetail() {
   const { slug = "" } = useParams();
@@ -63,10 +89,16 @@ export function StrategyRunnerDetail() {
     refetchInterval: 15_000,
   });
 
+  const showLiveExecutors =
+    strategy?.status === "running" ||
+    strategy?.status === "paused" ||
+    strategy?.status === "orphaned" ||
+    Number(performance?.totals?.open_positions || 0) > 0;
+
   const { data: liveExecutors } = useQuery({
     queryKey: ["deterministic-strategy-live-executors", slug],
     queryFn: () => api.getDeterministicLiveExecutors(slug),
-    enabled: Boolean(slug) && strategy?.status === "running",
+    enabled: Boolean(slug) && showLiveExecutors,
     refetchInterval: 5_000,
   });
 
@@ -157,11 +189,16 @@ export function StrategyRunnerDetail() {
     strategyPreset.length > 0 &&
     Object.keys(strategyParams).length > 0;
 
+  const isLive = strategy?.status === "running" || strategy?.status === "paused";
+  const isOrphaned = strategy?.status === "orphaned";
   const canStart =
-    strategy?.status !== "running" &&
+    strategy?.status === "idle" &&
     (!strategy?.require_promoted || selectionMatchesPromote);
 
   const startBlockedReason = useMemo(() => {
+    if (isOrphaned) {
+      return `Session ${strategy?.session_num} looks orphaned after hot-reload. Resume it instead of starting a new session.`;
+    }
     if (!strategy?.require_promoted) return "";
     if (!promoteInfo?.promoted) {
       return "Promote a named preset before live Start (require_promoted).";
@@ -173,7 +210,15 @@ export function StrategyRunnerDetail() {
       return "Custom params cannot be started while require_promoted is on — pick a named preset and promote it.";
     }
     return "";
-  }, [strategy, promoteInfo, promotedPreset, strategyPreset]);
+  }, [strategy, promoteInfo, promotedPreset, strategyPreset, isOrphaned]);
+
+  const invalidateLifecycle = () => {
+    queryClient.invalidateQueries({ queryKey: ["deterministic-strategy", slug] });
+    queryClient.invalidateQueries({ queryKey: ["deterministic-strategies"] });
+    queryClient.invalidateQueries({ queryKey: ["deterministic-strategy-sessions", slug] });
+    queryClient.invalidateQueries({ queryKey: ["deterministic-strategy-performance", slug] });
+    queryClient.invalidateQueries({ queryKey: ["deterministic-strategy-live-executors", slug] });
+  };
 
   const buildConfig = () => ({
     ...(strategy?.default_config || {}),
@@ -192,21 +237,33 @@ export function StrategyRunnerDetail() {
         strategy_preset: strategyPreset,
         strategy_params: strategyParams,
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["deterministic-strategy", slug] });
-      queryClient.invalidateQueries({ queryKey: ["deterministic-strategies"] });
-      queryClient.invalidateQueries({ queryKey: ["deterministic-strategy-sessions", slug] });
-      queryClient.invalidateQueries({ queryKey: ["deterministic-strategy-live-executors", slug] });
-    },
+    onSuccess: invalidateLifecycle,
+  });
+
+  const resumeSessionMutation = useMutation({
+    mutationFn: (sessionNum: number) =>
+      api.startDeterministicStrategy(slug, {
+        config: buildConfig(),
+        strategy_preset: strategyPreset,
+        strategy_params: strategyParams,
+        session_num: sessionNum,
+      }),
+    onSuccess: invalidateLifecycle,
   });
 
   const stopMutation = useMutation({
     mutationFn: () => api.stopDeterministicStrategy(slug),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["deterministic-strategy", slug] });
-      queryClient.invalidateQueries({ queryKey: ["deterministic-strategies"] });
-      queryClient.invalidateQueries({ queryKey: ["deterministic-strategy-live-executors", slug] });
-    },
+    onSuccess: invalidateLifecycle,
+  });
+
+  const pauseMutation = useMutation({
+    mutationFn: () => api.pauseDeterministicStrategy(slug),
+    onSuccess: invalidateLifecycle,
+  });
+
+  const unpauseMutation = useMutation({
+    mutationFn: () => api.resumeDeterministicStrategyLoop(slug),
+    onSuccess: invalidateLifecycle,
   });
 
   const promoteMutation = useMutation({
@@ -243,10 +300,18 @@ export function StrategyRunnerDetail() {
     return <p className="text-sm text-red-400">{(error as Error)?.message || "Not found"}</p>;
   }
 
-  const busy = startMutation.isPending || stopMutation.isPending;
+  const busy =
+    startMutation.isPending ||
+    stopMutation.isPending ||
+    resumeSessionMutation.isPending ||
+    pauseMutation.isPending ||
+    unpauseMutation.isPending;
   const actionErr =
     (startMutation.error as Error | null)?.message ||
     (stopMutation.error as Error | null)?.message ||
+    (resumeSessionMutation.error as Error | null)?.message ||
+    (pauseMutation.error as Error | null)?.message ||
+    (unpauseMutation.error as Error | null)?.message ||
     (promoteMutation.error as Error | null)?.message ||
     (saveDefaultsMutation.error as Error | null)?.message;
 
@@ -254,6 +319,12 @@ export function StrategyRunnerDetail() {
     const status = String(ex.status || "").toLowerCase();
     return status === "running" || status === "active" || status === "";
   });
+
+  const totals = performance?.totals || {};
+  const sessionRows = (performance?.sessions || []) as SessionPerfRow[];
+  const sessionStatusByNum = new Map(
+    (sessionsInfo?.sessions || []).map((s) => [s.session_num, s.status || "closed"]),
+  );
 
   return (
     <div className="space-y-6">
@@ -270,6 +341,16 @@ export function StrategyRunnerDetail() {
           <p className="mt-1 max-w-2xl text-sm text-[var(--color-text-muted)]">
             {strategy.description}
           </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className={`rounded-md px-2 py-1 ${statusBadgeClass(strategy.status)}`}>
+              {strategy.status}
+            </span>
+            {strategy.agent_id ? (
+              <span className="font-mono text-[var(--color-text-muted)]">
+                session {strategy.session_num} · {strategy.agent_id}
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -286,14 +367,56 @@ export function StrategyRunnerDetail() {
             Save as defaults
           </button>
           {strategy.status === "running" ? (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => pauseMutation.mutate()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
+              >
+                <Pause className="h-3.5 w-3.5" />
+                Pause
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => stopMutation.mutate()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
+              >
+                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
+                Stop
+              </button>
+            </>
+          ) : strategy.status === "paused" ? (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => unpauseMutation.mutate()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-2 text-sm text-white"
+              >
+                <Play className="h-3.5 w-3.5" />
+                Unpause
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => stopMutation.mutate()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
+              >
+                <Square className="h-3.5 w-3.5" />
+                Stop
+              </button>
+            </>
+          ) : isOrphaned ? (
             <button
               type="button"
-              disabled={busy}
-              onClick={() => stopMutation.mutate()}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
+              disabled={busy || strategy.session_num == null}
+              onClick={() => resumeSessionMutation.mutate(strategy.session_num!)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-sm text-white"
             >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
-              Stop
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+              Resume session {strategy.session_num}
             </button>
           ) : (
             <button
@@ -314,11 +437,10 @@ export function StrategyRunnerDetail() {
       {saveDefaultsMutation.isSuccess ? (
         <p className="text-sm text-emerald-400">Defaults saved.</p>
       ) : null}
-      {startBlockedReason && strategy.status !== "running" ? (
+      {startBlockedReason && !isLive ? (
         <p className="text-sm text-amber-400">{startBlockedReason}</p>
       ) : null}
 
-      {/* Live status */}
       <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
         <h2 className="mb-3 font-medium text-[var(--color-text)]">Live status</h2>
         <dl className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 text-[var(--color-text-muted)]">
@@ -350,34 +472,59 @@ export function StrategyRunnerDetail() {
             {strategy.last_error}
           </p>
         ) : null}
-        {performance?.totals ? (
-          <div className="mt-3 flex flex-wrap gap-3 text-xs text-[var(--color-text-muted)]">
-            <span>
-              PnL{" "}
-              <span className="text-[var(--color-text)]">
-                ${Number(performance.totals.total_pnl || 0).toFixed(2)}
-              </span>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div>
+            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+              Total PnL
             </span>
-            <span>
-              Volume{" "}
-              <span className="text-[var(--color-text)]">
-                ${Number(performance.totals.volume || 0).toFixed(2)}
-              </span>
-            </span>
-            <span>
-              Open{" "}
-              <span className="text-[var(--color-text)]">
-                {Number(performance.totals.open_positions || 0)}
-              </span>
+            <span className="font-mono text-lg text-[var(--color-text)]">
+              {formatCurrencyPnl(Number(totals.total_pnl || 0))}
             </span>
           </div>
-        ) : null}
+          <div>
+            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+              Realized
+            </span>
+            <span className="font-mono text-lg text-[var(--color-text)]">
+              {formatCurrencyPnl(Number(totals.realized_pnl || 0))}
+            </span>
+          </div>
+          <div>
+            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+              Unrealized
+            </span>
+            <span className="font-mono text-lg text-[var(--color-text)]">
+              {formatCurrencyPnl(Number(totals.unrealized_pnl || 0))}
+            </span>
+          </div>
+          <div>
+            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+              Volume
+            </span>
+            <span className="font-mono text-lg text-[var(--color-text)]">
+              {formatCurrencyVolume(Number(totals.volume || 0))}
+            </span>
+          </div>
+          <div>
+            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+              Open
+            </span>
+            <span className="font-mono text-lg text-[var(--color-text)]">
+              {Number(totals.open_positions || 0)}
+            </span>
+          </div>
+        </div>
       </div>
 
-      {strategy.status === "running" ? (
+      {showLiveExecutors ? (
         <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
           <h2 className="mb-3 font-medium text-[var(--color-text)]">
             Open executors ({openExecutors.length})
+            {isOrphaned ? (
+              <span className="ml-2 text-xs font-normal text-amber-400">
+                (orphaned session — positions may still be live)
+              </span>
+            ) : null}
           </h2>
           {openExecutors.length === 0 ? (
             <p className="text-[var(--color-text-muted)]">No open executors yet.</p>
@@ -403,7 +550,7 @@ export function StrategyRunnerDetail() {
                         {String(ex.side || "—")}
                       </td>
                       <td className="py-1.5 pr-3 text-[var(--color-text)]">
-                        ${Number(ex.pnl ?? ex.net_pnl_quote ?? 0).toFixed(2)}
+                        {formatCurrencyPnl(Number(ex.pnl ?? ex.net_pnl_quote ?? 0))}
                       </td>
                       <td className="py-1.5 pr-3 text-[var(--color-text)]">
                         {String(ex.status || "—")}
@@ -419,6 +566,113 @@ export function StrategyRunnerDetail() {
           )}
         </div>
       ) : null}
+
+      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
+        <h2 className="mb-3 font-medium text-[var(--color-text)]">
+          Sessions ({sessionRows.length || sessionsInfo?.sessions?.length || 0})
+        </h2>
+        {sessionRows.length === 0 && !(sessionsInfo?.sessions || []).length ? (
+          <p className="text-[var(--color-text-muted)]">No sessions yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="text-[var(--color-text-muted)]">
+                <tr>
+                  <th className="px-2 py-1">#</th>
+                  <th className="px-2 py-1">Status</th>
+                  <th className="px-2 py-1 text-right">Total PnL</th>
+                  <th className="px-2 py-1 text-right">Realized</th>
+                  <th className="px-2 py-1 text-right">Unrealized</th>
+                  <th className="px-2 py-1 text-right">Volume</th>
+                  <th className="px-2 py-1 text-right">Trades</th>
+                  <th className="px-2 py-1 text-right">Open</th>
+                  <th className="px-2 py-1 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(sessionRows.length
+                  ? sessionRows
+                  : (sessionsInfo?.sessions || []).map((s) => ({
+                      session_num: s.session_num,
+                      status: s.status,
+                      total_pnl: 0,
+                      realized_pnl: 0,
+                      unrealized_pnl: 0,
+                      volume: 0,
+                      trade_count: 0,
+                      open_count: 0,
+                    }))
+                ).map((row) => {
+                  const status =
+                    row.status ||
+                    sessionStatusByNum.get(row.session_num) ||
+                    "closed";
+                  const canResumeRow =
+                    status !== "running" && status !== "paused" && !isLive;
+                  const pnl = Number(row.total_pnl || 0);
+                  return (
+                    <tr
+                      key={row.session_num}
+                      onClick={() => setSelectedSession(row.session_num)}
+                      className={`cursor-pointer border-t border-[var(--color-border)]/40 font-mono hover:bg-[var(--color-surface-hover)] ${
+                        selectedSession === row.session_num
+                          ? "bg-[var(--color-surface-hover)]"
+                          : ""
+                      }`}
+                    >
+                      <td className="px-2 py-1.5 text-[var(--color-text)]">
+                        {row.session_num}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <span className={`rounded px-1.5 py-0.5 ${statusBadgeClass(status)}`}>
+                          {status}
+                        </span>
+                      </td>
+                      <td
+                        className={`px-2 py-1.5 text-right ${
+                          pnl >= 0 ? "text-emerald-400" : "text-red-400"
+                        }`}
+                      >
+                        {formatCurrencyPnl(pnl)}
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
+                        {formatCurrencyPnl(Number(row.realized_pnl || 0))}
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
+                        {formatCurrencyPnl(Number(row.unrealized_pnl || 0))}
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
+                        {formatCurrencyVolume(Number(row.volume || 0))}
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
+                        {Number(row.trade_count || 0)}
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
+                        {Number(row.open_count || 0)}
+                      </td>
+                      <td className="px-2 py-1.5 text-right">
+                        {canResumeRow ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              resumeSessionMutation.mutate(row.session_num);
+                            }}
+                            className="rounded bg-emerald-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-emerald-500 disabled:opacity-40"
+                          >
+                            Resume
+                          </button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="space-y-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
@@ -518,50 +772,19 @@ export function StrategyRunnerDetail() {
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-          <h2 className="mb-3 font-medium text-[var(--color-text)]">Sessions</h2>
-          {(sessionsInfo?.sessions || []).length === 0 ? (
-            <p className="text-[var(--color-text-muted)]">No sessions yet.</p>
-          ) : (
-            <ul className="space-y-2">
-              {(sessionsInfo?.sessions || []).slice(0, 20).map((session) => (
-                <li key={session.session_num}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSession(session.session_num)}
-                    className={`flex w-full justify-between gap-4 rounded-lg px-2 py-1.5 text-left font-mono text-xs hover:bg-[var(--color-bg)] ${
-                      selectedSession === session.session_num
-                        ? "bg-[var(--color-bg)] text-[var(--color-primary)]"
-                        : "text-[var(--color-text-muted)]"
-                    }`}
-                  >
-                    <span>
-                      session_{session.session_num}
-                      {session.status === "running" ? " · running" : ""}
-                    </span>
-                    <span>{new Date(session.mtime * 1000).toLocaleString()}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-          <h2 className="mb-3 font-medium text-[var(--color-text)]">
-            Journal{selectedSession != null ? ` · session_${selectedSession}` : ""}
-          </h2>
-          {selectedSession == null ? (
-            <p className="text-[var(--color-text-muted)]">Select a session to read its journal.</p>
-          ) : journal?.content ? (
-            <pre className="max-h-96 overflow-auto whitespace-pre-wrap font-mono text-xs text-[var(--color-text)]">
-              {journal.content}
-            </pre>
-          ) : (
-            <p className="text-[var(--color-text-muted)]">Empty journal.</p>
-          )}
-        </div>
+      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
+        <h2 className="mb-3 font-medium text-[var(--color-text)]">
+          Journal{selectedSession != null ? ` · session_${selectedSession}` : ""}
+        </h2>
+        {selectedSession == null ? (
+          <p className="text-[var(--color-text-muted)]">Select a session row to read its journal.</p>
+        ) : journal?.content ? (
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap font-mono text-xs text-[var(--color-text)]">
+            {journal.content}
+          </pre>
+        ) : (
+          <p className="text-[var(--color-text-muted)]">Empty journal.</p>
+        )}
       </div>
 
       <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">

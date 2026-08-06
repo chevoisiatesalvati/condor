@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -120,6 +120,47 @@ def find_session_dir(slug: str, session_num: int) -> Path | None:
         if path.name == f"session_{session_num}":
             return path
     return None
+
+
+def open_existing_session(
+    *,
+    slug: str,
+    session_num: int,
+    strategy_name: str,
+    strategy_description: str,
+    run_key: str,
+) -> tuple[int, Path, JournalManager]:
+    """Reopen an existing session directory and attach a journal writer."""
+    session_dir = find_session_dir(slug, session_num)
+    if session_dir is None or not session_dir.is_dir():
+        raise FileNotFoundError(f"Session {session_num} not found for {slug}")
+    root = strategy_runs_root(slug)
+    agent_id = f"{run_key}_{session_num}"
+    journal = JournalManager(
+        agent_id,
+        strategy_name=strategy_name,
+        strategy_description=strategy_description,
+        session_dir=session_dir,
+        agent_dir=root,
+    )
+    return session_num, session_dir, journal
+
+
+def find_orphaned_strategy_sessions(
+    *,
+    data_slug: str,
+    run_key: str,
+    is_registered: Callable[[str], bool] | None = None,
+) -> list[int]:
+    """Orphaned active sessions under data/strategy_runs (and not registered)."""
+    from condor.agents.session_status import find_orphaned_active_sessions
+
+    check = is_registered if is_registered is not None else (lambda _aid: False)
+    return find_orphaned_active_sessions(
+        run_key,
+        strategy_runs_root(data_slug),
+        is_registered=check,
+    )
 
 
 def load_default_config(slug: str = MACDBB_SLUG) -> dict[str, Any]:

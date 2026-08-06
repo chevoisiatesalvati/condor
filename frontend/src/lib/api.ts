@@ -1229,6 +1229,7 @@ export const api = {
       chat_id?: number;
       strategy_preset?: string;
       strategy_params?: Record<string, unknown>;
+      session_num?: number;
     },
   ) =>
     apiFetch<{
@@ -1236,6 +1237,7 @@ export const api = {
       slug: string;
       agent_id: string;
       session_num: number;
+      resumed?: boolean;
     }>(`/api/v1/strategies/${encodeURIComponent(slug)}/start`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -1244,6 +1246,18 @@ export const api = {
   stopDeterministicStrategy: (slug: string) =>
     apiFetch<{ stopped: boolean; slug: string }>(
       `/api/v1/strategies/${encodeURIComponent(slug)}/stop`,
+      { method: "POST" },
+    ),
+
+  pauseDeterministicStrategy: (slug: string) =>
+    apiFetch<{ paused: boolean; slug: string }>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}/pause`,
+      { method: "POST" },
+    ),
+
+  resumeDeterministicStrategyLoop: (slug: string) =>
+    apiFetch<{ resumed: boolean; slug: string }>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}/resume`,
       { method: "POST" },
     ),
 

@@ -16,6 +16,7 @@ registry lazily to keep the handler import graph acyclic.
 
 from condor.runtime.events import EventType, RuntimeEvent
 from condor.runtime.keys import MCP, TELEGRAM, WEB, SessionKey
+from condor.runtime.lifecycle import process_started_at
 from condor.runtime.models import PromptRequest, SessionInfo, SessionSpec
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "SessionInfo",
     "SessionKey",
     "SessionSpec",
+    "process_started_at",
 ]

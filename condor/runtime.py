@@ -1,12 +1,12 @@
-"""Process-level lifecycle timestamps (not reloaded on dev hot-reload)."""
+"""Deprecated shim: ``process_started_at`` lives in ``condor.runtime.lifecycle``.
+
+The ``condor.runtime`` *package* shadows this module on import. Prefer::
+
+    from condor.runtime import process_started_at
+"""
 
 from __future__ import annotations
 
-import time
+from condor.runtime.lifecycle import process_started_at
 
-_PROCESS_STARTED_AT = time.time()
-
-
-def process_started_at() -> float:
-    """When this Condor process started (Unix timestamp)."""
-    return _PROCESS_STARTED_AT
+__all__ = ["process_started_at"]
