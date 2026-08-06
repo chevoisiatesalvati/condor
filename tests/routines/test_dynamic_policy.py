@@ -236,7 +236,7 @@ def test_scanner_natr_mean_matches_market_scanner_analyze_pair():
     }
     analyzed = analyze_pair(candles, pair_info)
     assert analyzed is not None
-    from condor.trading_agent.policies.macdbb_dynamic import scanner_natr_mean_from_candles
+    from condor.strategy_runners.macdbb.dynamic import scanner_natr_mean_from_candles
 
     shared = scanner_natr_mean_from_candles(candles, entry_time=None)
     assert shared is not None
@@ -244,7 +244,7 @@ def test_scanner_natr_mean_matches_market_scanner_analyze_pair():
 
 
 def test_estimate_pair_volatility_uses_scanner_natr_from_1m_cache():
-    from condor.trading_agent.policies.macdbb_dynamic import (
+    from condor.strategy_runners.macdbb.dynamic import (
         estimate_pair_volatility,
         scanner_natr_mean_from_candles,
     )

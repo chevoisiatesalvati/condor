@@ -1,7 +1,7 @@
-"""Re-export macdbb_scanner_aggressive_hl preset definitions (owned by the agent)."""
+"""Re-export macdbb preset definitions from strategy_runners."""
 
 # isort: off
-from agents.macdbb_scanner_aggressive_hl.presets import (
+from condor.strategy_runners.macdbb.presets import (
     DEFAULT_TIMELINE_SNAPSHOT_DIR as DEFAULT_TIMELINE_SNAPSHOT_DIR,
     DYNAMIC_PRESET_OVERRIDES as DYNAMIC_PRESET_OVERRIDES,
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL as FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
@@ -34,6 +34,7 @@ __all__ = [
     "FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL",
     "PRESET_LABELS",
     "PRESET_OVERRIDES",
+    "PUBLIC_DYNAMIC_PRESET_OVERRIDES",
     "USER_WINS_AFTER_PRESET_KEYS",
     "_DRIVER_SESSION",
     "_DRIVER_TIMELINE",
@@ -42,7 +43,13 @@ __all__ = [
     "_STRATEGY_TIMELINE_MEGA_BEST",
     "_build_timeline_driver",
     "_merge_preset_layers",
+    "backtest_preset_names",
     "capital_normalized_pnl",
+    "current_winner_preset_name",
+    "get_dynamic_preset_overrides",
+    "get_private_preset_bundle",
+    "known_preset_names",
+    "preset_labels",
     "resolve_config_with_preset",
     "resolve_timeline_range",
 ]

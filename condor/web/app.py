@@ -28,6 +28,7 @@ from condor.web.routes import (
     servers,
     sessions,
     settings,
+    strategies,
     transcribe,
     ws,
 )
@@ -76,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(market.router, prefix="/api/v1")
     app.include_router(ws.router, prefix="/api/v1")
     app.include_router(agents.router, prefix="/api/v1")
+    app.include_router(strategies.router, prefix="/api/v1")
     app.include_router(routines.router, prefix="/api/v1")
     app.include_router(reports.router, prefix="/api/v1")
     app.include_router(settings.router, prefix="/api/v1")

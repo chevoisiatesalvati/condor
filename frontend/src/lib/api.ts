@@ -908,6 +908,25 @@ export interface BacktestTask {
 
 // ── API functions ──
 
+export interface DeterministicStrategySummary {
+  slug: string;
+  name: string;
+  description: string;
+  connector: string;
+  require_promoted: boolean;
+  status: string;
+  agent_id?: string | null;
+  session_num?: number | null;
+  promoted_preset?: string | null;
+  promoted_preset_hash?: string | null;
+  default_config?: Record<string, any>;
+  strategy_presets?: Array<{ id: string; label: string }>;
+  last_tick_at?: number | null;
+  tick_count?: number | null;
+  last_error?: string | null;
+  last_tick_summary?: string | null;
+}
+
 export const api = {
   getServers: () => apiFetch<ServerInfo[]>("/api/v1/servers"),
 
@@ -1191,6 +1210,176 @@ export const api = {
     if (startTime) url += `&start_time=${startTime}`;
     if (endTime) url += `&end_time=${endTime}`;
     return apiFetch<CandleData[]>(url);
+  },
+
+  // ── Strategies (deterministic runners) ──
+
+  getDeterministicStrategies: () =>
+    apiFetch<DeterministicStrategySummary[]>("/api/v1/strategies"),
+
+  getDeterministicStrategy: (slug: string) =>
+    apiFetch<DeterministicStrategySummary>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}`,
+    ),
+
+  startDeterministicStrategy: (
+    slug: string,
+    body: {
+      config?: Record<string, unknown>;
+      chat_id?: number;
+      strategy_preset?: string;
+      strategy_params?: Record<string, unknown>;
+    },
+  ) =>
+    apiFetch<{
+      started: boolean;
+      slug: string;
+      agent_id: string;
+      session_num: number;
+    }>(`/api/v1/strategies/${encodeURIComponent(slug)}/start`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  stopDeterministicStrategy: (slug: string) =>
+    apiFetch<{ stopped: boolean; slug: string }>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}/stop`,
+      { method: "POST" },
+    ),
+
+  getStrategyPromote: (slug: string) =>
+    apiFetch<{
+      promoted: boolean;
+      manifest?: Record<string, unknown>;
+    }>(`/api/v1/strategies/${encodeURIComponent(slug)}/promote`),
+
+  promoteDeterministicStrategy: (
+    slug: string,
+    body: {
+      preset: string;
+      strategy_params?: Record<string, unknown>;
+      venue?: string;
+      notes?: string;
+    },
+  ) =>
+    apiFetch<{ promoted: boolean; manifest: Record<string, unknown> }>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}/promote`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
+
+  getDeterministicStrategyPresetParams: (
+    slug: string,
+    preset: string,
+    frequencySec = 1800,
+  ) =>
+    apiFetch<{
+      strategy_params: Record<string, unknown>;
+      risk_limits: Record<string, unknown>;
+    }>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}/strategy-preset-params?preset=${encodeURIComponent(preset)}&frequency_sec=${frequencySec}`,
+    ),
+
+  getDeterministicStrategyConfigSchema: (slug: string, frequencySec = 1800) =>
+    apiFetch<{
+      fields: Record<string, RoutineFieldInfo>;
+      groups: string[];
+      defaults: Record<string, unknown>;
+    }>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}/strategy-config-schema?frequency_sec=${frequencySec}`,
+    ),
+
+  getDeterministicStrategySessions: (slug: string) =>
+    apiFetch<{
+      sessions: Array<{
+        session_num: number;
+        agent_id?: string;
+        path: string;
+        has_journal: boolean;
+        mtime: number;
+        status?: string;
+      }>;
+    }>(`/api/v1/strategies/${encodeURIComponent(slug)}/sessions`),
+
+  getDeterministicStrategyDefaults: (slug: string) =>
+    apiFetch<{
+      default_config: Record<string, unknown>;
+      strategy_presets: Array<{ id: string; label: string }>;
+    }>(`/api/v1/strategies/${encodeURIComponent(slug)}/defaults`),
+
+  saveDeterministicStrategyDefaults: (
+    slug: string,
+    default_config: Record<string, unknown>,
+  ) =>
+    apiFetch<{
+      default_config: Record<string, unknown>;
+      strategy_presets: Array<{ id: string; label: string }>;
+      saved: boolean;
+    }>(`/api/v1/strategies/${encodeURIComponent(slug)}/defaults`, {
+      method: "PUT",
+      body: JSON.stringify({ default_config }),
+    }),
+
+  getDeterministicStrategyPerformance: (slug: string) =>
+    apiFetch<{
+      slug: string;
+      sessions: Array<Record<string, unknown>>;
+      totals: Record<string, number>;
+    }>(`/api/v1/strategies/${encodeURIComponent(slug)}/performance`),
+
+  getDeterministicLiveExecutors: (slug: string) =>
+    apiFetch<{
+      running: boolean;
+      agent_id: string | null;
+      session_num: number | null;
+      executors: Array<Record<string, unknown>>;
+      performance: Record<string, unknown> | null;
+    }>(`/api/v1/strategies/${encodeURIComponent(slug)}/live-executors`),
+
+  getDeterministicSessionJournal: (slug: string, sessionNum: number) =>
+    apiFetch<{ content: string; session_num: number }>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}/sessions/${sessionNum}/journal`,
+    ),
+
+  getDeterministicSessionExecutors: (slug: string, sessionNum: number) =>
+    apiFetch<{
+      agent_id: string;
+      executors: Array<Record<string, unknown>>;
+      performance: Record<string, unknown>;
+    }>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}/sessions/${sessionNum}/executors`,
+    ),
+
+  getDeterministicStrategyTicks: (
+    slug: string,
+    opts?: { session?: number; limit?: number },
+  ) => {
+    const params = new URLSearchParams();
+    if (opts?.session != null) params.set("session", String(opts.session));
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return apiFetch<{
+      ticks: Array<{
+        id: string;
+        ts?: string;
+        session?: number;
+        tick?: number;
+        tradeable_count?: number;
+        signal_count?: number;
+        scanner_regime?: string;
+        hold_reason?: string;
+        creates?: number;
+        stops?: number;
+        apply_ok?: boolean;
+        summary?: string;
+        raw?: Record<string, unknown>;
+      }>;
+      count: number;
+    }>(
+      `/api/v1/strategies/${encodeURIComponent(slug)}/ticks${qs ? `?${qs}` : ""}`,
+    );
   },
 
   // ── Agents (identity + brain) ──

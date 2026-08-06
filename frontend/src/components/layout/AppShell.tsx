@@ -4,6 +4,7 @@ import {
   Bot,
   Brain,
   Eye,
+  LineChart,
   Moon,
   Settings,
   Sun,
@@ -29,6 +30,7 @@ const NAV_ITEMS = [
   { to: "/trade", icon: Swords, label: "Trade" },
   { to: "/bots", icon: Bot, label: "Bots" },
   { to: "/executors", icon: Activity, label: "Executors" },
+  { to: "/strategies", icon: LineChart, label: "Strategies" },
   { to: "/agents", icon: Brain, label: "Agents" },
   { to: "/routines", icon: Zap, label: "Routines" },
 ] as const;
@@ -55,7 +57,7 @@ function AppShellBody() {
   const [chatOpen, setChatOpen] = useState(false);
   const { hasKeys, isLoading: keysLoading } = useCredentials();
 
-  const exemptRoutes = ["/routines", "/settings"];
+  const exemptRoutes = ["/routines", "/settings", "/strategies"];
   const showKeysOverlay = server && !keysLoading && !hasKeys && !exemptRoutes.some((r) => pathname.startsWith(r));
 
   // The overlay exists to ask about the page you are looking at. On the chat

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from condor.trading_agent.policies.macdbb_dynamic import (
+from condor.strategy_runners.macdbb.dynamic import (
     LivePolicyMeta,
     estimate_pair_volatility,
     live_policy_config_from_params,

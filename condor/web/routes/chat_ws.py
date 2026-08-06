@@ -310,6 +310,20 @@ async def _handle_start_session(
     # this, "Chat" on an agent's page would have to start-then-switch, which
     # spawns two subprocesses for one click.
     agent_slug = str(msg.get("agent_slug") or "")
+    from condor.strategy_runners.catalog import is_deterministic_strategy_slug
+
+    if is_deterministic_strategy_slug(agent_slug):
+        await _send(
+            ws,
+            {
+                "event": "error",
+                "message": (
+                    f"'{agent_slug}' is a Strategies runner, not a chat agent. "
+                    "Open it under Strategies to Start/Stop."
+                ),
+            },
+        )
+        return
 
     # The conversation is minted first and *is* the slot, so the key
     # web:{user}:{conversation} is stable forever instead of being a throwaway

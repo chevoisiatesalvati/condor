@@ -844,36 +844,25 @@ def apply_winner_to_agent(
     agent_path: Path | None = None,
     frequency_sec: int = DEFAULT_FREQUENCY_SEC,
 ) -> dict[str, Any]:
-    from condor.trading_agent.strategy_paths import agent_md_write_path
+    """Persist winner defaults to private strategies/{slug}/strategy.yaml."""
+    from condor.strategy_runners.macdbb.sessions import (
+        load_default_config,
+        save_default_config,
+    )
 
-    agent_path = agent_path or agent_md_write_path(AGENT_SLUG)
-    agent_path.parent.mkdir(parents=True, exist_ok=True)
-    if not agent_path.is_file():
-        from condor.trading_agent.strategy_paths import resolve_agent_md_for_read
-
-        source = resolve_agent_md_for_read(AGENT_SLUG)
-        if source is None:
-            raise ValueError(f"No agent.md template found for {AGENT_SLUG}")
-        agent_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    front, body = _split_agent_front_matter(agent_path)
-    default_config = front.setdefault("default_config", {})
+    _ = agent_path  # legacy kwarg ignored; defaults live in strategy.yaml
+    default_config = dict(load_default_config(AGENT_SLUG) or {})
     default_config.setdefault("frequency_sec", frequency_sec)
-    default_config.setdefault("risk_limits", {})
-    default_config["risk_limits"]["max_open_executors"] = config.max_open_executors
+    risk = dict(default_config.get("risk_limits") or {})
+    risk["max_open_executors"] = config.max_open_executors
+    default_config["risk_limits"] = risk
     strategy_params = replay_config_to_agent_strategy_params(
         config, frequency_sec=frequency_sec
     )
-    existing = default_config.get("strategy_params", {})
+    existing = dict(default_config.get("strategy_params") or {})
     existing.update(strategy_params)
     default_config["strategy_params"] = existing
-    front["default_config"] = default_config
-    agent_path.write_text(
-        "---\n"
-        + yaml.safe_dump(front, sort_keys=False, default_flow_style=False)
-        + "---\n"
-        + body,
-        encoding="utf-8",
-    )
+    save_default_config(AGENT_SLUG, default_config)
     return strategy_params
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from condor.trading_agent.policies.macdbb_dynamic import (
+from condor.strategy_runners.macdbb.dynamic import (
     NATR_LOOKBACK_PERIODS,
     NATR_MIN_CANDLES,
     SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,

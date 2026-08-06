@@ -41,6 +41,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.signals import (
     filter_4h_allows,
     session_has_trusted_prices,
 )
+from condor.strategy_runners.macdbb.replay_bridge import decide_from_sim_tick
 
 
 def _adaptive_4h_allows(
@@ -986,7 +987,94 @@ def simulate_strategy_session(
         open_before_entry = list(open_positions.keys())
         if closes_this_tick:
             adaptive_slot_fill_budget = 0
-        if entries_allowed:
+        use_shared_decide = bool(
+            isinstance(config, DynamicStrategyReplayConfig)
+            and getattr(config, "use_shared_decide", False)
+        )
+        if entries_allowed and use_shared_decide:
+            from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import (
+                replay_config_to_agent_strategy_params,
+            )
+
+            eligible_snapshots = {
+                pair: snapshot
+                for pair, snapshot in snapshots.items()
+                if pair not in open_positions
+                and snapshot.price_trusted
+                and _session_parity_pair_allowed(pair, meta, config)
+                and tick > flip_cooldown_until.get(pair, -1)
+                and tick > sl_cooldown_until.get(pair, -1)
+            }
+            for pair, snapshot in snapshots.items():
+                blockers: list[str] = []
+                if pair in open_positions:
+                    blockers.append("already_open")
+                if not snapshot.price_trusted:
+                    blockers.append("no_price_data")
+                if tick <= flip_cooldown_until.get(pair, -1):
+                    blockers.append("flip_cooldown")
+                if tick <= sl_cooldown_until.get(pair, -1):
+                    blockers.append("sl_cooldown")
+                per_pair_rows.append(
+                    _snapshot_row(session_num, tick, meta, pair, snapshot, blockers, config)
+                )
+            strategy_params = replay_config_to_agent_strategy_params(config)
+            strategy_params["adaptive_activation_ticks"] = config.activation_ticks
+            strategy_params["thesis_decay_exit_ticks"] = config.thesis_decay_exit_ticks
+            strategy_params["sl_symbol_cooldown_ticks"] = config.sl_cooldown_ticks
+            strategy_params["flip_confirm_ticks"] = max(1, int(config.flip_cooldown_ticks))
+            decision = decide_from_sim_tick(
+                tick_number=tick,
+                snapshots=eligible_snapshots,
+                open_positions=open_positions,
+                strategy_params=strategy_params,
+                formal_notional_quote=float(config.formal_notional_quote),
+                max_open_executors=int(config.max_open_executors),
+                tradeable_count=int(meta.tradeable_count or 0),
+                scanner_regime=getattr(meta, "scanner_regime", None),
+                adaptive_activation_streak=entry_streak,
+                sl_cooldown_until_tick=sl_cooldown_until,
+                fee_bps=float(getattr(config, "fee_bps", 0) or 0),
+                slippage_bps=float(getattr(config, "slippage_bps", 0) or 0),
+                amount_step=float(getattr(config, "amount_step", 0) or 0),
+            )
+            if decision.creates and len(open_positions) < config.max_open_executors:
+                create = decision.creates[0]
+                snapshot = eligible_snapshots.get(create.pair) or snapshots.get(create.pair)
+                if snapshot is not None and create.pair not in open_positions:
+                    metrics = snapshot.metrics
+                    trigger = (
+                        f"formal_{create.side}"
+                        if create.entry_class == "formal"
+                        else f"adaptive_{create.side}"
+                    )
+                    open_positions[create.pair] = OpenPosition(
+                        entry_tick=tick,
+                        entry_time=meta.timestamp,
+                        pair=create.pair,
+                        side=create.side,
+                        entry_price=snapshot.price,
+                        entry_class=create.entry_class,
+                        entry_trigger=trigger,
+                        notional_quote=create.notional_quote,
+                        entry_score_long=float(metrics.get("adaptive_strength_long", 0)),
+                        entry_score_short=float(metrics.get("adaptive_strength_short", 0)),
+                        entry_adaptive_activation_streak=entry_streak,
+                        entry_bb_pos_pct=_entry_bb_pos_pct(snapshot),
+                        entry_price_trusted=True,
+                        sl_pct=create.sl_pct,
+                        tp_pct=create.tp_pct,
+                        volatility_proxy_pct=create.volatility_proxy_pct,
+                        sizing_multiplier=create.sizing_multiplier,
+                    )
+                    opens_this_tick.append(trigger)
+                    if create.entry_class != "formal":
+                        opened_from_flat = len(open_before_entry) == 0
+                        if opened_from_flat and entry_streak >= config.activation_ticks:
+                            adaptive_slot_fill_budget = max(
+                                0, config.max_open_executors - len(open_positions)
+                            )
+        elif entries_allowed:
             formal_candidates: list[tuple[str, str, Any]] = []
             adaptive_candidates: list[tuple[str, str, Any]] = []
 

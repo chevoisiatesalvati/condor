@@ -80,7 +80,7 @@ def test_scan_barriers_view_matches_dict():
 
 
 def test_scanner_natr_view_matches_dict_helper():
-    from condor.trading_agent.policies.macdbb_dynamic import (
+    from condor.strategy_runners.macdbb.dynamic import (
         NATR_LOOKBACK_PERIODS,
         SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,
         SCANNER_NATR_MIN_BARS,

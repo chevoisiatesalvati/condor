@@ -18,14 +18,11 @@ _ALIASES = (
     "strategy_paths",
     "strategy",
     "policies",
-    "policies.macdbb_dynamic",
-    "policies.macdbb_metrics",
     "providers",
     "providers.base",
     "providers.executors",
     "providers.positions",
     "strategy_configs",
-    "strategy_configs.macdbb_hl",
     "strategy_configs.registry",
 )
 

@@ -7,9 +7,9 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-AGENT_PRESET_LOADERS: dict[str, str] = {
-    "macdbb_scanner_aggressive_hl": "agents.macdbb_scanner_aggressive_hl.presets",
-}
+# Deterministic Strategies (e.g. MACDBB) are not registered here — use
+# condor.strategy_runners.macdbb.presets from the Strategies API.
+AGENT_PRESET_LOADERS: dict[str, str] = {}
 
 
 def get_agent_strategy_preset_catalog(slug: str) -> list[dict[str, str]] | None:
@@ -81,18 +81,4 @@ def apply_agent_strategy_preset(
     merged_params = dict(existing) if isinstance(existing, dict) else {}
     merged_params.update(preset_params)
     result["strategy_params"] = merged_params
-
-    from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
-    from agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
-
-    try:
-        replay_cfg = resolve_config_with_preset(
-            DynamicStrategyReplayConfig(preset=selected, frequency_sec=freq)
-        )
-        risk = dict(result.get("risk_limits") or {})
-        risk["max_open_executors"] = int(replay_cfg.max_open_executors)
-        result["risk_limits"] = risk
-    except Exception:
-        log.exception("resolve_config_with_preset(%s) failed for live config", selected)
-
     return result

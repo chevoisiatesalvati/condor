@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 import numpy as np
 
-from condor.trading_agent.policies.macdbb_dynamic import (
+from condor.strategy_runners.macdbb.dynamic import (
     SCANNER_NATR_LOOKBACK_HOURS_DEFAULT,
     SCANNER_NATR_MIN_BARS,
 )

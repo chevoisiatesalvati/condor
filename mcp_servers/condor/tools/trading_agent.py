@@ -145,7 +145,11 @@ def _list_agent_definitions() -> dict:
         strat_names.setdefault(s.agent_slug, []).append(s.name)
 
     agents = []
+    from condor.strategy_runners.catalog import is_deterministic_strategy_slug
+
     for a in AgentStore().list_all():
+        if is_deterministic_strategy_slug(a.slug):
+            continue
         owned = strat_names.get(a.slug, [])
         agents.append(
             {

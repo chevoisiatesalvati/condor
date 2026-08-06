@@ -215,7 +215,7 @@ def test_dynamic_replay_field_groups():
 
 
 def test_dynamic_replay_field_metadata_has_groups_and_visibility():
-    from agents.macdbb_scanner_aggressive_hl.presets import backtest_preset_names
+    from condor.strategy_runners.macdbb.presets import backtest_preset_names
 
     fields = DynamicStrategyReplayConfig.get_routine_fields()
     assert fields["preset"]["widget"] == "select"

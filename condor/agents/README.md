@@ -2,6 +2,10 @@
 
 A framework for building **autonomous LLM-driven trading agents** that operate on top of Hummingbot. Each agent is an isolated, file-backed entity that runs on a fixed tick interval, reasons about the market with an LLM, and translates its decisions into real trades through Hummingbot **executors**.
 
+**Product split:** LLM chat/tick agents live under **Agents**. Condor-native deterministic
+runners (e.g. MACDBB) live under **Strategies** (`/strategies`) and do not use this LLM tick
+path. Hummingbot V2 controller deployments live under **Bots**.
+
 ---
 
 ## 1. Motivation

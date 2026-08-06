@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from condor.trading_agent.policies.macdbb_metrics import (
+from condor.strategy_runners.macdbb.metrics import (
     LiveSignalInput,
     compute_live_signal_metrics,
     compute_metrics,

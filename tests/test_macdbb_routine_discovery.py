@@ -1,24 +1,20 @@
-"""Tests for MACDBB routine discovery in the canonical agents layout."""
+"""MACDBB no longer ships agent-local LLM routine wrappers."""
 
 from condor.routine_store import get_routine_store
 from routines.base import assistant_routines_dir
 
 
-def test_agents_routines_discovered():
+def test_macdbb_agent_local_routines_removed():
     store = get_routine_store()
     names = {r["name"] for r in store.list_routines()}
-    assert "macdbb_scanner_aggressive_hl/macdbb_entry_policy" in names
-    assert "macdbb_scanner_aggressive_hl/macdbb_signal_metrics" in names
-    assert "macdbb_scanner_aggressive_hl/hyperliquid_market_scanner" in names
-    assert "macdbb_scanner_aggressive_hl/macd_bb_analysis" in names
+    assert "macdbb_scanner_aggressive_hl/macdbb_entry_policy" not in names
+    assert "macdbb_scanner_aggressive_hl/macdbb_signal_metrics" not in names
+    assert "macdbb_scanner_aggressive_hl_backtest" in names
 
 
-def test_assistant_routines_dir_uses_agents_layout():
+def test_assistant_routines_dir_has_no_macdbb_agents_tree():
     path = assistant_routines_dir("macdbb_scanner_aggressive_hl")
-    assert path.name == "routines"
-    assert path.parent.name == "macdbb_scanner_aggressive_hl"
-    assert "agents" in str(path)
-    assert path.is_dir()
+    assert not path.is_dir()
 
 
 def test_backtest_routine_fields_include_group_metadata():

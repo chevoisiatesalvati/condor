@@ -109,30 +109,28 @@ Run modes: `dry_run` (no trading), `run_once`, `loop`.
 
 ---
 
-## Shared policy code (live + replay parity)
+## Shared MACDBB engine (live Strategies + replay parity)
 
-Deterministic logic shared between live agent routines and replay simulators lives in:
+Deterministic logic lives under `condor/strategy_runners/macdbb/`:
 
-- `condor/trading_agent/policies/macdbb_dynamic.py` — dynamic notional + SL/TP barriers
-- `condor/trading_agent/policies/macdbb_metrics.py` — signal metrics helpers
+- `engine.py` / `decide()` — live DeterministicRunner + replay bridge
+- `dynamic.py` — dynamic notional + SL/TP barriers
+- `metrics.py` — signal metrics helpers
+- `presets.py` / `params.py` — Strategies presets and param schema
 
-Agent-local routines (`macdbb_signal_metrics`, `macdbb_entry_policy`) wrap these for live ticks. Replay code in `{slug}_replay/` must stay in parity with live behavior — add/update tests when changing either side.
+Live runs use the **Strategies** tab (`DeterministicRunner`), not Agents chat.
+Runs/journals: `data/strategy_runs/macdbb_scanner_aggressive_hl/`.
+Defaults: `strategies/macdbb_scanner_aggressive_hl/strategy.yaml`.
+Replay library: `routines/macdbb_scanner_aggressive_hl_replay/` (imports strategy_runners).
+Sweep CLI: `scripts/run_timeline_mega_sweep.py`, `scripts/run_staged_mega_sweep_v5.py`, `scripts/run_refine_sweep.py`.
 
 ---
 
-## Current agents
+## Current Strategies (deterministic)
 
 | Slug | Description | Backtest routine |
 |------|-------------|------------------|
 | `macdbb_scanner_aggressive_hl` | Hyperliquid scanner + MACD/BB, dynamic sizing | `macdbb_scanner_aggressive_hl_backtest` |
-
-Key files for this agent:
-
-- Strategy: `agents/macdbb_scanner_aggressive_hl/strategies/macdbb_scanner_aggressive_hl/strategy.md`
-- Live routines: `macdbb_signal_metrics`, `macdbb_entry_policy` (under agent `routines/`)
-- Global routines used at tick time: `hyperliquid_market_scanner`, `macd_bb_analysis`
-- Replay library: `routines/macdbb_scanner_aggressive_hl_replay/`
-- Sweep CLI: `scripts/run_timeline_mega_sweep.py`, `scripts/run_staged_mega_sweep_v5.py`, `scripts/run_refine_sweep.py`
 
 Replay modes (`DynamicStrategyReplayConfig.replay_mode`):
 
@@ -156,7 +154,7 @@ Routine imports use absolute paths from repo root:
 
 ```python
 from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
-from condor.trading_agent.policies.macdbb_dynamic import resolve_live_entry_policy
+from condor.strategy_runners.macdbb.dynamic import resolve_live_entry_policy
 ```
 
 ---

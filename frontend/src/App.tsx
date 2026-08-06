@@ -16,7 +16,9 @@ import { Login } from "@/pages/Login";
 import { Portfolio } from "@/pages/Portfolio";
 import { Routines } from "@/pages/Routines";
 import { Settings } from "@/pages/Settings";
+import { Strategies } from "@/pages/Strategies";
 import { StrategyDetail } from "@/pages/StrategyDetail";
+import { StrategyRunnerDetail } from "@/pages/StrategyRunnerDetail";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -80,6 +82,8 @@ export default function App() {
                 <Route path="/agents" element={<Agents />} />
                 <Route path="/agents/:slug" element={<AgentDetail />} />
                 <Route path="/agents/:slug/strategies/:sslug" element={<StrategyDetail />} />
+                <Route path="/strategies" element={<Strategies />} />
+                <Route path="/strategies/:slug" element={<StrategyRunnerDetail />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/market" element={<Navigate to="/trade" replace />} />
               </Route>

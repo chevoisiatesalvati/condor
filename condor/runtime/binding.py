@@ -89,6 +89,13 @@ def resolve(
     from handlers.agents._shared import build_mcp_servers_for_session
 
     slug = spec.agent_slug or CHAT_SLUG
+    from condor.strategy_runners.catalog import is_deterministic_strategy_slug
+
+    if is_deterministic_strategy_slug(slug):
+        raise UnknownAgent(
+            f"'{slug}' is a Strategies deterministic runner, not a chat agent. "
+            "Open it under Strategies to Start/Stop."
+        )
     agent = AgentStore().get(slug)
     if agent is None:
         if spec.agent_slug:

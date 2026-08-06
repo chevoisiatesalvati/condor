@@ -357,6 +357,16 @@ def _strategy_store():
 
 
 def _get_agent(slug: str):
+    from condor.strategy_runners.catalog import is_deterministic_strategy_slug
+
+    if is_deterministic_strategy_slug(slug):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"'{slug}' is a Strategies runner, not an Agents chat identity. "
+                "Open /strategies/{slug} instead."
+            ),
+        )
     agent = _agent_store().get(slug)
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
@@ -935,6 +945,9 @@ async def _build_strategy_summary(strategy) -> StrategySummary:
 async def list_agents(user: WebUser = Depends(get_current_user)):
     """List all Agents, each with its strategies and their status."""
     agents = _agent_store().list_all()
+    from condor.strategy_runners.catalog import is_deterministic_strategy_slug
+
+    agents = [a for a in agents if not is_deterministic_strategy_slug(a.slug)]
     store = _strategy_store()
 
     # Flatten every (agent, strategy) summary into a single gather so all
@@ -1550,15 +1563,22 @@ async def get_strategy_preset_params(
     params = strategy_params_for_preset(
         strategy.slug, preset, frequency_sec=frequency_sec
     ) or {}
-    from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
-    from agents.macdbb_scanner_aggressive_hl.presets import resolve_config_with_preset
+    risk: dict = {}
+    try:
+        from condor.strategy_runners.macdbb.presets import resolve_config_with_preset
+        from routines.macdbb_scanner_aggressive_hl_replay.models import (
+            DynamicStrategyReplayConfig,
+        )
 
-    replay_cfg = resolve_config_with_preset(
-        DynamicStrategyReplayConfig(preset=preset, frequency_sec=frequency_sec)
-    )
+        replay_cfg = resolve_config_with_preset(
+            DynamicStrategyReplayConfig(preset=preset, frequency_sec=frequency_sec)
+        )
+        risk = {"max_open_executors": int(replay_cfg.max_open_executors)}
+    except Exception:
+        pass
     return {
         "strategy_params": params,
-        "risk_limits": {"max_open_executors": replay_cfg.max_open_executors},
+        "risk_limits": risk,
     }
 
 
@@ -1882,6 +1902,18 @@ async def _start(agent, strategy, req: StartStrategyRequest, user_id: int) -> di
     Supports resume via ``req.session_num``, orphan-session guards, and deep
     strategy-param merges from the fork; uses ``start_engine`` for race-safe start.
     """
+    from condor.strategy_runners.catalog import is_deterministic_strategy_slug
+
+    if is_deterministic_strategy_slug(agent.slug) or is_deterministic_strategy_slug(
+        strategy.slug
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{agent.slug}' is a Strategies deterministic runner. "
+                "Start/Stop it under /api/v1/strategies/{slug}/start — not Agents."
+            ),
+        )
     from condor.agents.config import (
         load_full_config,
         load_session_config,

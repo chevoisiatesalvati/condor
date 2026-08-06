@@ -306,17 +306,19 @@ def test_strategy_save_writes_private_and_strips_preset_params(tmp_path, monkeyp
     }
 
 
-def test_macdbb_agent_listed_in_repo():
-    """Shipped macdbb tree is discoverable by AgentStore."""
+def test_macdbb_not_listed_as_agent_in_repo():
+    """MACDBB lives under Strategies, not Agents chat discovery."""
     from pathlib import Path
+
+    from condor.strategy_runners.catalog import is_deterministic_strategy_slug
 
     repo_root = Path(__file__).resolve().parent.parent
     agent_md = repo_root / "agents" / "macdbb_scanner_aggressive_hl" / "AGENT.md"
-    assert agent_md.is_file(), "macdbb AGENT.md must exist in repo"
+    assert not agent_md.is_file()
     slugs = {a.slug for a in AgentStore().list_all()}
-    assert "macdbb_scanner_aggressive_hl" in slugs
-    strategies = StrategyStore().list("macdbb_scanner_aggressive_hl")
-    assert [s.slug for s in strategies] == ["macdbb_scanner_aggressive_hl"]
+    assert "macdbb_scanner_aggressive_hl" not in slugs
+    assert is_deterministic_strategy_slug("macdbb_scanner_aggressive_hl")
+    assert (repo_root / "strategies" / "macdbb_scanner_aggressive_hl" / "strategy.yaml").is_file()
 
 
 # ── Every Agent is loopable: the default playbook ──

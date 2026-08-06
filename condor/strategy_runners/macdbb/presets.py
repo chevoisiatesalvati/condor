@@ -5,7 +5,7 @@ from typing import Any, TypeVar
 import yaml
 from pydantic import BaseModel
 
-from condor.agents.strategy_paths import resolve_presets_yaml
+from condor.strategy_runners.macdbb.paths import resolve_presets_yaml
 
 PresetValue = float | int | bool | str | None
 

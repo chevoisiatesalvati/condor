@@ -198,11 +198,16 @@ class AgentStore:
         the coordinator as if it were a specialist, flipping what ``is_agent``
         means for the session.
 
-        Not a filter in the sense :meth:`list_index` forbids: nothing is hidden
-        here. The coordinator is reached by binding nothing, which every picker
-        already offers as its first row.
+        Deterministic Strategies catalog entries (e.g. MACDBB) are excluded —
+        they are not chat agents; Start/Stop them under Strategies.
         """
-        return [a for a in self.list_all() if a.slug != CHAT_SLUG]
+        from condor.strategy_runners.catalog import is_deterministic_strategy_slug
+
+        return [
+            a
+            for a in self.list_all()
+            if a.slug != CHAT_SLUG and not is_deterministic_strategy_slug(a.slug)
+        ]
 
     def list_index(self, exclude: str | Iterable[str] = "") -> str:
         """Injectable index — one line per Agent (mirrors SKILLS).
@@ -221,13 +226,17 @@ class AgentStore:
           chat, with auto-approved tools on the delegate path.
 
         Callers pass a set of both. Filtering for any other reason stays
-        forbidden, which is why this takes slugs rather than a predicate.
+        forbidden, which is why this takes slugs rather than a predicate —
+        except Strategies-catalog deterministic runners, which are not
+        consultable Agents (same product boundary as :meth:`list_specialists`).
         """
+        from condor.strategy_runners.catalog import is_deterministic_strategy_slug
+
         dropped = {exclude} if isinstance(exclude, str) else set(exclude)
         return "\n".join(
             f"- [{a.slug}] {a.consult_hint}"
             for a in self.list_all()
-            if a.slug not in dropped
+            if a.slug not in dropped and not is_deterministic_strategy_slug(a.slug)
         )
 
     def create(

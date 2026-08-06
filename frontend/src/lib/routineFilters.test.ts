@@ -7,9 +7,9 @@ const backtest = {
   source: "global",
 };
 
-const agentRoutine = {
-  name: "macdbb_scanner_aggressive_hl/macdbb_entry_policy",
-  source: "agent:macdbb_scanner_aggressive_hl",
+const otherAgentRoutine = {
+  name: "example_agent/helper_routine",
+  source: "agent:example_agent",
 };
 
 const otherGlobal = {
@@ -19,7 +19,7 @@ const otherGlobal = {
 
 describe("routineMatchesAgentFilter", () => {
   it("includes agent-local routines", () => {
-    expect(routineMatchesAgentFilter(agentRoutine, "macdbb_scanner_aggressive_hl")).toBe(true);
+    expect(routineMatchesAgentFilter(otherAgentRoutine, "example_agent")).toBe(true);
   });
 
   it("includes global routines prefixed with agent slug", () => {
@@ -32,13 +32,12 @@ describe("routineMatchesAgentFilter", () => {
 });
 
 describe("filterRoutinesBySourceType", () => {
-  const routines = [backtest, agentRoutine, otherGlobal];
+  const routines = [backtest, otherAgentRoutine, otherGlobal];
 
   it("keeps agent-linked global backtests under agent slug filter", () => {
     const filtered = filterRoutinesBySourceType(routines, "macdbb_scanner_aggressive_hl");
     expect(filtered.map((r) => r.name)).toEqual([
       "macdbb_scanner_aggressive_hl_backtest",
-      "macdbb_scanner_aggressive_hl/macdbb_entry_policy",
     ]);
   });
 });

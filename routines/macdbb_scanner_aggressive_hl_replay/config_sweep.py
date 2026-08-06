@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from condor.trading_agent.policies.macdbb_dynamic import compute_dynamic_barriers
+from condor.strategy_runners.macdbb.dynamic import compute_dynamic_barriers
 from routines.macdbb_scanner_aggressive_hl_replay.candle_shared_store import (
     LazyCandleStore,
     SharedCandleStore,
@@ -56,7 +56,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.reports import (
 )
 from routines.macdbb_scanner_aggressive_hl_replay.replay_loader import load_replay_sessions
 from routines.macdbb_scanner_aggressive_hl_replay.simulator import simulate_strategy_session
-from agents.macdbb_scanner_aggressive_hl.presets import current_winner_preset_name
+from condor.strategy_runners.macdbb.presets import current_winner_preset_name
 
 logger = logging.getLogger(__name__)
 

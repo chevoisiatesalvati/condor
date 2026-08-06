@@ -165,7 +165,7 @@ def build_dynamic_replay_field_metadata(config_class: type) -> dict[str, dict[st
             "description": field_info.description or name,
         }
         if name == "preset":
-            from agents.macdbb_scanner_aggressive_hl.presets import (
+            from condor.strategy_runners.macdbb.presets import (
                 backtest_preset_names,
                 preset_labels,
             )

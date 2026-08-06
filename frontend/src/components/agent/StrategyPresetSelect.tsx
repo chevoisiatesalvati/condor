@@ -11,6 +11,11 @@ export function mergePresetStrategyParams(
   return { ...base, ...presetParams };
 }
 
+export type PresetParamsPayload = {
+  strategy_params?: Record<string, unknown>;
+  risk_limits?: Record<string, unknown>;
+};
+
 export function StrategyPresetSelect({
   slug,
   sslug,
@@ -21,6 +26,8 @@ export function StrategyPresetSelect({
   onChange,
   label = "Strategy preset",
   description = "Apply a tuned parameter profile",
+  /** When set, fetch via Strategies API instead of Agents nested routes. */
+  fetchPresetParams,
 }: {
   slug: string;
   sslug: string;
@@ -36,6 +43,10 @@ export function StrategyPresetSelect({
   ) => void;
   label?: string;
   description?: string;
+  fetchPresetParams?: (
+    preset: string,
+    frequencySec: number,
+  ) => Promise<PresetParamsPayload>;
 }) {
   if (presets.length === 0) {
     return null;
@@ -48,7 +59,9 @@ export function StrategyPresetSelect({
       return;
     }
     try {
-      const payload = await api.getStrategyPresetParams(slug, sslug, nextPreset, frequencySec);
+      const payload = fetchPresetParams
+        ? await fetchPresetParams(nextPreset, frequencySec)
+        : await api.getStrategyPresetParams(slug, sslug, nextPreset, frequencySec);
       onChange(
         nextPreset,
         mergePresetStrategyParams(base, payload.strategy_params ?? {}),

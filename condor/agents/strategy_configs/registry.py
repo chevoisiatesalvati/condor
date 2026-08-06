@@ -6,7 +6,7 @@ from typing import Any, Type
 
 from pydantic import BaseModel
 
-from .macdbb_hl import (
+from condor.strategy_runners.macdbb.params import (
     DURATION_EFFECTIVE_TICK_KEYS,
     LEGACY_HOURS_ALIASES,
     LEGACY_TICK_TO_HOURS,

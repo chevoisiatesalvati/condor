@@ -207,7 +207,7 @@ class ReplayConfigBase(BaseModel):
     @field_validator("preset")
     @classmethod
     def _validate_preset(cls, value: str) -> str:
-        from agents.macdbb_scanner_aggressive_hl.presets import known_preset_names
+        from condor.strategy_runners.macdbb.presets import known_preset_names
 
         allowed = known_preset_names()
         if value not in allowed:
@@ -451,6 +451,10 @@ class DynamicStrategyReplayConfig(StrategyReplayConfig):
     ignore_journal_barriers_when_dynamic: bool = Field(
         default=True,
         description="Skip journal barriers when dynamic",
+    )
+    use_shared_decide: bool = Field(
+        default=True,
+        description="Use MacdbbDecisionEngine.decide() for entry selection/sizing",
     )
 
     @classmethod
