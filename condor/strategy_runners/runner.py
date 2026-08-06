@@ -21,10 +21,52 @@ from condor.strategy_runners.macdbb import (
     decide,
 )
 from condor.strategy_runners.macdbb.sessions import create_session, load_default_config
+from condor.strategy_runners.macdbb.state_store import (
+    PENDING_OPEN_TTL_TICKS,
+    load_runner_state,
+    save_runner_state,
+)
 from condor.strategy_runners.macdbb.tick_log import maybe_cleanup, write_tick_log
+from condor.strategy_runners.macdbb.types import EntryClass, Side
 from condor.strategy_runners.promote import assert_promoted_or_raise
 
 log = logging.getLogger(__name__)
+
+# Hummingbot OrderType: MARKET=1, LIMIT=2, LIMIT_MAKER=3
+_OPEN_ORDER_TYPE_MARKET = 1
+_NEVER_FILLED_CLOSE_TYPES = frozenset(
+    {
+        "INSUFFICIENT_BALANCE",
+        "FAILED",
+        "EXPIRED",
+        "CANCELED",
+        "CANCELLED",
+    }
+)
+
+
+def _normalize_close_type(close_type: Any) -> str:
+    text = str(close_type or "").strip().upper().replace(" ", "_")
+    if text.startswith("CLOSETYPE."):
+        text = text.split(".", 1)[-1]
+    return text
+
+
+def _executor_never_filled(ex: dict[str, Any]) -> bool:
+    """True when a terminated executor never established a live position."""
+    from condor.agents.performance import is_running_status
+    from condor.fetchers.executors import get_executor_volume
+
+    if is_running_status(str(ex.get("status") or "")):
+        return False
+    close_type = _normalize_close_type(ex.get("close_type"))
+    if close_type in _NEVER_FILLED_CLOSE_TYPES:
+        return True
+    try:
+        volume = float(get_executor_volume(ex) or ex.get("volume") or 0)
+    except (TypeError, ValueError):
+        volume = 0.0
+    return volume <= 0.0
 
 
 def _supervisor():
@@ -45,6 +87,31 @@ class ApplyResult:
     stop_failures: list[str] = field(default_factory=list)
     notified_opens: list[str] = field(default_factory=list)
     notified_closes: list[str] = field(default_factory=list)
+    created_pairs: list[tuple[str, str, Side, EntryClass]] = field(default_factory=list)
+
+
+@dataclass
+class InventoryResult:
+    """Venue inventory for one tick — fail closed when ``available`` is False."""
+
+    positions: list[OpenPosition]
+    available: bool
+    all_executors: list[dict[str, Any]] = field(default_factory=list)
+    error: str = ""
+
+
+def _position_side_from_executor(raw_side: Any, *, fallback: Side | None) -> Side | None:
+    from condor.fetchers.executors import normalize_executor_side
+
+    normalized = normalize_executor_side(raw_side)
+    if normalized == "BUY":
+        return "long"
+    if normalized == "SELL":
+        return "short"
+    label = str(raw_side or "").strip().lower()
+    if label in {"long", "short"}:
+        return label  # type: ignore[return-value]
+    return fallback
 
 
 @dataclass
@@ -66,6 +133,10 @@ class DeterministicRunner:
     _running: bool = field(default=False, init=False)
     _paused: bool = field(default=False, init=False)
     _macdbb_state: MacdbbState = field(default_factory=MacdbbState, init=False)
+    _pending_opens: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _last_running_executor_ids: set[str] = field(default_factory=set, init=False)
+    _barrier_notified_ids: set[str] = field(default_factory=set, init=False)
+    _agent_closed_ids: set[str] = field(default_factory=set, init=False)
     _last_tick_at: float = field(default=0.0, init=False)
     _last_error: str = field(default="", init=False)
     _last_tick_summary: str = field(default="", init=False)
@@ -89,6 +160,26 @@ class DeterministicRunner:
         self.agent_id = f"{run_key}_{self.session_num}"
         self.risk = RiskEngine(resolve_risk_limits(self.config))
         maybe_cleanup(self.strategy.data_slug, config=self.config, force=True)
+        self._restore_persisted_state()
+
+    def _restore_persisted_state(self) -> None:
+        stored = load_runner_state(self.session_dir)
+        self._macdbb_state = stored["macdbb_state"]
+        self._pending_opens = {
+            str(k): dict(v) if isinstance(v, dict) else {"executor_id": str(v), "tick": 0}
+            for k, v in (stored.get("pending_opens") or {}).items()
+        }
+        self._last_running_executor_ids = set(stored.get("last_running_ids") or [])
+        self._barrier_notified_ids = set(stored.get("barrier_notified_ids") or [])
+
+    def _persist_state(self) -> None:
+        save_runner_state(
+            self.session_dir,
+            macdbb_state=self._macdbb_state,
+            pending_opens=self._pending_opens,
+            last_running_ids=self._last_running_executor_ids,
+            barrier_notified_ids=self._barrier_notified_ids,
+        )
 
     @property
     def is_running(self) -> bool:
@@ -150,6 +241,7 @@ class DeterministicRunner:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        self._persist_state()
         if self.journal:
             try:
                 self.journal.mark_stopped()
@@ -201,6 +293,94 @@ class DeterministicRunner:
         except asyncio.CancelledError:
             raise
 
+    def _prune_pending_opens(self, tick_num: int, confirmed_pairs: set[str]) -> None:
+        expired: list[str] = []
+        for pair, meta in list(self._pending_opens.items()):
+            if pair in confirmed_pairs:
+                expired.append(pair)
+                continue
+            opened_tick = int(meta.get("tick") or 0)
+            if tick_num - opened_tick > PENDING_OPEN_TTL_TICKS:
+                expired.append(pair)
+        for pair in expired:
+            self._pending_opens.pop(pair, None)
+
+    def _clear_never_filled_pendings(
+        self, all_executors: list[dict[str, Any]], tick_num: int
+    ) -> list[dict[str, Any]]:
+        """Drop pending opens that terminated without a fill (e.g. IB).
+
+        Never-filled legs must not occupy thesis monitoring or block re-entry
+        until PENDING_OPEN_TTL expires.
+        """
+        by_id = {
+            str(ex.get("id") or ""): ex
+            for ex in all_executors
+            if isinstance(ex, dict) and ex.get("id")
+        }
+        cleared: list[dict[str, Any]] = []
+        params = dict(self.config.get("strategy_params") or {})
+        cooldown_ticks = int(params.get("sl_cooldown_ticks") or 2)
+        for pair, meta in list(self._pending_opens.items()):
+            eid = str(meta.get("executor_id") or "")
+            ex = by_id.get(eid)
+            if ex is None or not _executor_never_filled(ex):
+                continue
+            self._pending_opens.pop(pair, None)
+            self._macdbb_state.entry_meta_by_pair.pop(pair, None)
+            self._macdbb_state.thesis_decay_by_pair.pop(pair, None)
+            self._macdbb_state.flip_streak_by_pair.pop(pair, None)
+            self._macdbb_state.thesis_decay_extra_pending_by_pair.pop(pair, None)
+            self._macdbb_state.monitor_state_by_pair.pop(pair, None)
+            if cooldown_ticks > 0:
+                self._macdbb_state.sl_cooldown_until_tick[pair] = max(
+                    self._macdbb_state.sl_cooldown_until_tick.get(pair, 0),
+                    tick_num + cooldown_ticks,
+                )
+            cleared.append(
+                {
+                    "pair": pair,
+                    "executor_id": eid,
+                    "close_type": _normalize_close_type(ex.get("close_type")),
+                    "volume": ex.get("volume"),
+                }
+            )
+        if cleared:
+            log.info(
+                "DeterministicRunner %s: cleared never-filled pendings %s",
+                self.agent_id,
+                ",".join(f"{c['pair']}:{c['close_type']}" for c in cleared),
+            )
+        return cleared
+
+    def _merge_pending_into_positions(
+        self, positions: list[OpenPosition], tick_num: int
+    ) -> list[OpenPosition]:
+        """Union pending opens so decide() cannot re-enter before API confirms."""
+        confirmed = {p.pair for p in positions}
+        self._prune_pending_opens(tick_num, confirmed)
+        by_pair = {p.pair: p for p in positions if p.pair}
+        for pair, meta in self._pending_opens.items():
+            if pair in by_pair:
+                continue
+            entry_meta = self._macdbb_state.entry_meta_by_pair.get(pair)
+            side: Side = entry_meta.side if entry_meta else "long"
+            entry_class: EntryClass = (
+                entry_meta.entry_class if entry_meta else "formal"
+            )
+            by_pair[pair] = OpenPosition(
+                executor_id=str(meta.get("executor_id") or f"pending:{pair}"),
+                pair=pair,
+                side=side,
+                entry_class=entry_class,
+                pnl=0.0,
+                entry_bb_pos_pct=(
+                    float(entry_meta.entry_bb_pos_pct) if entry_meta else 0.0
+                ),
+                filled=False,
+            )
+        return list(by_pair.values())
+
     async def _tick(self) -> None:
         """One decision cycle. Market fetch is best-effort; empty signals → hold."""
         self._last_tick_at = time.time()
@@ -210,8 +390,32 @@ class DeterministicRunner:
         risk_limits = self.config.get("risk_limits") or {}
         max_open = int(risk_limits.get("max_open_executors") or 10)
 
-        open_positions = await self._load_open_positions()
-        signals, scanner_regime, tradeable_count = await self._load_signals(params)
+        inventory = await self._load_open_positions()
+        if inventory.available:
+            self._clear_never_filled_pendings(inventory.all_executors, tick_num)
+        open_positions = self._merge_pending_into_positions(
+            inventory.positions, tick_num
+        )
+        open_pairs = [p.pair for p in open_positions if p.pair]
+
+        signals, scanner_regime, tradeable_count = await self._load_signals(
+            params, extra_pairs=open_pairs
+        )
+
+        barrier_closes: list[dict[str, Any]] = []
+        if inventory.available and self._last_running_executor_ids:
+            from condor.agents.engine import _detect_barrier_closes
+
+            barrier_closes = _detect_barrier_closes(
+                inventory.all_executors,
+                self._last_running_executor_ids,
+                self._barrier_notified_ids,
+                self._agent_closed_ids,
+            )
+            for close in barrier_closes:
+                eid = str(close.get("id") or "")
+                if eid:
+                    self._barrier_notified_ids.add(eid)
 
         tick = MacdbbTickInput(
             tick_number=tick_num,
@@ -219,24 +423,74 @@ class DeterministicRunner:
             tradeable_count=tradeable_count,
             signals=signals,
             open_positions=open_positions,
-            barrier_closes=[],
+            barrier_closes=barrier_closes,
             formal_notional_quote=formal,
             strategy_params=params,
             max_open_executors=max_open,
             fee_bps=float(params.get("fee_bps") or 0),
             slippage_bps=float(params.get("slippage_bps") or 0),
             amount_step=float(params.get("amount_step") or 0),
+            inventory_available=inventory.available,
         )
         decision = decide(tick, self._macdbb_state)
         self._macdbb_state = decision.state
 
+        # Fail closed: never apply creates when inventory is unknown.
+        if not inventory.available and decision.creates:
+            decision.creates = []
+            decision.hold = not decision.stops
+            decision.hold_reason = "inventory_unavailable"
+            decision.journal_fields["hold_reason"] = "inventory_unavailable"
+            decision.journal_fields["inventory_available"] = False
+
         apply_result = await self._apply_decision(decision)
+
+        for pair, executor_id, side, entry_class in apply_result.created_pairs:
+            self._pending_opens[pair] = {
+                "executor_id": executor_id,
+                "tick": tick_num,
+                "side": side,
+                "entry_class": entry_class,
+            }
+        for stop_id in apply_result.stopped_ids:
+            self._agent_closed_ids.add(stop_id)
+            for pair, meta in list(self._pending_opens.items()):
+                if str(meta.get("executor_id") or "") == stop_id:
+                    self._pending_opens.pop(pair, None)
+
+        # Refresh last-running snapshot for next-tick barrier detection.
+        confirmed_ids = {
+            p.executor_id for p in inventory.positions if p.executor_id
+        }
+        pending_ids = {
+            str(meta.get("executor_id") or "")
+            for meta in self._pending_opens.values()
+            if meta.get("executor_id")
+        }
+        if inventory.available:
+            self._last_running_executor_ids = {
+                eid for eid in (confirmed_ids | pending_ids | set(apply_result.created_ids))
+                if eid and not eid.startswith("pending:")
+            }
+            # Drop stopped / barrier-closed ids.
+            self._last_running_executor_ids -= set(apply_result.stopped_ids)
+            self._last_running_executor_ids -= {
+                str(c.get("id") or "") for c in barrier_closes if c.get("id")
+            }
+
+        self._persist_state()
 
         journal_fields = dict(decision.journal_fields)
         journal_fields["apply_ok"] = apply_result.ok
         journal_fields["apply_error"] = apply_result.error
         journal_fields["created_ids"] = ",".join(apply_result.created_ids)
         journal_fields["stopped_ids"] = ",".join(apply_result.stopped_ids)
+        journal_fields["pending_pairs"] = ",".join(sorted(self._pending_opens))
+        journal_fields["barrier_closes"] = ",".join(
+            str(c.get("pair") or "") for c in barrier_closes
+        )
+        if not inventory.available:
+            journal_fields["inventory_error"] = inventory.error
 
         if apply_result.ok:
             if decision.creates or decision.stops:
@@ -246,7 +500,7 @@ class DeterministicRunner:
                 )
             else:
                 summary = decision.hold_reason or "hold"
-            self._last_error = ""
+            self._last_error = "" if inventory.available else inventory.error
         else:
             summary = f"apply_error={apply_result.error}"
             self._last_error = apply_result.error
@@ -287,6 +541,18 @@ class DeterministicRunner:
                         for s in signals[:40]
                     ],
                     "open_count": len(open_positions),
+                    "open_pairs": open_pairs,
+                    "pending_pairs": sorted(self._pending_opens),
+                    "inventory_available": inventory.available,
+                    "barrier_closes": [
+                        {
+                            "id": c.get("id"),
+                            "pair": c.get("pair"),
+                            "close_type": c.get("close_type"),
+                            "pnl": c.get("pnl"),
+                        }
+                        for c in barrier_closes
+                    ],
                     "decide": {
                         "hold_reason": decision.hold_reason,
                         "creates": len(decision.creates),
@@ -320,49 +586,87 @@ class DeterministicRunner:
                 f"⚠️ APPLY FAILED {self.agent_id}: {apply_result.error}"
             )
 
-    async def _load_open_positions(self) -> list[OpenPosition]:
-        """Best-effort: empty when no API client is available."""
+    async def _load_open_positions(self) -> InventoryResult:
+        """Load RUNNING executors; fail closed when API/client is unavailable."""
         try:
-            from condor.agents.performance import fetch_agent_performance
+            from condor.agents.performance import (
+                fetch_agent_performance,
+                is_running_status,
+            )
 
             client = await self._get_client()
             if client is None:
-                return []
+                return InventoryResult(
+                    positions=[],
+                    available=False,
+                    error=self._last_error or "No API client available",
+                )
             perf = await fetch_agent_performance(client, self.agent_id)
             out: list[OpenPosition] = []
             for ex in perf.executors:
-                status = str(ex.get("status") or "").lower()
-                if status not in ("running", "active"):
+                status = str(ex.get("status") or "")
+                if not is_running_status(status):
                     continue
-                side = str(ex.get("side") or "long").lower()
-                if side not in ("long", "short"):
+                pair = str(ex.get("pair") or "").strip()
+                if not pair:
+                    continue
+                entry_meta = self._macdbb_state.entry_meta_by_pair.get(pair)
+                fallback_side = entry_meta.side if entry_meta else None
+                side = _position_side_from_executor(
+                    ex.get("side"), fallback=fallback_side
+                )
+                if side is None:
+                    log.warning(
+                        "DeterministicRunner %s: unknown side for %s (%r); "
+                        "keeping pair for dedup as long",
+                        self.agent_id,
+                        pair,
+                        ex.get("side"),
+                    )
                     side = "long"
+                entry_class: EntryClass = (
+                    entry_meta.entry_class if entry_meta else "formal"
+                )
                 out.append(
                     OpenPosition(
                         executor_id=str(ex.get("id") or ""),
-                        pair=str(ex.get("pair") or ""),
-                        side=side,  # type: ignore[arg-type]
-                        entry_class="formal",
+                        pair=pair,
+                        side=side,
+                        entry_class=entry_class,
                         pnl=float(ex.get("pnl") or 0),
+                        entry_bb_pos_pct=(
+                            float(entry_meta.entry_bb_pos_pct) if entry_meta else 0.0
+                        ),
                     )
                 )
-            return out
-        except Exception:
+            return InventoryResult(
+                positions=out,
+                available=True,
+                all_executors=list(perf.executors),
+            )
+        except Exception as exc:
             log.warning(
                 "DeterministicRunner %s: open position load failed",
                 self.agent_id,
                 exc_info=True,
             )
-            return []
+            return InventoryResult(
+                positions=[],
+                available=False,
+                error=f"open position load failed: {exc}",
+            )
 
     async def _load_signals(
-        self, params: dict[str, Any]
+        self,
+        params: dict[str, Any],
+        *,
+        extra_pairs: list[str] | None = None,
     ) -> tuple[list[SignalSnapshot], str | None, int]:
         """Load scanner + MACD/BB signals for this tick (no LLM)."""
         try:
             from condor.strategy_runners.macdbb.market_data import load_macdbb_signals
 
-            return await load_macdbb_signals(params)
+            return await load_macdbb_signals(params, extra_pairs=extra_pairs)
         except Exception:
             log.warning(
                 "DeterministicRunner %s: signal load failed",
@@ -413,23 +717,34 @@ class DeterministicRunner:
                 result.ok = False
 
         account = str(self.config.get("account_name") or "master_account")
+        params = dict(self.config.get("strategy_params") or {})
+        raw_leverage = params.get("leverage")
         for create in decision.creates:
             try:
+                from condor.hyperliquid_leverage import apply_hyperliquid_leverage_cap
+
+                create_cfg: dict[str, Any] = {
+                    "type": "position_executor",
+                    "controller_id": self.agent_id,
+                    "connector_name": self.strategy.connector,
+                    "trading_pair": create.pair,
+                    "side": create.side,
+                    "amount": create.base_amount,
+                    "notional_usd": create.notional_quote,
+                    "triple_barrier_config": {
+                        "stop_loss": create.sl_pct / 100.0,
+                        "take_profit": create.tp_pct / 100.0,
+                        # MARKET — LIMIT entries often sit unfilled on HL
+                        "open_order_type": _OPEN_ORDER_TYPE_MARKET,
+                    },
+                }
+                # Explicit strategy leverage is optional; unset → per-pair HL max.
+                if raw_leverage is not None and str(raw_leverage).strip() != "":
+                    create_cfg["leverage"] = raw_leverage
+                apply_hyperliquid_leverage_cap(create_cfg)
                 create_res = await create_executor(
                     client,
-                    {
-                        "type": "position_executor",
-                        "controller_id": self.agent_id,
-                        "connector_name": self.strategy.connector,
-                        "trading_pair": create.pair,
-                        "side": create.side,
-                        "amount": create.base_amount,
-                        "notional_usd": create.notional_quote,
-                        "triple_barrier_config": {
-                            "stop_loss": create.sl_pct / 100.0,
-                            "take_profit": create.tp_pct / 100.0,
-                        },
-                    },
+                    create_cfg,
                     account_name=account,
                 )
                 if isinstance(create_res, dict) and create_res.get("status") == "error":
@@ -455,6 +770,9 @@ class DeterministicRunner:
                             or ""
                         )
                 result.created_ids.append(executor_id or create.pair)
+                result.created_pairs.append(
+                    (create.pair, executor_id or create.pair, create.side, create.entry_class)
+                )
                 note = (
                     f"⚡ OPEN {create.side.upper()} {create.pair} | "
                     f"{create.entry_class} | notional ${create.notional_quote:.2f} | "

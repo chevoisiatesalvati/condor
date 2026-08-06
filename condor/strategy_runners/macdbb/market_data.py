@@ -121,10 +121,26 @@ def _parse_pairs_from_scanner_text(text: str) -> list[str]:
     return pairs
 
 
-async def load_macdbb_signals(params: dict[str, Any]) -> tuple[list[SignalSnapshot], str | None, int]:
-    """Fetch scanner candidates + MACD/BB snapshots for the live runner."""
+async def load_macdbb_signals(
+    params: dict[str, Any],
+    *,
+    extra_pairs: list[str] | None = None,
+) -> tuple[list[SignalSnapshot], str | None, int]:
+    """Fetch scanner candidates + MACD/BB snapshots for the live runner.
+
+    ``extra_pairs`` (typically open-leg pairs) are unioned into the candle queue
+    so Step 5 monitoring still runs when a symbol drops out of the scanner top-N.
+    """
     pairs, regime, tradeable = await fetch_candidate_pairs(params)
-    if not pairs:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for pair in list(pairs) + list(extra_pairs or []):
+        key = str(pair or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    if not ordered:
         return [], regime, tradeable
 
     from routines.lib.hl_candles import fetch_hl_candles
@@ -132,7 +148,7 @@ async def load_macdbb_signals(params: dict[str, Any]) -> tuple[list[SignalSnapsh
     signals: list[SignalSnapshot] = []
     interval = str(params.get("macd_interval") or "1h")
     max_records = int(params.get("macd_max_records") or 200)
-    for pair in pairs:
+    for pair in ordered:
         try:
             candles = await fetch_hl_candles(pair, interval, max_records)
             closes = np.array([float(c["close"]) for c in candles], dtype=float)

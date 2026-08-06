@@ -59,7 +59,22 @@ class _FakeExecutors:
     def __init__(self, rows_by_id):
         self._rows_by_id = rows_by_id
 
-    async def search_executors(self, controller_ids, limit, cursor=None):
+    async def search_executors(
+        self, controller_ids=None, limit=50, cursor=None, status=None, **_kwargs
+    ):
+        if not controller_ids:
+            # Unfiltered / RUNNING fallback used when dotted controller_id filter fails.
+            out = []
+            for rows in self._rows_by_id.values():
+                out.extend(rows)
+            if status:
+                want = str(status).upper()
+                out = [
+                    r
+                    for r in out
+                    if str(r.get("status") or "").upper() == want
+                ]
+            return {"executors": out[:limit]}
         aid = controller_ids[0]
         return {"executors": self._rows_by_id.get(aid, [])}
 

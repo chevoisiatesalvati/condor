@@ -72,6 +72,7 @@ def open_positions_from_sim(
                 pnl=float(getattr(pos, "unrealized_pnl", 0) or 0),
                 thesis_decay_streak=int(getattr(pos, "thesis_decay_streak", 0) or 0),
                 flip_streak=int(getattr(pos, "flip_streak", 0) or 0),
+                entry_bb_pos_pct=float(getattr(pos, "entry_bb_pos_pct", 0) or 0),
             )
         )
     return out

@@ -132,10 +132,11 @@ async def test_apply_success_queues_open_notification():
         state=MacdbbState(),
     )
     client = object()
+    create_mock = AsyncMock(return_value={"id": "ex-1"})
     with patch.object(runner, "_get_client", AsyncMock(return_value=client)):
         with patch(
             "condor.fetchers.executors.create_executor",
-            AsyncMock(return_value={"id": "ex-1"}),
+            create_mock,
         ):
             with patch(
                 "condor.fetchers.executors.stop_executor",
@@ -145,3 +146,116 @@ async def test_apply_success_queues_open_notification():
     assert result.ok is True
     assert result.created_ids == ["ex-1"]
     assert any("OPEN LONG AAVE-USD" in t for t in result.notified_opens)
+    create_cfg = create_mock.await_args.args[1]
+    assert create_cfg["triple_barrier_config"]["open_order_type"] == 1  # MARKET
+    # Default: per-pair Hyperliquid max (mocked via apply_hyperliquid_leverage_cap path).
+    assert isinstance(create_cfg.get("leverage"), int)
+    assert create_cfg["leverage"] > 0
+
+
+@pytest.mark.asyncio
+async def test_apply_uses_strategy_params_leverage_clamped_to_hl_max(monkeypatch):
+    monkeypatch.setattr(
+        "condor.hyperliquid_leverage.hl_symbol_max_leverage",
+        lambda tp: 40 if "BTC" in tp else 10,
+    )
+    runner = _runner(strategy_params={"leverage": 25})
+    decision = MacdbbDecision(
+        hold=False,
+        hold_reason="",
+        creates=[
+            CreateAction(
+                pair="BTC-USD",
+                side="long",
+                entry_class="formal",
+                notional_quote=200.0,
+                base_amount=0.003,
+                sl_pct=2.0,
+                tp_pct=6.0,
+                volatility_proxy_pct=1.0,
+                sizing_multiplier=1.0,
+            )
+        ],
+        state=MacdbbState(),
+    )
+    create_mock = AsyncMock(return_value={"id": "ex-btc"})
+    with patch.object(runner, "_get_client", AsyncMock(return_value=object())):
+        with patch("condor.fetchers.executors.create_executor", create_mock):
+            await runner._apply_decision(decision)
+    assert create_mock.await_args.args[1]["leverage"] == 25
+
+
+@pytest.mark.asyncio
+async def test_apply_defaults_to_pair_max_leverage(monkeypatch):
+    monkeypatch.setattr(
+        "condor.hyperliquid_leverage.hl_symbol_max_leverage",
+        lambda tp: 40 if "BTC" in tp else 5,
+    )
+    runner = _runner()
+    decision = MacdbbDecision(
+        hold=False,
+        hold_reason="",
+        creates=[
+            CreateAction(
+                pair="BTC-USD",
+                side="long",
+                entry_class="formal",
+                notional_quote=200.0,
+                base_amount=0.003,
+                sl_pct=2.0,
+                tp_pct=6.0,
+                volatility_proxy_pct=1.0,
+                sizing_multiplier=1.0,
+            )
+        ],
+        state=MacdbbState(),
+    )
+    create_mock = AsyncMock(return_value={"id": "ex-btc"})
+    with patch.object(runner, "_get_client", AsyncMock(return_value=object())):
+        with patch("condor.fetchers.executors.create_executor", create_mock):
+            await runner._apply_decision(decision)
+    assert create_mock.await_args.args[1]["leverage"] == 40
+
+
+def test_clear_never_filled_pendings_drops_ib_and_sets_cooldown():
+    runner = _runner(strategy_params={"sl_cooldown_ticks": 3})
+    runner._pending_opens["BTC-USD"] = {
+        "executor_id": "ex-ib",
+        "tick": 1,
+        "side": "long",
+        "entry_class": "formal",
+    }
+    runner._macdbb_state.entry_meta_by_pair["BTC-USD"] = __import__(
+        "condor.strategy_runners.macdbb.types", fromlist=["EntryMeta"]
+    ).EntryMeta(entry_class="formal", entry_bb_pos_pct=20.0, side="long")
+    cleared = runner._clear_never_filled_pendings(
+        [
+            {
+                "id": "ex-ib",
+                "status": "terminated",
+                "close_type": "insufficient_balance",
+                "volume": 0.0,
+                "pair": "BTC-USD",
+            }
+        ],
+        tick_num=4,
+    )
+    assert len(cleared) == 1
+    assert cleared[0]["pair"] == "BTC-USD"
+    assert "BTC-USD" not in runner._pending_opens
+    assert "BTC-USD" not in runner._macdbb_state.entry_meta_by_pair
+    assert runner._macdbb_state.sl_cooldown_until_tick["BTC-USD"] == 7
+
+
+def test_merge_pending_marks_unfilled():
+    runner = _runner()
+    runner._pending_opens["BTC-USD"] = {
+        "executor_id": "ex-pending",
+        "tick": 1,
+        "side": "long",
+        "entry_class": "formal",
+    }
+    merged = runner._merge_pending_into_positions([], tick_num=1)
+    assert len(merged) == 1
+    assert merged[0].pair == "BTC-USD"
+    assert merged[0].filled is False

@@ -27,7 +27,15 @@ class _FakeExecutorsApi:
         self.calls: Counter = Counter()
 
     async def search_executors(self, **kwargs):
-        (aid,) = kwargs["controller_ids"]
+        controller_ids = kwargs.get("controller_ids")
+        if not controller_ids:
+            # Client-side fallback path: return all known rows unfiltered.
+            out: list[dict] = []
+            for rows in self.rows_by_aid.values():
+                out.extend(rows)
+            self.calls["__unfiltered__"] += 1
+            return {"executors": out}
+        (aid,) = controller_ids
         self.calls[aid] += 1
         if aid in self.fail_ids:
             raise RuntimeError("backend down")

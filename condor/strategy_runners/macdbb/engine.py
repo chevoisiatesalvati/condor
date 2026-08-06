@@ -15,10 +15,12 @@ from condor.strategy_runners.macdbb.dynamic import (
 from condor.strategy_runners.macdbb.metrics import (
     LiveSignalInput,
     compute_live_signal_metrics,
+    infer_signal_label,
 )
 from condor.strategy_runners.macdbb.types import (
     CreateAction,
     EntryClass,
+    EntryMeta,
     MacdbbDecision,
     MacdbbState,
     MacdbbTickInput,
@@ -29,6 +31,23 @@ from condor.strategy_runners.macdbb.types import (
     StopAction,
 )
 from condor.strategy_runners.quantize import apply_fee_slippage, quote_to_base_amount
+
+
+def _copy_state(state: MacdbbState, **overrides: Any) -> MacdbbState:
+    payload = {
+        "adaptive_activation_streak": state.adaptive_activation_streak,
+        "thesis_decay_by_pair": dict(state.thesis_decay_by_pair),
+        "flip_streak_by_pair": dict(state.flip_streak_by_pair),
+        "sl_cooldown_until_tick": dict(state.sl_cooldown_until_tick),
+        "flip_cooldown_until_tick": dict(state.flip_cooldown_until_tick),
+        "thesis_decay_extra_pending_by_pair": dict(
+            state.thesis_decay_extra_pending_by_pair
+        ),
+        "entry_meta_by_pair": dict(state.entry_meta_by_pair),
+        "monitor_state_by_pair": dict(state.monitor_state_by_pair),
+    }
+    payload.update(overrides)
+    return MacdbbState(**payload)
 
 
 def _ensure_metrics(signal: SignalSnapshot, params: dict[str, Any]) -> dict[str, Any]:
@@ -63,6 +82,18 @@ def _score_candidate(metrics: dict[str, Any], side: Side, entry_class: EntryClas
         if side == "long"
         else metrics["adaptive_strength_short"]
     )
+
+
+def _filter_4h_allows(side: Side, trend: str | None, passed: bool | None) -> bool:
+    """Match replay ``filter_4h_allows`` — reverse requires an explicit pass."""
+    if passed is not True:
+        return False
+    if trend is None:
+        return True
+    trend_l = str(trend).lower()
+    if side == "long":
+        return trend_l == "bullish"
+    return trend_l == "bearish"
 
 
 def _candidate_opens(
@@ -141,11 +172,126 @@ def _update_adaptive_streak(
             any_formal = True
             break
     streak = 0 if any_formal else state.adaptive_activation_streak + 1
-    return MacdbbState(
-        adaptive_activation_streak=streak,
-        thesis_decay_by_pair=dict(state.thesis_decay_by_pair),
-        flip_streak_by_pair=dict(state.flip_streak_by_pair),
-        sl_cooldown_until_tick=dict(state.sl_cooldown_until_tick),
+    return _copy_state(state, adaptive_activation_streak=streak)
+
+
+def _hydrate_position(pos: OpenPosition, state: MacdbbState) -> OpenPosition:
+    """Fill entry_class / entry_bb_pos_pct from persisted state when available."""
+    meta = state.entry_meta_by_pair.get(pos.pair)
+    if meta is None:
+        return pos
+    return OpenPosition(
+        executor_id=pos.executor_id,
+        pair=pos.pair,
+        side=pos.side,
+        entry_class=meta.entry_class,
+        pnl=pos.pnl,
+        thesis_decay_streak=state.thesis_decay_by_pair.get(pos.pair, pos.thesis_decay_streak),
+        flip_streak=state.flip_streak_by_pair.get(pos.pair, pos.flip_streak),
+        entry_bb_pos_pct=meta.entry_bb_pos_pct,
+        filled=pos.filled,
+    )
+
+
+def _thesis_decay_reasons(
+    *,
+    side: Side,
+    entry_class: EntryClass,
+    entry_bb_pos_pct: float,
+    trend: str | None,
+    bb_pos_pct: float | None,
+    params: dict[str, Any],
+) -> tuple[bool, bool]:
+    trend_decay = False
+    bb_decay = False
+    trend_l = (trend or "").lower()
+    if side == "long" and trend_l == "bearish":
+        trend_decay = True
+    elif side == "short" and trend_l == "bullish":
+        trend_decay = True
+
+    if bb_pos_pct is None:
+        return trend_decay, bb_decay
+
+    if entry_class == "regime_adaptive_half_size":
+        long_max = float(params.get("adaptive_long_bb_pos_max") or 45.0)
+        short_min = float(params.get("adaptive_short_bb_pos_min") or 55.0)
+        if side == "long" and bb_pos_pct > long_max:
+            bb_decay = True
+        elif side == "short" and bb_pos_pct < short_min:
+            bb_decay = True
+    elif entry_class == "formal":
+        drift = float(params.get("thesis_bb_drift_pts") or 20.0)
+        if side == "long" and bb_pos_pct >= entry_bb_pos_pct + drift:
+            bb_decay = True
+        elif side == "short" and bb_pos_pct <= entry_bb_pos_pct - drift:
+            bb_decay = True
+
+    return trend_decay, bb_decay
+
+
+def _build_create_action(
+    *,
+    signal: SignalSnapshot,
+    side: Side,
+    entry_class: EntryClass,
+    score: float,
+    metrics: dict[str, Any],
+    tick: MacdbbTickInput,
+    params: dict[str, Any],
+    entry_streak: int,
+) -> CreateAction | None:
+    # total_amount_quote below 2*min_notional makes half-size entries always
+    # clamp to the floor (seen live: formal=100, min=112 → every open $112).
+    formal_notional = float(tick.formal_notional_quote)
+    min_notional = float(params.get("min_notional_quote") or 0)
+    if min_notional > 0 and formal_notional < (2.0 * min_notional):
+        formal_notional = 2.0 * min_notional
+    policy = resolve_live_entry_policy(
+        pair=signal.pair,
+        side=side,
+        entry_class=entry_class,
+        metrics=metrics,
+        meta=LivePolicyMeta(
+            tradeable_count=tick.tradeable_count,
+            scanner_regime=tick.scanner_regime,
+        ),
+        entry_streak=entry_streak,
+        strategy_params=params,
+        formal_notional_quote=formal_notional,
+        natr_mean_pct=signal.natr_mean_pct,
+        bb_mid=signal.bb_mid,
+        bb_upper=signal.bb_upper,
+    )
+    notional = apply_fee_slippage(
+        policy.notional_quote,
+        fee_bps=tick.fee_bps,
+        slippage_bps=tick.slippage_bps,
+    )
+    q = quote_to_base_amount(
+        notional_quote=notional,
+        price=signal.price,
+        min_notional_quote=float(params.get("min_notional_quote") or 0),
+        max_notional_quote=(
+            float(params["max_notional_quote"])
+            if params.get("max_notional_quote") is not None
+            else None
+        ),
+        amount_step=tick.amount_step,
+    )
+    if q.base_amount <= 0 or q.notional_quote <= 0:
+        return None
+    return CreateAction(
+        pair=signal.pair,
+        side=side,
+        entry_class=entry_class,
+        notional_quote=q.notional_quote,
+        base_amount=q.base_amount,
+        sl_pct=policy.sl_pct,
+        tp_pct=policy.tp_pct,
+        volatility_proxy_pct=policy.volatility_proxy_pct,
+        sizing_multiplier=policy.sizing_multiplier,
+        score=score,
     )
 
 
@@ -154,70 +300,155 @@ def _monitor_stops(
     signals_by_pair: dict[str, SignalSnapshot],
     state: MacdbbState,
     params: dict[str, Any],
-    tick_number: int,
-) -> tuple[list[StopAction], MacdbbState]:
-    """Thesis-decay / opposing formal flip stops (deterministic subset of playbook)."""
+    tick: MacdbbTickInput,
+) -> tuple[list[StopAction], list[CreateAction], MacdbbState, dict[str, str]]:
+    """Full Step 5: flip confirm, thesis decay (NEUTRAL + BB), optional flip reverse."""
     decay_limit = int(params.get("thesis_decay_exit_ticks") or 3)
     flip_limit = int(params.get("flip_confirm_ticks") or 2)
+    flip_cooldown_ticks = int(params.get("flip_cooldown_ticks") or 0)
+
     thesis = dict(state.thesis_decay_by_pair)
     flips = dict(state.flip_streak_by_pair)
-    stops: list[StopAction] = []
+    extra_pending = dict(state.thesis_decay_extra_pending_by_pair)
+    monitor = dict(state.monitor_state_by_pair)
+    flip_cooldown = {
+        pair: until
+        for pair, until in state.flip_cooldown_until_tick.items()
+        if until > tick.tick_number
+    }
+    entry_meta = dict(state.entry_meta_by_pair)
 
-    for pos in positions:
+    stops: list[StopAction] = []
+    reverse_creates: list[CreateAction] = []
+    stopped_pairs: set[str] = set()
+
+    for raw_pos in positions:
+        pos = _hydrate_position(raw_pos, state)
+        # Pending / never-filled legs occupy capacity for dedup but are not live risk.
+        if not pos.filled:
+            monitor[pos.pair] = "pending_unfilled"
+            continue
         signal = signals_by_pair.get(pos.pair)
         if signal is None:
+            monitor[pos.pair] = monitor.get(pos.pair) or "hold"
             continue
+
         metrics = _ensure_metrics(signal, params)
         signal.metrics = metrics
+        snapshot_signal = infer_signal_label(metrics)
+
         opposing_formal = (
             pos.side == "long" and bool(metrics.get("formal_short"))
         ) or (pos.side == "short" and bool(metrics.get("formal_long")))
-        if opposing_formal:
+
+        exit_reason = ""
+        if opposing_formal and tick.tick_number > flip_cooldown.get(pos.pair, -1):
             flips[pos.pair] = flips.get(pos.pair, 0) + 1
+            if flips[pos.pair] >= flip_limit:
+                exit_reason = "flip_confirm"
+            else:
+                monitor[pos.pair] = "flip_pending"
         else:
             flips[pos.pair] = 0
+            if monitor.get(pos.pair) == "flip_pending":
+                monitor[pos.pair] = "thesis_intact"
 
-        trend = (signal.trend or "").lower()
-        decaying = (pos.side == "long" and trend == "bearish") or (
-            pos.side == "short" and trend == "bullish"
-        )
-        if decaying:
-            thesis[pos.pair] = thesis.get(pos.pair, 0) + 1
-        else:
-            thesis[pos.pair] = 0
+        if not exit_reason:
+            same_direction_formal = (
+                pos.side == "long" and bool(metrics.get("formal_long"))
+            ) or (pos.side == "short" and bool(metrics.get("formal_short")))
+            if same_direction_formal:
+                thesis[pos.pair] = 0
+                extra_pending[pos.pair] = False
+                monitor[pos.pair] = "thesis_intact"
+            elif snapshot_signal == "NEUTRAL":
+                trend_decay, bb_decay = _thesis_decay_reasons(
+                    side=pos.side,
+                    entry_class=pos.entry_class,
+                    entry_bb_pos_pct=pos.entry_bb_pos_pct,
+                    trend=signal.trend,
+                    bb_pos_pct=signal.bb_pos_pct,
+                    params=params,
+                )
+                if trend_decay or bb_decay:
+                    thesis[pos.pair] = thesis.get(pos.pair, 0) + 1
+                    monitor[pos.pair] = "thesis_decay"
+                else:
+                    thesis[pos.pair] = 0
+                    extra_pending[pos.pair] = False
+                    monitor[pos.pair] = "thesis_intact"
 
-        if flips.get(pos.pair, 0) >= flip_limit:
+                if thesis.get(pos.pair, 0) >= decay_limit:
+                    if pos.pnl < 0 and not extra_pending.get(pos.pair, False):
+                        extra_pending[pos.pair] = True
+                    else:
+                        exit_reason = "thesis_decay"
+
+        if exit_reason:
             stops.append(
                 StopAction(
                     executor_id=pos.executor_id,
                     pair=pos.pair,
-                    reason="flip_confirm",
+                    reason=exit_reason,
                     close_type="EARLY_STOP",
                 )
             )
-        elif thesis.get(pos.pair, 0) >= decay_limit:
-            stops.append(
-                StopAction(
-                    executor_id=pos.executor_id,
-                    pair=pos.pair,
-                    reason="thesis_decay",
-                    close_type="EARLY_STOP",
-                )
-            )
+            stopped_pairs.add(pos.pair)
+            monitor[pos.pair] = exit_reason
+            thesis.pop(pos.pair, None)
+            flips.pop(pos.pair, None)
+            extra_pending.pop(pos.pair, None)
 
-    new_state = MacdbbState(
-        adaptive_activation_streak=state.adaptive_activation_streak,
+            if exit_reason == "flip_confirm":
+                if flip_cooldown_ticks > 0:
+                    flip_cooldown[pos.pair] = tick.tick_number + flip_cooldown_ticks
+                reverse_side: Side = "short" if pos.side == "long" else "long"
+                # Capacity after this stop frees one slot for same-pair reverse.
+                open_after = len(positions) - len(stopped_pairs) + len(reverse_creates)
+                if (
+                    open_after < int(tick.max_open_executors)
+                    and bool(metrics.get(f"formal_{reverse_side}"))
+                    and _filter_4h_allows(
+                        reverse_side,
+                        signal.filter_4h_trend,
+                        signal.filter_4h_pass,
+                    )
+                ):
+                    create = _build_create_action(
+                        signal=signal,
+                        side=reverse_side,
+                        entry_class="formal",
+                        score=_score_candidate(metrics, reverse_side, "formal"),
+                        metrics=metrics,
+                        tick=tick,
+                        params=params,
+                        entry_streak=state.adaptive_activation_streak,
+                    )
+                    if create is not None:
+                        reverse_creates.append(create)
+                        entry_meta[pos.pair] = EntryMeta(
+                            entry_class="formal",
+                            entry_bb_pos_pct=float(signal.bb_pos_pct),
+                            side=reverse_side,
+                        )
+            else:
+                entry_meta.pop(pos.pair, None)
+
+    new_state = _copy_state(
+        state,
         thesis_decay_by_pair=thesis,
         flip_streak_by_pair=flips,
-        sl_cooldown_until_tick=dict(state.sl_cooldown_until_tick),
+        thesis_decay_extra_pending_by_pair=extra_pending,
+        flip_cooldown_until_tick=flip_cooldown,
+        entry_meta_by_pair=entry_meta,
+        monitor_state_by_pair=monitor,
+        sl_cooldown_until_tick={
+            pair: until
+            for pair, until in state.sl_cooldown_until_tick.items()
+            if until > tick.tick_number
+        },
     )
-    # Drop cooldown keys that have expired.
-    new_state.sl_cooldown_until_tick = {
-        pair: until
-        for pair, until in new_state.sl_cooldown_until_tick.items()
-        if until > tick_number
-    }
-    return stops, new_state
+    return stops, reverse_creates, new_state, monitor
 
 
 def decide(tick: MacdbbTickInput, state: MacdbbState | None = None) -> MacdbbDecision:
@@ -226,7 +457,7 @@ def decide(tick: MacdbbTickInput, state: MacdbbState | None = None) -> MacdbbDec
     params = dict(tick.strategy_params or {})
     activation_ticks = int(params.get("adaptive_activation_ticks") or 3)
 
-    open_pairs = {p.pair for p in tick.open_positions}
+    open_pairs = {p.pair for p in tick.open_positions if p.pair}
     capacity = max(0, int(tick.max_open_executors) - len(tick.open_positions))
     state = _update_adaptive_streak(
         state, tick.signals, params, has_capacity=capacity > 0
@@ -238,11 +469,17 @@ def decide(tick: MacdbbTickInput, state: MacdbbState | None = None) -> MacdbbDec
         for pair, until in state.sl_cooldown_until_tick.items()
         if until > tick.tick_number
     }
+    cooldown_pairs |= {
+        pair
+        for pair, until in state.flip_cooldown_until_tick.items()
+        if until > tick.tick_number
+    }
 
     signals_by_pair = {s.pair: s for s in tick.signals}
-    stops, state = _monitor_stops(
-        tick.open_positions, signals_by_pair, state, params, tick.tick_number
+    stops, reverse_creates, state, monitor = _monitor_stops(
+        tick.open_positions, signals_by_pair, state, params, tick
     )
+    stopped_pairs = {s.pair for s in stops}
 
     # Register SL barrier cooldowns from prior tick closes.
     cooldown_ticks = int(params.get("sl_symbol_cooldown_ticks") or 0)
@@ -255,6 +492,13 @@ def decide(tick: MacdbbTickInput, state: MacdbbState | None = None) -> MacdbbDec
                 tick.tick_number + cooldown_ticks,
             )
             cooldown_pairs.add(pair)
+        # Drop entry meta for barrier-closed pairs.
+        if pair and close_type in {"STOP_LOSS", "TAKE_PROFIT"}:
+            state.entry_meta_by_pair.pop(pair, None)
+            state.thesis_decay_by_pair.pop(pair, None)
+            state.flip_streak_by_pair.pop(pair, None)
+            state.thesis_decay_extra_pending_by_pair.pop(pair, None)
+            state.monitor_state_by_pair.pop(pair, None)
 
     notifications = [
         NotifyAction(
@@ -269,84 +513,88 @@ def decide(tick: MacdbbTickInput, state: MacdbbState | None = None) -> MacdbbDec
         in {"STOP_LOSS", "TAKE_PROFIT"}
     ]
 
-    creates: list[CreateAction] = []
+    creates: list[CreateAction] = list(reverse_creates)
     hold_reason = ""
-    if capacity <= 0:
+
+    # Effective open set after stops (reverse creates occupy the freed slot).
+    effective_open = (open_pairs - stopped_pairs) | {c.pair for c in creates}
+    remaining_capacity = max(
+        0, int(tick.max_open_executors) - len(tick.open_positions) + len(stops) - len(creates)
+    )
+
+    if not tick.inventory_available:
+        hold_reason = "inventory_unavailable"
+        creates = []
+    elif remaining_capacity <= 0 and not creates:
         hold_reason = "at_max_open_executors"
-    else:
+    elif remaining_capacity > 0:
         candidates = _candidate_opens(
             tick.signals,
             adaptive_ready=adaptive_ready,
             cooldown_pairs=cooldown_pairs,
-            open_pairs=open_pairs,
+            open_pairs=effective_open | cooldown_pairs,
             params=params,
         )
-        if not candidates:
+        # Never open a pair we are stopping this tick (except flip reverse already added).
+        candidates = [c for c in candidates if c[0].pair not in stopped_pairs]
+        if not candidates and not creates:
             hold_reason = (
                 "no_formal_or_adaptive_trigger"
                 if not adaptive_ready
                 else "no_open_candidate"
             )
-        else:
+        elif candidates and remaining_capacity > 0:
             signal, side, entry_class, score, metrics = candidates[0]
-            policy = resolve_live_entry_policy(
-                pair=signal.pair,
+            create = _build_create_action(
+                signal=signal,
                 side=side,
                 entry_class=entry_class,
+                score=score,
                 metrics=metrics,
-                meta=LivePolicyMeta(
-                    tradeable_count=tick.tradeable_count,
-                    scanner_regime=tick.scanner_regime,
-                ),
+                tick=tick,
+                params=params,
                 entry_streak=state.adaptive_activation_streak,
-                strategy_params=params,
-                formal_notional_quote=tick.formal_notional_quote,
-                natr_mean_pct=signal.natr_mean_pct,
-                bb_mid=signal.bb_mid,
-                bb_upper=signal.bb_upper,
             )
-            notional = apply_fee_slippage(
-                policy.notional_quote,
-                fee_bps=tick.fee_bps,
-                slippage_bps=tick.slippage_bps,
-            )
-            q = quote_to_base_amount(
-                notional_quote=notional,
-                price=signal.price,
-                min_notional_quote=float(params.get("min_notional_quote") or 0),
-                max_notional_quote=(
-                    float(params["max_notional_quote"])
-                    if params.get("max_notional_quote") is not None
-                    else None
-                ),
-                amount_step=tick.amount_step,
-            )
-            creates.append(
-                CreateAction(
-                    pair=signal.pair,
-                    side=side,
+            if create is not None:
+                creates.append(create)
+                state.entry_meta_by_pair[signal.pair] = EntryMeta(
                     entry_class=entry_class,
-                    notional_quote=q.notional_quote,
-                    base_amount=q.base_amount,
-                    sl_pct=policy.sl_pct,
-                    tp_pct=policy.tp_pct,
-                    volatility_proxy_pct=policy.volatility_proxy_pct,
-                    sizing_multiplier=policy.sizing_multiplier,
-                    score=score,
+                    entry_bb_pos_pct=float(signal.bb_pos_pct),
+                    side=side,
                 )
-            )
-            notifications.append(
-                NotifyAction(
-                    text=(
-                        f"⚡ OPEN {side.upper()} {signal.pair} | {entry_class} | "
-                        f"notional ${q.notional_quote:.2f} | SL {policy.sl_pct:.2f}% "
-                        f"TP {policy.tp_pct:.2f}%"
+                notifications.append(
+                    NotifyAction(
+                        text=(
+                            f"⚡ OPEN {side.upper()} {signal.pair} | {entry_class} | "
+                            f"notional ${create.notional_quote:.2f} | "
+                            f"SL {create.sl_pct:.2f}% TP {create.tp_pct:.2f}%"
+                        )
                     )
                 )
+            elif not creates:
+                hold_reason = "sizing_rejected"
+
+    reverse_pairs = {c.pair for c in reverse_creates}
+    for create in creates:
+        if create.pair not in reverse_pairs:
+            continue
+        notifications.append(
+            NotifyAction(
+                text=(
+                    f"⚡ OPEN {create.side.upper()} {create.pair} | {create.entry_class} | "
+                    f"flip_reverse | notional ${create.notional_quote:.2f} | "
+                    f"SL {create.sl_pct:.2f}% TP {create.tp_pct:.2f}%"
+                )
             )
+        )
 
     hold = not creates and not stops
     best = creates[0] if creates else None
+    position_actions = [f"{s.pair}:{s.reason}" for s in stops]
+    if tick.barrier_closes:
+        position_actions.extend(
+            f"{c.get('pair')}:{c.get('close_type')}" for c in tick.barrier_closes
+        )
     journal = {
         "entry_class": best.entry_class if best else "hold",
         "hold_reason": hold_reason if hold else "",
@@ -357,7 +605,14 @@ def decide(tick: MacdbbTickInput, state: MacdbbState | None = None) -> MacdbbDec
         "best_candidate": best.pair if best else "",
         "best_score": best.score if best else 0.0,
         "stops": [s.reason for s in stops],
+        "open_count": len(tick.open_positions),
+        "open_pairs": ",".join(sorted(open_pairs)),
+        "inventory_available": tick.inventory_available,
+        "position_action": ",".join(position_actions),
     }
+    for pair, mon in sorted(monitor.items()):
+        if pair in open_pairs or pair in stopped_pairs:
+            journal[f"monitor_{pair}"] = mon
 
     return MacdbbDecision(
         hold=hold,

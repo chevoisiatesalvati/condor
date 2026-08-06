@@ -18,6 +18,38 @@ _EXECUTOR_ENRICHMENT_CACHE: dict[str, dict] = {}
 # Ids already sent to get_executor once (side may still be absent on terminated rows).
 _SIDE_HYDRATION_ATTEMPTED_IDS: set[str] = set()
 
+# Executor types whose `side` must be Hummingbot TradeType-style ints (1=BUY/LONG, 2=SELL/SHORT).
+_EXECUTOR_TYPES_WITH_TRADE_SIDE = frozenset(
+    {"position_executor", "grid_executor", "order_executor", "dca_executor"},
+)
+
+
+def _coerce_trade_side_inplace(config: Dict[str, Any]) -> bool:
+    """Map common string sides to ints expected by hummingbot-api. Returns True if changed."""
+    executor_type = config.get("type") or config.get("executor_type")
+    if executor_type not in _EXECUTOR_TYPES_WITH_TRADE_SIDE or "side" not in config:
+        return False
+    raw = config["side"]
+    if isinstance(raw, bool):
+        return False
+    if isinstance(raw, int):
+        return False
+    if isinstance(raw, float) and raw.is_integer():
+        config["side"] = int(raw)
+        return True
+    if isinstance(raw, str):
+        token = raw.strip().upper()
+        if token in ("BUY", "LONG", "L", "B"):
+            config["side"] = 1
+            return True
+        if token in ("SELL", "SHORT", "S"):
+            config["side"] = 2
+            return True
+        if token.isdigit():
+            config["side"] = int(token)
+            return True
+    return False
+
 
 def reset_executor_list_enrichment_state() -> None:
     """Clear in-process enrichment caches (tests / server reconnect)."""
@@ -492,14 +524,30 @@ async def fetch_all_executors(
 
 
 async def create_executor(
-    client, config: Dict[str, Any], account_name: str = "master_account"
+    client,
+    config: Dict[str, Any],
+    account_name: str = "master_account",
+    controller_id: str | None = None,
 ) -> Dict[str, Any]:
-    """Create a new executor."""
+    """Create a new executor.
+
+    Always pass ownership as the top-level ``controller_id`` request field.
+    Putting it only inside ``executor_config`` used to leave the API/DB column
+    as ``main``, so ``search_executors(controller_ids=[agent_id])`` returned [].
+    """
     if config.get("type") == "position_executor" or config.get("executor_type") == "position_executor":
         apply_hyperliquid_leverage_cap(config)
+    _coerce_trade_side_inplace(config)
+    resolved_controller_id = (
+        (str(controller_id).strip() if controller_id is not None else "")
+        or str(config.get("controller_id") or "").strip()
+        or None
+    )
     try:
         return await client.executors.create_executor(
-            executor_config=config, account_name=account_name
+            executor_config=config,
+            account_name=account_name,
+            controller_id=resolved_controller_id,
         )
     except Exception as e:
         logger.error("Error creating executor: %s", e, exc_info=True)

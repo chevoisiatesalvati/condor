@@ -260,7 +260,10 @@ class MacdbbScannerAggressiveHlParams(BaseModel):
     )
     leverage: int | None = Field(
         default=None,
-        description="Position leverage multiplier",
+        description=(
+            "Position leverage multiplier (margin ≈ notional / leverage). "
+            "Unset/null uses each Hyperliquid pair's maxLeverage from meta."
+        ),
         json_schema_extra={"group": "Entry barriers"},
     )
     create_max_retries: int | None = Field(

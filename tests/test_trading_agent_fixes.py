@@ -202,6 +202,33 @@ class TestHyperliquidLeverageCap:
         assert cfg["leverage"] == 30
         assert note == ""
 
+    def test_fills_max_when_leverage_unset(self, monkeypatch):
+        monkeypatch.setattr(
+            "condor.hyperliquid_leverage.hl_symbol_max_leverage",
+            lambda tp: 40 if "BTC" in tp else 3,
+        )
+        cfg = {
+            "connector_name": "hyperliquid_perpetual",
+            "trading_pair": "BTC-USD",
+        }
+        note = apply_hyperliquid_leverage_cap(cfg)
+        assert cfg["leverage"] == 40
+        assert "max leverage 40x" in note.lower()
+
+    def test_max_sentinel_uses_pair_max(self, monkeypatch):
+        monkeypatch.setattr(
+            "condor.hyperliquid_leverage.hl_symbol_max_leverage",
+            lambda _tp: 5,
+        )
+        cfg = {
+            "connector_name": "hyperliquid_perpetual",
+            "trading_pair": "MANTA-USD",
+            "leverage": "max",
+        }
+        note = apply_hyperliquid_leverage_cap(cfg)
+        assert cfg["leverage"] == 5
+        assert "max leverage" in note.lower()
+
 
 class TestOpenPositionAudit:
     def test_summarize_detects_unfilled_running_executor(self):
