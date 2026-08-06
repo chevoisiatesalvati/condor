@@ -17,6 +17,9 @@ PUBLIC_PRESET_LABELS: dict[str, str] = {
     "hl_dynamic_timeline_public_fixture": "Public timeline test fixture",
 }
 
+REFINE_LEAD_013_PRESET = "hl_dynamic_timeline_refine_lead_013"
+REFINE_LEAD_013_60S_PRESET = "hl_dynamic_timeline_refine_lead_013_60s"
+
 
 def _load_private_preset_bundle() -> dict[str, Any]:
     path = resolve_presets_yaml(AGENT_SLUG)
@@ -58,7 +61,12 @@ def _private_preset_bundle() -> dict[str, Any]:
 
 def preset_labels() -> dict[str, str]:
     bundle = _private_preset_bundle()
-    return {**PUBLIC_PRESET_LABELS, **(bundle.get("labels") or {})}
+    labels = {**PUBLIC_PRESET_LABELS, **(bundle.get("labels") or {})}
+    labels.setdefault(
+        REFINE_LEAD_013_60S_PRESET,
+        "Refine lead_013 winner (60s ticks)",
+    )
+    return labels
 
 
 def agent_strategy_preset_names() -> tuple[str, ...]:
@@ -129,6 +137,21 @@ _DRIVER_SESSION: dict[str, PresetValue] = {
 }
 
 DEFAULT_TIMELINE_SNAPSHOT_DIR = "data/replay_snapshots_binance_1y"
+DEFAULT_60S_TIMELINE_SNAPSHOT_DIR = "data/replay_snapshots_binance_60s"
+
+# Snapshot stores are frequency-specific; do not mix grids in one directory.
+SNAPSHOT_DIR_BY_FREQUENCY: dict[int, str] = {
+    1800: DEFAULT_TIMELINE_SNAPSHOT_DIR,
+    60: DEFAULT_60S_TIMELINE_SNAPSHOT_DIR,
+}
+
+# Replay tick fields that represent wall-clock duration (calibrated at preset frequency_sec).
+DURATION_TICK_FIELDS: tuple[str, ...] = (
+    "activation_ticks",
+    "thesis_decay_exit_ticks",
+    "sl_cooldown_ticks",
+    "flip_cooldown_ticks",
+)
 
 _DRIVER_TIMELINE: dict[str, PresetValue] = {
     "replay_mode": "timeline_backtest",
@@ -294,11 +317,73 @@ def _private_dynamic_overrides() -> dict[str, dict[str, PresetValue]]:
     }
 
 
+def rescale_duration_tick_value(
+    ticks: int | float,
+    from_frequency_sec: int,
+    to_frequency_sec: int,
+) -> int:
+    """Keep wall-clock duration when moving tick-denominated params across frequencies."""
+    from condor.agents.strategy_configs.registry import duration_to_ticks, ticks_to_hours
+
+    from_freq = max(1, int(from_frequency_sec))
+    to_freq = max(1, int(to_frequency_sec))
+    if from_freq == to_freq:
+        return int(ticks)
+    hours = ticks_to_hours(ticks, from_freq)
+    return duration_to_ticks(hours, to_freq)
+
+
+def rescale_duration_tick_fields(
+    values: dict[str, Any],
+    from_frequency_sec: int,
+    to_frequency_sec: int,
+) -> dict[str, Any]:
+    """Return a shallow copy with DURATION_TICK_FIELDS rescaled to ``to_frequency_sec``."""
+    from_freq = max(1, int(from_frequency_sec))
+    to_freq = max(1, int(to_frequency_sec))
+    if from_freq == to_freq:
+        return dict(values)
+    out = dict(values)
+    for key in DURATION_TICK_FIELDS:
+        if key not in out or out[key] is None:
+            continue
+        try:
+            out[key] = rescale_duration_tick_value(out[key], from_freq, to_freq)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _with_run_frequency(
+    overrides: dict[str, PresetValue],
+    frequency_sec: int,
+) -> dict[str, PresetValue]:
+    """Clone a preset for a different tick frequency (duration-preserving)."""
+    calibration_freq = max(1, int(overrides.get("frequency_sec") or 1800))
+    run_freq = max(1, int(frequency_sec))
+    out = rescale_duration_tick_fields(overrides, calibration_freq, run_freq)
+    out["frequency_sec"] = run_freq
+    calibration_dir = SNAPSHOT_DIR_BY_FREQUENCY.get(calibration_freq)
+    run_dir = SNAPSHOT_DIR_BY_FREQUENCY.get(run_freq)
+    if (
+        run_dir
+        and out.get("snapshot_dir") in (None, calibration_dir, DEFAULT_TIMELINE_SNAPSHOT_DIR)
+    ):
+        out["snapshot_dir"] = run_dir
+    if run_freq <= 60:
+        out["time_window_min"] = min(int(out.get("time_window_min") or 15), 1)
+    return out
+
+
 def get_dynamic_preset_overrides() -> dict[str, dict[str, PresetValue]]:
-    return {
+    overrides = {
         **PUBLIC_DYNAMIC_PRESET_OVERRIDES,
         **_private_dynamic_overrides(),
     }
+    lead_013 = overrides.get(REFINE_LEAD_013_PRESET)
+    if lead_013 is not None and REFINE_LEAD_013_60S_PRESET not in overrides:
+        overrides[REFINE_LEAD_013_60S_PRESET] = _with_run_frequency(lead_013, 60)
+    return overrides
 
 
 DYNAMIC_PRESET_OVERRIDES = get_dynamic_preset_overrides()
@@ -312,7 +397,11 @@ def backtest_preset_names() -> frozenset[str]:
     """Preset ids for replay/backtest UI when private yaml is present."""
     private = _private_preset_bundle().get("dynamic_preset_overrides") or {}
     if private:
-        return frozenset({"custom", *private.keys()})
+        names = {"custom", *private.keys()}
+        # Generated 60s alias (not necessarily written into private yaml).
+        if REFINE_LEAD_013_PRESET in private:
+            names.add(REFINE_LEAD_013_60S_PRESET)
+        return frozenset(names)
     return frozenset({"custom", *PUBLIC_DYNAMIC_PRESET_OVERRIDES.keys()})
 
 
@@ -327,13 +416,27 @@ USER_WINS_AFTER_PRESET_KEYS = frozenset(
     }
 )
 
+# frequency_sec is handled separately: only win when the caller explicitly set it
+# (Pydantic model_fields_set). Otherwise the model default of 1800 would clobber
+# 60s presets constructed as DynamicStrategyReplayConfig(preset="…_60s").
+_EXPLICIT_USER_WIN_KEYS = frozenset({"frequency_sec"})
+
 
 def _preserve_user_overrides(original: ConfigT, merged: ConfigT) -> ConfigT:
     """Re-apply non-empty user infra fields overwritten by preset merge."""
     if getattr(original, "preset", "custom") != getattr(merged, "preset", "custom"):
         return merged
     updates: dict[str, PresetValue] = {}
+    fields_set = getattr(original, "model_fields_set", frozenset())
     for key in USER_WINS_AFTER_PRESET_KEYS:
+        user_val = getattr(original, key, None)
+        if user_val is None or user_val == "":
+            continue
+        if user_val != getattr(merged, key, None):
+            updates[key] = user_val
+    for key in _EXPLICIT_USER_WIN_KEYS:
+        if key not in fields_set:
+            continue
         user_val = getattr(original, key, None)
         if user_val is None or user_val == "":
             continue
@@ -345,6 +448,41 @@ def _preserve_user_overrides(original: ConfigT, merged: ConfigT) -> ConfigT:
     allowed = set(config_type.model_fields)
     filtered = {key: value for key, value in updates.items() if key in allowed}
     return config_type(**{**merged.model_dump(), **filtered})
+
+
+def _retarget_config_frequency(
+    merged: ConfigT,
+    *,
+    calibration_frequency_sec: int,
+    run_frequency_sec: int,
+) -> ConfigT:
+    """Rescale duration ticks and retarget known snapshot dirs for a new tick clock."""
+    cal_freq = max(1, int(calibration_frequency_sec))
+    run_freq = max(1, int(run_frequency_sec))
+    if cal_freq == run_freq:
+        return merged
+
+    payload = merged.model_dump()
+    payload.update(
+        rescale_duration_tick_fields(payload, cal_freq, run_freq)
+    )
+    payload["frequency_sec"] = run_freq
+
+    cal_dir = SNAPSHOT_DIR_BY_FREQUENCY.get(cal_freq)
+    run_dir = SNAPSHOT_DIR_BY_FREQUENCY.get(run_freq)
+    if run_dir and payload.get("snapshot_dir") in (
+        None,
+        cal_dir,
+        DEFAULT_TIMELINE_SNAPSHOT_DIR,
+    ):
+        payload["snapshot_dir"] = run_dir
+    if run_freq <= 60:
+        payload["time_window_min"] = min(int(payload.get("time_window_min") or 15), 1)
+
+    config_type = type(merged)
+    allowed = set(config_type.model_fields)
+    filtered = {key: value for key, value in payload.items() if key in allowed}
+    return config_type(**filtered)
 
 
 def resolve_timeline_range(config: ConfigT) -> ConfigT:
@@ -394,27 +532,49 @@ def resolve_timeline_range(config: ConfigT) -> ConfigT:
 
 
 def resolve_config_with_preset(config: ConfigT) -> ConfigT:
-    """Apply a named preset profile on top of the submitted config."""
+    """Apply a named preset profile on top of the submitted config.
+
+    Preset ``*_ticks`` duration fields are calibrated at the preset's
+    ``frequency_sec``. If the caller overrides ``frequency_sec`` (e.g. 60 vs
+    1800), those tick fields are rescaled to preserve wall-clock duration and
+    known snapshot dirs are retargeted.
+    """
     preset = getattr(config, "preset", "custom")
     if preset == "custom":
         return resolve_timeline_range(config)
     overrides = PRESET_OVERRIDES.get(preset) or get_dynamic_preset_overrides().get(preset)
     if not overrides:
         return resolve_timeline_range(config)
+    calibration_freq = max(
+        1,
+        int(overrides.get("frequency_sec") or getattr(config, "frequency_sec", 1800) or 1800),
+    )
     config_type = type(config)
     allowed = set(config_type.model_fields)
     filtered = {key: value for key, value in overrides.items() if key in allowed}
     merged = config_type(**{**config.model_dump(), **filtered, "preset": preset})
     merged = _preserve_user_overrides(config, merged)
+    run_freq = max(1, int(getattr(merged, "frequency_sec", calibration_freq) or calibration_freq))
+    if run_freq != calibration_freq:
+        merged = _retarget_config_frequency(
+            merged,
+            calibration_frequency_sec=calibration_freq,
+            run_frequency_sec=run_freq,
+        )
     return resolve_timeline_range(merged)
 
 
 def strategy_params_from_preset(
     preset: str,
     *,
-    frequency_sec: int = 1800,
+    frequency_sec: int | None = None,
 ) -> dict[str, Any]:
-    """Map a named replay preset to live agent strategy_params."""
+    """Map a named replay preset to live agent strategy_params (duration hours).
+
+    When ``frequency_sec`` is omitted, the preset's own tick frequency is used.
+    Pass an explicit value to retarget duration ticks (e.g. live 60s from an
+    1800s-calibrated sweep preset).
+    """
     if preset == "custom":
         return {}
     from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
@@ -422,10 +582,14 @@ def strategy_params_from_preset(
         replay_config_to_agent_strategy_params,
     )
 
-    config = resolve_config_with_preset(
-        DynamicStrategyReplayConfig(preset=preset, frequency_sec=frequency_sec)
+    payload: dict[str, Any] = {"preset": preset}
+    if frequency_sec is not None:
+        payload["frequency_sec"] = int(frequency_sec)
+    config = resolve_config_with_preset(DynamicStrategyReplayConfig(**payload))
+    # After resolve, tick fields match config.frequency_sec wall-clock.
+    return replay_config_to_agent_strategy_params(
+        config, frequency_sec=int(config.frequency_sec)
     )
-    return replay_config_to_agent_strategy_params(config, frequency_sec=frequency_sec)
 
 
 def agent_preset_catalog() -> list[dict[str, str]]:

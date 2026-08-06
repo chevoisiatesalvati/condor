@@ -407,7 +407,17 @@ class DeterministicRunner:
         """One decision cycle. Market fetch is best-effort; empty signals → hold."""
         self._last_tick_at = time.time()
         tick_num = (self.journal.tick_count + 1) if self.journal else 1
-        params = dict(self.config.get("strategy_params") or {})
+        raw_params = dict(self.config.get("strategy_params") or {})
+        frequency_sec = max(1, int(self.config.get("frequency_sec") or 1800))
+        from condor.agents.strategy_configs.registry import (
+            resolve_effective_strategy_params,
+        )
+
+        params = resolve_effective_strategy_params(
+            self.strategy.strategy_slug,
+            raw_params,
+            frequency_sec,
+        )
         formal = float(self.config.get("total_amount_quote") or 500)
         risk_limits = self.config.get("risk_limits") or {}
         max_open = int(risk_limits.get("max_open_executors") or 10)

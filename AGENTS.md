@@ -139,6 +139,8 @@ Replay modes (`DynamicStrategyReplayConfig.replay_mode`):
 
 **Snapshot data** — timeline mode with `data_source=snapshots` reads parquet under `data/replay_snapshots_*`. Build or extend with `scripts/build_replay_snapshots.py` (see root `README.md` → *Replay snapshots*). Backtests can auto-update via `auto_update_snapshots`; sweeps assume snapshots are already current.
 
+**Tick frequency** — sweep stores default to `frequency_sec=1800`. For live-parity minute backtests use a separate store (e.g. `data/replay_snapshots_binance_60s`) and preset `hl_dynamic_timeline_refine_lead_013_60s` (or override `frequency_sec=60` on the 1800s preset). `resolve_config_with_preset` rescales duration `*_ticks` to preserve wall-clock cooldowns/decay.
+
 ---
 
 ## Code conventions

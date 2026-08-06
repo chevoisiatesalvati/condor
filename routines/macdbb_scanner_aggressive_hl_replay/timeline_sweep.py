@@ -700,9 +700,16 @@ def full_replay_overrides(
 def replay_config_to_agent_strategy_params(
     config: DynamicStrategyReplayConfig,
     *,
-    frequency_sec: int = DEFAULT_FREQUENCY_SEC,
+    frequency_sec: int | None = None,
 ) -> dict[str, Any]:
-    hours_per_tick = frequency_sec / 3600.0
+    """Convert replay tick fields to live duration-primary hours.
+
+    ``frequency_sec`` must match the frequency the config's ``*_ticks`` were
+    calibrated for (after ``resolve_config_with_preset``, that is
+    ``config.frequency_sec``).
+    """
+    freq = max(1, int(frequency_sec if frequency_sec is not None else config.frequency_sec))
+    hours_per_tick = freq / 3600.0
 
     def ticks_to_hours(ticks: int) -> float:
         return round(ticks * hours_per_tick, 4)

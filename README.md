@@ -525,8 +525,30 @@ Use `--sessions 37-47` instead of `--range-start`/`--range-end` to build ticks f
 **Notes**
 
 - Requires network access when the candle cache has gaps (Binance API fill).
-- `frequency_sec` must match the replay preset (default **1800** = 30-minute ticks).
+- `frequency_sec` must match the snapshot store (default **1800** = 30-minute ticks). Do **not** mix frequencies in one directory.
 - Entry/barrier prices come from the candle cache at replay time; snapshots supply scanner/MACD signals only.
+
+**60-second (live-parity) backtests**
+
+Live MACDBB often runs at `frequency_sec: 60`. Sweep snapshots under `data/replay_snapshots_binance_1y` stay at 1800s. For minute-level timeline backtests:
+
+1. Build a separate store (example: last 3 months):
+
+```bash
+cd /path/to/condor
+PYTHONPATH=. .venv/bin/python scripts/build_replay_snapshots.py \
+  --range-start 2026-05-06T00:00:00+00:00 \
+  --range-end   2026-08-06T23:59:59+00:00 \
+  --snapshot-dir data/replay_snapshots_binance_60s \
+  --cache-dir data/binance_candles \
+  --candle-source binance_perpetual \
+  --frequency-sec 60
+```
+
+2. Run routine `macdbb_scanner_aggressive_hl_backtest` with preset
+   `hl_dynamic_timeline_refine_lead_013_60s` (or `hl_dynamic_timeline_refine_lead_013`
+   with `frequency_sec: 60`). Duration tick fields are rescaled automatically so
+   wall-clock cooldowns/decay match the 1800s calibration.
 
 See also [`AGENTS.md`](AGENTS.md) for backtest vs sweep workflow.
 
