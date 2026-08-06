@@ -7,10 +7,10 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
+import { ReportFrame } from "@/components/routines/ReportFrame";
 import { type ReportSummary } from "@/lib/api";
-import { useColorizeReportIframe } from "@/hooks/useColorizeReportIframe";
 
 interface ReportViewerProps {
   report: ReportSummary;
@@ -36,8 +36,6 @@ export function ReportViewer({
 }: ReportViewerProps) {
   const [fullscreen, setFullscreen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  useColorizeReportIframe(iframeRef, report.id);
 
   const currentIndex = reports.findIndex((r) => r.id === report.id);
   const hasPrev = currentIndex > 0;
@@ -175,13 +173,7 @@ export function ReportViewer({
 
       {/* iframe */}
       <div className="relative flex-1">
-        <iframe
-          ref={iframeRef}
-          src={`/reports/${report.filename}`}
-          className="h-full w-full border-0"
-          title={report.title}
-          sandbox="allow-scripts allow-popups"
-        />
+        <ReportFrame reportId={report.id} title={report.title} />
         {/* Fullscreen chevron overlays */}
         {fullscreen && hasPrev && (
           <button

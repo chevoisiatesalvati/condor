@@ -7,6 +7,7 @@ import {
 import { useCallback, useMemo, useState } from "react";
 
 import { AgentPnlChart, metricsToDataPoints } from "@/components/agent/AgentPnlChart";
+import { useAgentExecutors } from "@/hooks/useAgentExecutors";
 import { DetailPanel, ExecutorTable, type SortDir, type SortKey } from "@/components/executor/ExecutorTable";
 import { StopConfirmDialog } from "@/components/executor/StopConfirmDialog";
 import { type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
@@ -27,6 +28,7 @@ import {
   formatCurrencyPnl,
   formatCompactUsd,
   isPnlExcludedCloseType,
+  toolCallState,
 } from "@/lib/formatters";
 import { useRates } from "@/hooks/useRates";
 
@@ -116,6 +118,7 @@ export function SessionExecutors({
   sessionSummary,
   liveSessionStatus,
   journalExecutors,
+  isLiveSession = false,
 }: {
   slug: string;
   sslug: string;
@@ -125,6 +128,9 @@ export function SessionExecutors({
   sessionSummary?: { status: string; lastTick: number; lastAction: string };
   liveSessionStatus?: string;
   journalExecutors?: ExecutorEntry[];
+  /** True only for the session currently running: lets the WS contribute
+   *  executors the session REST endpoint hasn't recorded yet. */
+  isLiveSession?: boolean;
 }) {
   const queryClient = useQueryClient();
   const { data: sessionDetail } = useQuery({
@@ -156,17 +162,14 @@ export function SessionExecutors({
     return Array.from(ids);
   }, [slug, sslug, sessionNum, controllerIds]);
 
-  const { data: liveExecutorsCache } = useQuery({
-    queryKey: ["executors", serverName, ""],
-    queryFn: () => api.getExecutors(serverName),
-    enabled: !!serverName && sessionControllerIds.length > 0,
-    refetchInterval: 5000,
-    staleTime: 3000,
-  });
+  const { executors: wsExecutors } = useAgentExecutors(
+    sessionControllerIds.length ? serverName : null,
+    sessionControllerIds,
+  );
 
   const liveById = useMemo(
-    () => new Map((liveExecutorsCache ?? []).map((ex) => [ex.id, ex])),
-    [liveExecutorsCache],
+    () => new Map(wsExecutors.map((ex) => [ex.id, ex])),
+    [wsExecutors],
   );
 
   const { data: positionsData } = useQuery({
@@ -198,6 +201,11 @@ export function SessionExecutors({
     return normalizedPositions.filter((p) => p.controller_id && cidSet.has(p.controller_id));
   }, [normalizedPositions, sessionControllerIds]);
 
+  // Merge: id-keyed upsert — the WS refreshes rows this session already owns and
+  // never invents new ones. `wsExecutors` belongs to the *running* instances, so
+  // appending it to a finished session would credit it with another session's
+  // PnL, volume and fees. Only the live session takes the unmatched WS rows, and
+  // only to show executors the REST endpoint hasn't recorded yet.
   const executorInfos = useMemo(() => {
     const restInfos = restExecutors.map(executorInfoFromAgentRow);
     const enrich = (ex: ExecutorInfo): ExecutorInfo => {
@@ -213,8 +221,15 @@ export function SessionExecutors({
       if (side) row = { ...row, side };
       return row;
     };
-    return restInfos.map(enrich);
-  }, [restExecutors, normalizedPositions, liveById, journalById, sessionConfig]);
+    const merged = restInfos.map(enrich);
+    if (!isLiveSession) return merged;
+
+    const restIds = new Set(restInfos.map((ex) => ex.id));
+    for (const executor of wsExecutors) {
+      if (!restIds.has(executor.id)) merged.push(enrich(executor));
+    }
+    return merged;
+  }, [restExecutors, normalizedPositions, liveById, journalById, sessionConfig, isLiveSession, wsExecutors]);
 
   const sessionEnrichment = useMemo<ExecutorEnrichmentContext>(
     () => ({
@@ -625,9 +640,13 @@ function SnapshotDetail({ slug, sslug, sessionNum, tick }: { slug: string; sslug
 export function ToolCallChip({ tc }: { tc: import("@/lib/parse-agent").ToolCall }) {
   const [expanded, setExpanded] = useState(false);
   const hasDetails = tc.input || tc.output;
-  const isOk = tc.status === "success" || tc.status === "completed";
-  const isErr = tc.status === "error";
-  const dotColor = isOk ? "bg-emerald-400" : isErr ? "bg-red-400" : "bg-[var(--color-text-muted)]";
+  const state = toolCallState(tc.status);
+  const dotColor =
+    state === "ok"
+      ? "bg-[var(--color-green)]"
+      : state === "error"
+        ? "bg-[var(--color-red)]"
+        : "bg-[var(--color-text-muted)]";
 
   const shortName = tc.name.replace(/^mcp__\w+__/, "");
 

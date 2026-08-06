@@ -18,7 +18,7 @@ from telegram.ext import (
 )
 
 from condor.persistence import SafePicklePersistence
-from handlers import clear_all_input_states
+from handlers import cancel_command, clear_all_input_states
 from utils.auth import restricted
 from utils.config import TELEGRAM_TOKEN, WEB_PORT, WEB_URL, is_dev_mode
 
@@ -239,7 +239,10 @@ def reload_handlers():
         "handlers.routines",
         "handlers.agents",
         "handlers.agents.menu",
-        "handlers.agents.session",
+        # NOTE: neither "handlers.agents.session" nor any "condor.runtime.*"
+        # module belongs in this list. The runtime holds live subprocess handles
+        # (agent sessions); re-executing those modules resets the registry and
+        # silently orphans every running agent.
         "handlers.agents.stream",
         "handlers.agents.confirmation",
         "handlers.agents._shared",
@@ -326,6 +329,9 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("performance", performance_command))
     application.add_handler(CommandHandler("delegations", delegations_command))
     application.add_handler(CommandHandler("memory", memory_command))
+    # Universal escape hatch for flows that arm a "next message is the answer"
+    # input mode. Every such prompt advertises /cancel.
+    application.add_handler(CommandHandler("cancel", cancel_command))
 
     # Add configuration commands (direct access)
     application.add_handler(CommandHandler("servers", servers_command))
@@ -479,6 +485,7 @@ async def register_bot_commands(application: Application) -> None:
         BotCommand("keys", "Configure exchange API credentials"),
         BotCommand("gateway", "Gateway for DEX trading"),
         BotCommand("web", "Open the web dashboard"),
+        BotCommand("cancel", "Abort the current input flow"),
     ]
     # Set default + private-chat scopes. Some Telegram clients resolve the Menu
     # button from AllPrivateChats rather than falling back to Default alone.
@@ -505,6 +512,36 @@ async def register_bot_commands(application: Application) -> None:
             logger.warning(f"Failed to set admin-specific commands: {e}", exc_info=True)
 
 
+async def _notify_interrupted_runs(bot, report) -> None:
+    """Tell each owner, once, what the restart found.
+
+    One summary per chat rather than a message per run: a crash with several
+    live loops would otherwise spam the user at the worst possible moment.
+    """
+    by_chat: dict[int, list] = {}
+    for run in report.interrupted:
+        status = None
+        try:
+            from condor.runtime.registry_file import read_status
+
+            status = read_status(run.session_dir)
+        except Exception:
+            pass
+        chat_id = (status or {}).get("chat_id")
+        if chat_id:
+            by_chat.setdefault(int(chat_id), []).append(run)
+
+    for chat_id, runs in by_chat.items():
+        lines = [f"Found {len(runs)} interrupted run(s) after restart:"]
+        for run in runs:
+            suffix = " — restarted" if run.restarted else ""
+            lines.append(f"• {run.label} (last tick {run.last_tick}){suffix}")
+        try:
+            await bot.send_message(chat_id=chat_id, text="\n".join(lines))
+        except Exception:
+            logger.warning("Could not notify chat %s about interrupted runs", chat_id)
+
+
 async def _boot_web_services() -> None:
     """Start shared web/API services (safe without a Telegram Application)."""
     await sync_server_permissions()
@@ -525,19 +562,22 @@ async def _boot_web_services() -> None:
 
 
 async def _shutdown_services() -> None:
-    """Tear down agents, web sockets, API clients, and background services."""
-    from handlers.agents.session import destroy_all_sessions, stop_health_monitor
+    """Tear down runtime, agents, web sockets, API clients, and background services."""
+    from condor.runtime import client as runtime
+    from condor.runtime import sessions as runtime_sessions
+    from condor.runtime.confirmations import get_registry
+    from condor.runtime.conversations import flush_all as flush_conversations
+    from condor.runtime.loops import get_supervisor
+    from condor.runtime.state import flush_all
 
-    await stop_health_monitor()
-    await destroy_all_sessions()
+    await runtime_sessions.stop_health_monitor()
+    await get_registry().stop()
+    await runtime.destroy_all()
 
-    from condor.agents.engine import get_all_engines
-
-    for engine in list(get_all_engines().values()):
-        try:
-            await engine.stop()
-        except Exception:
-            pass
+    # Graceful stop, deliberately NOT the emergency winddown sequence.
+    await get_supervisor().stop_all()
+    flush_all()
+    flush_conversations()
 
     from condor.web.ws_manager import get_ws_manager
 
@@ -582,10 +622,27 @@ async def post_init(application: Application) -> None:
 
     get_routine_store().set_bot(application.bot)
 
-    # Start agent session health monitor
-    from handlers.agents.session import start_health_monitor
+    # Health monitor + confirmation expiry are process lifecycle, not session ops.
+    from condor.runtime import sessions as runtime_sessions
+    from condor.runtime.confirmations import get_registry
 
-    await start_health_monitor(application.bot)
+    await runtime_sessions.start_health_monitor(application.bot)
+    await get_registry().start()
+
+    # Settle whatever the previous process left running.
+    from condor.runtime.loops import get_supervisor
+
+    try:
+        report = await get_supervisor().reconcile_boot()
+        if report.total:
+            logger.warning(
+                "Boot reconciliation: %d interrupted, %d restarted",
+                report.total,
+                len(report.restarted),
+            )
+            await _notify_interrupted_runs(application.bot, report)
+    except Exception:
+        logger.exception("Boot reconciliation failed; continuing startup")
 
     # Schedule periodic update checks (notifies admin)
     from handlers.admin.update import schedule_update_checks
@@ -799,13 +856,19 @@ async def watch_and_reload(application: Application) -> None:
     handlers_path = project_root / "handlers"
     routines_path = project_root / "routines"
     assistants_path = project_root / "assistants"
+    agents_path = project_root / "agents"
     condor_path = project_root / "condor"
     condor_web_path = condor_path / "web"
     main_py = Path(__file__)
 
+    # ``agents/`` journals/state are filtered out below; watching handlers/routines/
+    # and condor/ enables classified handler + web hot-reload.
     watch_paths: list[Path] = [handlers_path, routines_path, condor_path, main_py]
     if assistants_path.exists():
         watch_paths.append(assistants_path)
+    if agents_path.exists():
+        # Only for agent-local routines next to AGENT.md; store/ is filtered.
+        watch_paths.append(agents_path)
 
     logger.info(
         "👀 Watching for changes in: %s",
@@ -813,7 +876,12 @@ async def watch_and_reload(application: Application) -> None:
     )
 
     class _ReloadFilter(DefaultFilter):
-        """Ignore per-assistant runtime stores (FEAT-003)."""
+        """Ignore per-agent runtime stores (FEAT-003).
+
+        A store can sit under a watched tree (an agent-owned ``routines/`` dir
+        next to its ``store/``), so without this every memory/skill write would
+        thrash a full handler reload.
+        """
 
         def __call__(self, change, path: str) -> bool:
             if f"{os.sep}store{os.sep}" in path:
@@ -824,7 +892,7 @@ async def watch_and_reload(application: Application) -> None:
         logger.info("📝 Detected changes: %s", changes)
         try:
             (
-                reload_assistants_flag,
+                _reload_assistants_flag,
                 needs_handler_reload,
                 needs_web_reload,
                 extra_modules,
@@ -832,18 +900,13 @@ async def watch_and_reload(application: Application) -> None:
                 changes,
                 handlers_path=handlers_path,
                 routines_path=routines_path,
-                assistants_path=assistants_path,
+                assistants_path=assistants_path if assistants_path.exists() else agents_path,
                 condor_path=condor_path,
                 condor_web_path=condor_web_path,
                 main_py=main_py,
                 project_root=project_root,
             )
 
-            if reload_assistants_flag:
-                from handlers.agents._shared import reload_assistants
-
-                reload_assistants()
-                logger.info("✅ Auto-reloaded assistants")
             if needs_handler_reload:
                 reload_handlers()
                 register_handlers(application)

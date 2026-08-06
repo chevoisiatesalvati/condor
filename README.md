@@ -17,7 +17,7 @@ A Telegram bot for monitoring and trading with Hummingbot via the **Hummingbot A
 - **CLOB Trading** - Place orders on centralized exchanges (Binance, Bybit, etc.) with interactive menus
 - **DEX Trading** - Swap tokens and manage CLMM liquidity positions via Gateway
 - **Configuration** - Manage API servers, exchange credentials, and Gateway through Telegram (`/servers`, `/keys`, `/gateway`)
-- **AI Assistant** - Natural language trading help via **`/agent`** (optional OpenAI or OpenRouter keys; MCP tools when configured)
+- **AI Assistant** - Natural language trading help via **`/agent`** (optional OpenAI or OpenRouter keys, or any custom OpenAI-compatible endpoint like Venice AI; MCP tools when configured)
 
 ## What you need
 
@@ -267,6 +267,28 @@ CURSOR_API_KEY=crsr_...                  # Optional, Cursor Composer via local N
 > bodies when debugging 400 responses, set **`CONDOR_MCP_AUDIT_LOG=/path/to/lines.ndjson`** (append-only JSON per line).
 > You can still forward any real bridge stderr at INFO with **`CONDOR_LOG_CURSOR_BRIDGE_STDERR=1`**, or set
 > **`condor.acp.cursor_sdk_client`** / root to **DEBUG**.
+
+> **Custom OpenAI-compatible endpoints:** Connect Venice AI, Together, Fireworks,
+> or your own vLLM / LM Studio server. Add one from either surface — they share
+> the same saved endpoints:
+> - **Telegram:** `/agent → Change LLM → Custom — OpenAI-compatible API → + Add endpoint`
+> - **Web:** `Settings → LLM Endpoints → Add endpoint`
+>
+> You give a base URL (e.g. `https://api.venice.ai/api/v1`) and an optional API
+> key; Condor validates them by fetching `{base_url}/models` and lists the chat
+> models it finds. Endpoints are saved per user under a short nickname, and the
+> selected model is stored as `custom@<nickname>:<model-id>`.
+>
+> Optional environment variables:
+> ```bash
+> CUSTOM_LLM_BASE_URL=https://api.venice.ai/api/v1   # Headless fallback, no UI setup
+> CUSTOM_LLM_API_KEY=sk-...
+> CUSTOM_LLM_BLOCK_PRIVATE_URLS=true                 # Refuse loopback/RFC1918 targets
+> ```
+> Leave `CUSTOM_LLM_BLOCK_PRIVATE_URLS` unset for personal deployments — it is
+> what allows pointing at `http://localhost:8000/v1`. Turn it on for shared
+> multi-user instances, where a user could otherwise aim the fetcher at hosts
+> on your internal network. Cloud metadata addresses are always refused.
 
 ### `config.yml` (auto-created on first run)
 

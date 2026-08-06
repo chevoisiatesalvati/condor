@@ -20,6 +20,7 @@ import {
 } from "@/lib/executorChartPrefs";
 import { enrichExecutorForChart, resolveExecutorConfig } from "@/lib/executors";
 import { escapeHtml, formatCompactUsd, tsToSeconds } from "@/lib/formatters";
+import { candlesQuery } from "@/lib/queryClient";
 import { getThemeColors, pnlHexColor, sideColor } from "@/lib/theme-colors";
 
 export interface SnapshotBubble {
@@ -120,10 +121,9 @@ export function ExecutorChart({
 
   const hasActive = executors.some((ex) => isActive(ex.status));
 
-  // Pad time range for candle fetch. Live executor end uses Date.now() — keep out of queryKey.
+  // Pad the time range for candle fetch. The window is part of the cache key:
+  // another session charting the same market must not reuse this range.
   const paddingSeconds = 1800;
-  const startTime = Math.floor(timeRange.start - paddingSeconds);
-  const fetchEndTime = Math.ceil(timeRange.end + paddingSeconds);
   const allTerminated = executors.length > 0 && executors.every((ex) => !isActive(ex.status));
   const intervalSec = intervalToSeconds(interval);
 
@@ -134,15 +134,24 @@ export function ExecutorChart({
     staleTime: 5 * 60 * 1000,
   });
 
+  const { startTime, endTime, queryKey } = candlesQuery(
+    server,
+    connector,
+    tradingPair,
+    interval,
+    timeRange.start - paddingSeconds,
+    timeRange.end + paddingSeconds,
+  );
+  const candleStartTime = startTime ?? Math.floor(timeRange.start - paddingSeconds);
+  const candleEndTime = endTime ?? Math.ceil(timeRange.end + paddingSeconds);
+
   const { data: candles, isLoading, isError } = useQuery({
-    queryKey: ["candles", "executor-chart", server, connector, tradingPair, interval, startTime],
+    queryKey,
     queryFn: () => {
-      const end = hasActive
-        ? Math.ceil(Date.now() / 1000 + paddingSeconds)
-        : fetchEndTime;
-      const span = Math.max(end - startTime, intervalSec);
+      const end = hasActive ? Math.ceil(Date.now() / 1000 + paddingSeconds) : candleEndTime;
+      const span = Math.max(end - candleStartTime, intervalSec);
       const limit = Math.min(5000, Math.max(200, Math.ceil(span / intervalSec) + 20));
-      return api.getCandles(server, connector, tradingPair, interval, limit, startTime, end);
+      return api.getCandles(server, connector, tradingPair, interval, limit, candleStartTime, end);
     },
     enabled: !!server && !!connector && !!tradingPair,
     retry: 1,
@@ -534,14 +543,17 @@ export function ExecutorChart({
     }
   }, [candles, chartReady, pricePrecision]);
 
-  // Reset viewport fit only when pair/interval actually changes
+  // Reset on pair/interval change, and when the chart jumps to another time
+  // window (e.g. switching agent sessions) so it refits over the new candles.
+  // Only the start is watched: a live executor pushes `endTime` forward as it
+  // runs, and that must not yank the viewport back from where the user left it.
   useEffect(() => {
-    const key = `${tradingPair}|${interval}`;
+    const key = `${tradingPair}|${interval}|${startTime}`;
     if (viewportKeyRef.current === key) return;
     viewportKeyRef.current = key;
     overlayGeometrySigRef.current = "";
     initializedRef.current = false;
-  }, [tradingPair, interval]);
+  }, [tradingPair, interval, startTime]);
 
   // Apply overlays: segments, price lines, markers
   useEffect(() => {

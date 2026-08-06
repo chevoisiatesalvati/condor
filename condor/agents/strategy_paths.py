@@ -76,8 +76,14 @@ def iter_strategy_slugs() -> list[str]:
 
 
 def resolve_strategy_data_dir(agent_slug: str, sslug: str) -> Path:
-    """Session/journal root under the canonical agents/ tree."""
-    return REPO_ROOT / "agents" / agent_slug / "strategies" / sslug
+    """Session/journal root under the canonical agents/ tree.
+
+    Uses ``StrategyStore``'s ``_DATA_ROOT`` so tests that patch the store root
+    also redirect operational session dirs.
+    """
+    from condor.agents import strategy as strategy_module
+
+    return strategy_module._DATA_ROOT / agent_slug / "strategies" / sslug
 
 
 def _materialize_path(path: Path, *, is_dir: bool) -> None:

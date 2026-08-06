@@ -28,8 +28,8 @@ import { filterRoutinesBySourceType } from "@/lib/routineFilters";
 import { buildConfigValues, formatAgo, formatInterval, invalidateRoutineQueries, saveConfig, updateConfigValues } from "@/lib/routineUtils";
 import { setViewContext } from "@/lib/viewContext";
 import { useServer } from "@/hooks/useServer";
-import { useColorizeReportIframe } from "@/hooks/useColorizeReportIframe";
 import { RoutineConfigFormShell } from "./RoutineConfigFormShell";
+import { ReportFrame } from "./ReportFrame";
 import { RoutineHooksPanel } from "./RoutineHooksPanel";
 import { ScheduleDropdown } from "./ScheduleDropdown";
 
@@ -67,7 +67,6 @@ export function ReportBrowser({
   const sidebarRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const timelineContentRef = useRef<HTMLDivElement>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   const [canScrollTimelineLeft, setCanScrollTimelineLeft] = useState(false);
   const [canScrollTimelineRight, setCanScrollTimelineRight] = useState(false);
   const [timelineOverflow, setTimelineOverflow] = useState(false);
@@ -132,7 +131,6 @@ export function ReportBrowser({
 
   const [selectedReportIdx, setSelectedReportIdx] = useState(0);
   const selectedReport = reports[selectedReportIdx] ?? null;
-  useColorizeReportIframe(iframeRef, selectedReport?.id);
 
   // Reset report index when source changes
   useEffect(() => {
@@ -263,19 +261,24 @@ export function ReportBrowser({
     qc.invalidateQueries({ queryKey: ["routine-reports"] });
   }, [server, filteredRoutines, qc]);
 
-  // Sync theme to iframe when it changes or report changes
-  useEffect(() => {
-    const iframe = iframeRef.current;
-    if (!iframe) return;
-    const sendTheme = () => {
-      iframe.contentWindow?.postMessage({ type: "set-theme", theme: reportTheme }, window.location.origin);
-    };
-    iframe.addEventListener("load", sendTheme);
-    sendTheme();
-    return () => iframe.removeEventListener("load", sendTheme);
-  }, [reportTheme, selectedReport]);
-
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  /**
+   * Download the report body.
+   *
+   * Report HTML is authenticated (SEC-112), so a bare `href` to it no longer
+   * works: fetch it with the token in a header and save the response as a blob.
+   */
+  const downloadReport = useCallback(async () => {
+    if (!selectedReport) return;
+    const html = await api.getReportHtml(selectedReport.id);
+    const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = selectedReport.filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [selectedReport]);
 
   // Keyboard navigation
   const activeSourceIdx = filteredRoutines.findIndex((r) => r.name === activeSource);
@@ -731,14 +734,13 @@ export function ReportBrowser({
             )}
             {/* Download */}
             {selectedReport && (
-              <a
-                href={`/reports/${selectedReport.filename}`}
-                download={selectedReport.filename}
+              <button
+                onClick={downloadReport}
                 className="rounded p-1.5 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
                 title="Download report"
               >
                 <Download className="h-4 w-4" />
-              </a>
+              </button>
             )}
             {/* Delete */}
             {selectedReport && (
@@ -802,6 +804,16 @@ export function ReportBrowser({
                 #{tag}
               </span>
             ))}
+          </div>
+        )}
+
+        {/* Schedule failure — surfaced outside the collapsible panels so it is
+            always visible after a failed ScheduleDropdown action (CORR-097) */}
+        {scheduleMutation.isError && (
+          <div className="border-b border-[var(--color-border)] bg-[var(--color-red)]/5 px-4 py-2">
+            <p className="text-xs text-[var(--color-red)]">
+              Could not schedule {activeSource.replace(/_/g, " ")}: {(scheduleMutation.error as Error).message}
+            </p>
           </div>
         )}
 
@@ -1045,12 +1057,10 @@ export function ReportBrowser({
               )}
             </div>
           ) : (
-            <iframe
-              ref={iframeRef}
-              src={`/reports/${selectedReport.filename}`}
-              className="h-full w-full border-0"
+            <ReportFrame
+              reportId={selectedReport.id}
               title={selectedReport.title}
-              sandbox="allow-scripts allow-popups"
+              theme={reportTheme}
             />
           )}
 

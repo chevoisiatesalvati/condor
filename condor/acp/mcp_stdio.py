@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -12,11 +13,14 @@ def stdio_env_for_server(
     srv_config: dict[str, Any],
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Merge session extra_env with per-server ACP env entries (name/value dicts).
+    """Inherit process env, then overlay session/extra and per-server ACP entries.
 
-    Mirrors PydanticAIClient MCP startup env handling (see MCPServerStdio).
+    Parent env is required so dotenv-loaded keys (e.g. OPENROUTER_API_KEY) reach
+    MCP tools. ``extra_env`` and per-server ``env`` entries win on conflicts.
     """
-    env = dict(extra_env or {})
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
     for env_entry in srv_config.get("env", []):
         if isinstance(env_entry, dict) and "name" in env_entry:
             env[env_entry["name"]] = env_entry["value"]
