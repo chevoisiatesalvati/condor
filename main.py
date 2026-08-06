@@ -668,12 +668,31 @@ def request_web_reload() -> None:
         _web_reload_event.set()
 
 
+def _expand_reload_modules(module_names: list[str]) -> list[str]:
+    """Include parent packages so re-exports (e.g. condor.reports) rebind.
+
+    Skips the bare top-level package (``condor``) to avoid a full package reload.
+    """
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for name in module_names:
+        parts = name.split(".")
+        # Depth starts at 2: "condor.reports", not bare "condor".
+        start_depth = 2 if len(parts) >= 2 else 1
+        for depth in range(start_depth, len(parts) + 1):
+            candidate = ".".join(parts[:depth])
+            if candidate in seen or candidate in _WEB_RELOAD_SKIP:
+                continue
+            seen.add(candidate)
+            expanded.append(candidate)
+    # Children first, then parents, so package __init__ re-binds fresh leaves.
+    return sorted(expanded, key=lambda n: n.count("."), reverse=True)
+
+
 def reload_web_modules(extra_modules: list[str] | None = None) -> None:
     """Reload FastAPI route modules without touching the WS manager singleton."""
     if extra_modules:
-        for name in extra_modules:
-            if name in _WEB_RELOAD_SKIP:
-                continue
+        for name in _expand_reload_modules(extra_modules):
             mod = sys.modules.get(name)
             if mod is not None:
                 importlib.reload(mod)

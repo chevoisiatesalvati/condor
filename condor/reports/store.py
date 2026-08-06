@@ -134,6 +134,8 @@ def _write_report_html(path: Path, content: str) -> None:
 
 def list_reports(
     source_type: str | None = None,
+    source_name: str | None = None,
+    source_names: list[str] | None = None,
     tag: str | None = None,
     search: str | None = None,
     agent: str | None = None,
@@ -146,6 +148,15 @@ def list_reports(
     if source_type:
         entries = [
             entry for entry in entries if entry.get("source_type") == source_type
+        ]
+    if source_names:
+        allowed = set(source_names)
+        entries = [
+            entry for entry in entries if entry.get("source_name") in allowed
+        ]
+    elif source_name:
+        entries = [
+            entry for entry in entries if entry.get("source_name") == source_name
         ]
     if tag:
         entries = [entry for entry in entries if tag in entry.get("tags", [])]
