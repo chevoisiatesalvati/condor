@@ -320,6 +320,14 @@ export function Routines() {
                       </span>
                       <div className="flex items-center gap-2 text-[9px] text-[var(--color-text-muted)]">
                         <span className="capitalize">{inst.status}</span>
+                        {inst.progress?.phase && (
+                          <span className="truncate max-w-[10rem] capitalize">
+                            {inst.progress.phase.replace(/_/g, " ")}
+                            {inst.progress.percent != null
+                              ? ` ${inst.progress.percent.toFixed(0)}%`
+                              : ""}
+                          </span>
+                        )}
                         {inst.schedule?.type === "interval" && (
                           <span className="flex items-center gap-0.5">
                             <Clock className="h-2 w-2" />

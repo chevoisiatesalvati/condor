@@ -25,6 +25,12 @@ from routines.base import (
     get_routine,
     normalize_result,
 )
+from condor.routine_progress import (
+    progress_path_for_instance,
+    read_log_tail,
+    read_progress,
+    resolve_safe_log_path,
+)
 from condor.routine_runner import (
     RUNS_DIR,
     RoutineJob,
@@ -231,6 +237,11 @@ class RoutineStore:
 
     # ── Instances ──
 
+    def _attach_progress(self, entry: dict, instance_id: str) -> None:
+        progress = read_progress(progress_path_for_instance(instance_id, RUNS_DIR))
+        if progress is not None:
+            entry["progress"] = progress
+
     def list_instances(self) -> list[dict]:
         out = []
         pool = get_routine_worker_pool()
@@ -242,6 +253,7 @@ class RoutineStore:
                 entry["queue_position"] = pool.queue_position(iid)
                 if pool.is_active(iid):
                     entry["worker_pid"] = pool.worker_pid(iid)
+            self._attach_progress(entry, iid)
             out.append(entry)
         return out
 
@@ -265,7 +277,45 @@ class RoutineStore:
             entry["sections"] = result.sections
         # Ensure error is always present in response
         entry.setdefault("error", None)
+        self._attach_progress(entry, instance_id)
         return entry
+
+    def get_instance_logs(
+        self,
+        instance_id: str,
+        *,
+        offset: int = 0,
+        tail: int = 200,
+    ) -> dict[str, Any] | None:
+        """Return a log tail for a routine instance, or None if unknown."""
+        meta = self._instances.get(instance_id)
+        if not meta:
+            return None
+        safe_path = resolve_safe_log_path(meta.get("log_path"), runs_dir=RUNS_DIR)
+        if safe_path is None:
+            # Fall back to the canonical path even if meta is missing/stale.
+            safe_path = resolve_safe_log_path(
+                RUNS_DIR / f"{instance_id}.log", runs_dir=RUNS_DIR
+            )
+        if safe_path is None:
+            return {
+                "instance_id": instance_id,
+                "lines": [],
+                "next_offset": 0,
+                "truncated": False,
+                "complete": meta.get("status") not in ("running", "queued"),
+                "size": 0,
+                "progress": read_progress(
+                    progress_path_for_instance(instance_id, RUNS_DIR)
+                ),
+            }
+        payload = read_log_tail(safe_path, offset=offset, tail=tail)
+        payload["instance_id"] = instance_id
+        payload["complete"] = meta.get("status") not in ("running", "queued")
+        payload["progress"] = read_progress(
+            progress_path_for_instance(instance_id, RUNS_DIR)
+        )
+        return payload
 
     def add_instance(self, instance_id: str, metadata: dict) -> None:
         self._instances[instance_id] = metadata

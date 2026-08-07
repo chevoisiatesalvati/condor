@@ -12,6 +12,7 @@ from typing import Any
 
 from telegram.ext import ContextTypes
 
+from condor.routine_progress import write_progress
 from routines.base import RoutineResult
 from routines.macdbb_scanner_aggressive_hl_replay.dynamic_policy import DynamicReplayPolicy
 from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
@@ -335,6 +336,23 @@ def _backtest_report_title(config: Config) -> str:
     return "MACDBB Backtest"
 
 
+def _report_config_markdown(config: Config) -> str:
+    preset_label = PRESET_LABELS.get(config.preset, config.preset)
+    mode_label = _REPLAY_MODE_LABELS.get(config.replay_mode, config.replay_mode)
+    lines = [
+        f"- **Preset:** {preset_label}",
+        f"- **Mode:** {mode_label}",
+        f"- **Frequency:** {config.frequency_sec}s",
+    ]
+    if config.range_start_utc or config.range_end_utc:
+        lines.append(
+            f"- **Range:** {config.range_start_utc or '?'} → {config.range_end_utc or '?'}"
+        )
+    if config.snapshot_dir:
+        lines.append(f"- **Snapshot dir:** `{config.snapshot_dir}`")
+    return "\n".join(lines)
+
+
 async def _early_exit(message: str, config: Config) -> RoutineResult:
     logger.warning("Backtest exiting early: %s", message.split("\n", 1)[0])
     try:
@@ -342,15 +360,11 @@ async def _early_exit(message: str, config: Config) -> RoutineResult:
 
         builder = ReportBuilder(f"{_backtest_report_title(config)} — did not run")
         builder.source("routine", "macdbb_scanner_aggressive_hl_backtest")
-        preset_label = PRESET_LABELS.get(config.preset, config.preset)
-        builder.meta("Preset", preset_label)
-        builder.meta(
-            "Mode",
-            _REPLAY_MODE_LABELS.get(config.replay_mode, config.replay_mode),
-        )
+        builder.tags(["backtest", "macdbb"])
+        builder.manual_order()
         builder.kpi("Status", "Did not run", trend="negative")
+        builder.markdown("## Config\n" + _report_config_markdown(config))
         builder.markdown(message)
-        builder.params(config.model_dump())
         await builder.save()
     except Exception as exc:
         logger.warning("Failed to save early-exit report: %s", exc)
@@ -360,10 +374,12 @@ async def _early_exit(message: str, config: Config) -> RoutineResult:
 async def run(
     config: Config, context: ContextTypes.DEFAULT_TYPE
 ) -> RoutineResult:
+    write_progress(phase="resolve", message="Resolving preset and data sources")
     config = resolve_config_with_preset(config)
     configure_replay_data_sources(config)
     coverage_error = await _ensure_snapshot_coverage(config)
     if coverage_error:
+        write_progress(phase="error", message=coverage_error.split("\n", 1)[0])
         return await _early_exit(coverage_error, config)
     sessions_dir = strategy_sessions_dir(config.strategy_slug)
 
@@ -373,28 +389,42 @@ async def run(
         config.data_source,
         config.preset,
     )
+    write_progress(
+        phase="resolve",
+        message=(
+            f"preset={config.preset} mode={config.replay_mode} "
+            f"freq={config.frequency_sec}s"
+        ),
+    )
 
     if config.replay_mode == "timeline_backtest":
         if not config.range_start_utc or not config.range_end_utc:
-            return await _early_exit(
+            msg = (
                 "timeline_backtest requires range_start_utc and range_end_utc "
-                "(ISO UTC datetimes). Leave empty to use full scanner report span.",
-                config,
+                "(ISO UTC datetimes). Leave empty to use full scanner report span."
             )
+            write_progress(phase="error", message=msg)
+            return await _early_exit(msg, config)
     elif not sessions_dir.is_dir():
-        return await _early_exit(f"Sessions directory not found: {sessions_dir}", config)
+        msg = f"Sessions directory not found: {sessions_dir}"
+        write_progress(phase="error", message=msg)
+        return await _early_exit(msg, config)
 
+    write_progress(phase="hydrate", message="Loading timeline ticks / sessions")
     parsed_sessions, session_configs, selected_sessions = load_replay_sessions(config)
     hydration_warning = _timeline_hydration_empty_warning(config, parsed_sessions)
     if hydration_warning:
+        write_progress(phase="error", message=hydration_warning.split("\n", 1)[0])
         return await _early_exit(hydration_warning, config)
     if not selected_sessions:
         if config.replay_mode == "timeline_backtest":
-            return await _early_exit(
+            msg = (
                 "Timeline backtest produced no ticks for the selected range. "
-                "Check range_start_utc / range_end_utc and frequency_sec.",
-                config,
+                "Check range_start_utc / range_end_utc and frequency_sec."
             )
+            write_progress(phase="error", message=msg)
+            return await _early_exit(msg, config)
+        write_progress(phase="error", message="No sessions matched the requested selector.")
         return await _early_exit("No sessions matched the requested selector.", config)
 
     tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
@@ -404,6 +434,12 @@ async def run(
         tick_count,
         config.range_start_utc or "?",
         config.range_end_utc or "?",
+    )
+    write_progress(
+        phase="hydrate",
+        message=f"Loaded {len(selected_sessions)} session(s), {tick_count} ticks",
+        current=0,
+        total=tick_count,
     )
 
     if uses_snapshot_store(config):
@@ -415,17 +451,17 @@ async def run(
             root = snapshot_dir_or_default(config.snapshot_dir)
             scanner_count = len(load_scanner_index(snapshot_dir=root))
             macdbb_path = root / MACDBB_FILENAME
-            return await _early_exit(
+            msg = (
                 "No MACD BB snapshot index found after auto-update. "
                 f"Snapshot dir: {root} (active={is_snapshot_store_active()}, "
                 f"scanner_ticks={scanner_count}, macdbb_parquet={macdbb_path.is_file()}). "
-                "The build may have produced scanner rows only; check worker logs for skipped ticks.",
-                config,
+                "The build may have produced scanner rows only; check worker logs for skipped ticks."
             )
-        return await _early_exit(
-            "No macd_bb_analysis reports or snapshots found for replay.",
-            config,
-        )
+            write_progress(phase="error", message=msg.split("\n", 1)[0][:200])
+            return await _early_exit(msg, config)
+        msg = "No macd_bb_analysis reports or snapshots found for replay."
+        write_progress(phase="error", message=msg)
+        return await _early_exit(msg, config)
     reports_by_pair = build_reports_by_pair(reports)
 
     all_pair_rows: list[dict[str, Any]] = []
@@ -453,6 +489,21 @@ async def run(
     hl_vol_candle_cache: dict[str, list[dict[str, float]]] = {}
     if should_prefetch_replay_candles(config) and parsed_sessions:
         logger.info("Prefetching candle prices (this can take several minutes)...")
+        write_progress(
+            phase="prefetch_candles",
+            message="Prefetching candles",
+            current=0,
+            total=None,
+        )
+
+        def _prefetch_progress(completed: int, total_pairs: int) -> None:
+            write_progress(
+                phase="prefetch_candles",
+                message=f"Prefetching candles {completed}/{total_pairs}",
+                current=completed,
+                total=total_pairs,
+            )
+
         (
             hl_caches_by_session,
             hl_candle_cache,
@@ -461,22 +512,54 @@ async def run(
         ) = await prefetch_replay_hl_prices(
             parsed_sessions,
             settings=hl_prefetch_settings_from_config(config),
+            on_progress=_prefetch_progress,
         )
         logger.info(
             "Prefetch complete: %d price series, %d barrier series",
             len(hl_candle_cache),
             len(hl_barrier_candle_cache),
         )
+        write_progress(
+            phase="prefetch_candles",
+            message=(
+                f"Prefetch complete: {len(hl_candle_cache)} price series, "
+                f"{len(hl_barrier_candle_cache)} barrier series"
+            ),
+            percent=100.0,
+        )
 
-    for session_num, tick_meta_map in parsed_sessions.items():
+    session_items = list(parsed_sessions.items())
+    session_total = len(session_items)
+    for session_idx, (session_num, tick_meta_map) in enumerate(session_items, start=1):
         logger.info(
             "Simulating session %s (%d ticks)...",
             session_num,
             len(tick_meta_map),
         )
+        write_progress(
+            phase="simulate",
+            message=(
+                f"Simulating session {session_num} "
+                f"({session_idx}/{session_total}, {len(tick_meta_map)} ticks)"
+            ),
+            current=0,
+            total=len(tick_meta_map),
+        )
         hl_price_cache = hl_caches_by_session.get(session_num)
         session_config = session_configs.get(session_num, config)
         replay_policy = DynamicReplayPolicy(session_config)
+
+        def _sim_progress(tick_current: int, tick_total: int) -> None:
+            write_progress(
+                phase="simulate",
+                message=(
+                    f"Simulating session {session_num} "
+                    f"({session_idx}/{session_total}): "
+                    f"tick {tick_current}/{tick_total}"
+                ),
+                current=tick_current,
+                total=tick_total,
+            )
 
         per_pair_rows, per_tick_rows, trades, summary = simulate_strategy_session(
             session_num=session_num,
@@ -488,6 +571,7 @@ async def run(
             hl_barrier_candle_cache=hl_barrier_candle_cache,
             hl_vol_candle_cache=hl_vol_candle_cache,
             replay_policy=replay_policy,
+            on_progress=_sim_progress,
         )
         status = summary.get("status", "ok")
         if status == "skipped_no_price_data":
@@ -682,12 +766,8 @@ async def run(
                     "Size Mult": row["sizing_multiplier"],
                     "SL %": row["sl_pct_used"],
                     "TP %": row["tp_pct_used"],
-                    "Entry Time": ReportBuilder.datetime_cell(
-                        row["entry_time_utc"] or None
-                    ),
-                    "Exit Time": ReportBuilder.datetime_cell(
-                        row["exit_time_utc"] or None
-                    ),
+                    "Entry Time": row["entry_time_utc"] or "",
+                    "Exit Time": row["exit_time_utc"] or "",
                     "Entry Price": row["entry_price"],
                     "Exit Price": row["exit_price"],
                     "Entry Tick": row["entry_tick"],
@@ -698,14 +778,10 @@ async def run(
                 }
             )
 
+        write_progress(phase="report", message="Building report")
         builder = ReportBuilder(_backtest_report_title(config))
         builder.source("routine", "macdbb_scanner_aggressive_hl_backtest")
-        preset_label = PRESET_LABELS.get(config.preset, config.preset)
-        builder.meta("Preset", preset_label)
-        builder.meta(
-            "Mode",
-            _REPLAY_MODE_LABELS.get(config.replay_mode, config.replay_mode),
-        )
+        builder.tags(["backtest", "macdbb"])
         builder.manual_order()
         builder.kpi("Sim Trades", str(total_trades))
         builder.kpi("Formal", str(formal_trades))
@@ -731,7 +807,7 @@ async def run(
             "Avg SL/TP",
             f"{dynamic_stats['avg_sl_pct']:.2f}% / {dynamic_stats['avg_tp_pct']:.2f}%",
         )
-        builder.params(config.model_dump())
+        builder.markdown("## Config\n" + _report_config_markdown(config))
         if session_rollup_rows:
             builder.table(session_rollup_rows, columns=table_columns)
         if trade_table_rows:
@@ -756,12 +832,18 @@ async def run(
                     "Return %",
                     "PnL $",
                 ],
-                wide=True,
             )
         await builder.save()
+        write_progress(phase="report", message="Report saved", percent=100.0)
     except Exception as error:
         logger.warning("Report generation failed: %s", error)
+        write_progress(phase="report", message=f"Report generation failed: {error}")
 
+    write_progress(
+        phase="done",
+        message=f"Complete: {total_trades} trades, PnL ${total_pnl:+.2f}",
+        percent=100.0,
+    )
     return RoutineResult(
         text="\n".join(summary_lines),
         table_data=session_rollup_rows,

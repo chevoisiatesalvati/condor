@@ -28,6 +28,7 @@ import { filterRoutinesBySourceType } from "@/lib/routineFilters";
 import { buildConfigValues, formatAgo, formatInterval, invalidateRoutineQueries, saveConfig, updateConfigValues } from "@/lib/routineUtils";
 import { setViewContext } from "@/lib/viewContext";
 import { useServer } from "@/hooks/useServer";
+import { LiveRunPanel, liveInstanceFromList } from "./LiveRunPanel";
 import { RoutineConfigFormShell } from "./RoutineConfigFormShell";
 import { ReportFrame } from "./ReportFrame";
 import { RoutineHooksPanel } from "./RoutineHooksPanel";
@@ -200,6 +201,20 @@ export function ReportBrowser({
   useEffect(() => {
     setLastFinishedInstance(null);
   }, [activeSource]);
+
+  const liveInstance = useMemo(() => {
+    const fromSource = liveInstanceFromList(sourceInstances, pollingInstanceId);
+    if (fromSource) return fromSource;
+    if (
+      polledInstance &&
+      (polledInstance.status === "running" || polledInstance.status === "queued")
+    ) {
+      return polledInstance;
+    }
+    return null;
+  }, [sourceInstances, pollingInstanceId, polledInstance]);
+
+  const finishedLogInstance = !liveInstance ? lastFinishedInstance : null;
 
   const runMutation = useMutation({
     mutationFn: () => api.runRoutine(server!, activeSource, configValues),
@@ -605,6 +620,11 @@ export function ReportBrowser({
                     >
                       {inst.status}
                       {inst.queue_position ? ` #${inst.queue_position}` : ""}
+                      {inst.progress?.percent != null
+                        ? ` · ${inst.progress.percent.toFixed(0)}%`
+                        : inst.progress?.phase
+                          ? ` · ${inst.progress.phase.replace(/_/g, " ")}`
+                          : ""}
                     </span>
                     {inst.schedule?.type === "interval" && (
                       <span className="text-[var(--color-text-muted)]">
@@ -944,6 +964,24 @@ export function ReportBrowser({
           </div>
         )}
 
+        {/* Live / finished worker log + progress */}
+        {liveInstance && (
+          <LiveRunPanel
+            instanceId={liveInstance.instance_id}
+            logPath={liveInstance.log_path}
+            progressHint={liveInstance.progress ?? polledInstance?.progress}
+            statusHint={liveInstance.status}
+          />
+        )}
+        {finishedLogInstance && (
+          <LiveRunPanel
+            instanceId={finishedLogInstance.instance_id}
+            logPath={finishedLogInstance.log_path}
+            progressHint={finishedLogInstance.progress}
+            statusHint={finishedLogInstance.status}
+          />
+        )}
+
         {/* Last run outcome — visible even when older reports exist */}
         {lastFinishedInstance && (
           <div
@@ -971,11 +1009,6 @@ export function ReportBrowser({
                   <pre className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10px] text-[var(--color-text-muted)]">
                     {lastFinishedInstance.error || lastFinishedInstance.result_text}
                   </pre>
-                )}
-                {lastFinishedInstance.log_path && (
-                  <p className="mt-2 font-mono text-[10px] text-[var(--color-text-muted)]">
-                    Worker log: {lastFinishedInstance.log_path}
-                  </p>
                 )}
               </div>
               <button

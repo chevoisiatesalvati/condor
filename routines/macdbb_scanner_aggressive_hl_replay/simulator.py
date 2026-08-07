@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from routines.macdbb_scanner_aggressive_hl_replay.models import (
     DynamicStrategyReplayConfig,
@@ -661,6 +662,7 @@ def simulate_strategy_session(
     *,
     initial_carry: SimulationCarryState | None = None,
     include_carry_state: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[SimTrade], dict[str, Any]]:
     if config.require_price_data and not session_has_trusted_prices(
         tick_meta_map,
@@ -722,6 +724,8 @@ def simulate_strategy_session(
     session_first_tick = sorted_ticks[0] if sorted_ticks else 0
     total_ticks = len(sorted_ticks)
     progress_step = max(1, total_ticks // 25) if total_ticks >= 100 else 0
+    progress_interval_sec = 2.0
+    last_progress_emit_at = 0.0
     if progress_step:
         logger.info(
             "Sim session %s: starting %d ticks (progress every ~%d ticks)",
@@ -731,11 +735,22 @@ def simulate_strategy_session(
         )
 
     for tick_index, tick in enumerate(sorted_ticks):
-        if progress_step and (
+        now = time.monotonic()
+        log_emit = (
             tick_index == 0
-            or (tick_index + 1) % progress_step == 0
             or tick_index + 1 == total_ticks
-        ):
+            or bool(progress_step and (tick_index + 1) % progress_step == 0)
+        )
+        time_due = (
+            on_progress is not None
+            and (now - last_progress_emit_at) >= progress_interval_sec
+        )
+        callback_emit = on_progress is not None and (
+            log_emit
+            or (tick_index + 1) % 500 == 0
+            or time_due
+        )
+        if log_emit:
             logger.info(
                 "Sim session %s: tick %d/%d (%.0f%%), open_positions=%d",
                 session_num,
@@ -744,6 +759,9 @@ def simulate_strategy_session(
                 100.0 * (tick_index + 1) / total_ticks,
                 len(open_positions),
             )
+        if callback_emit:
+            on_progress(tick_index + 1, total_ticks)
+            last_progress_emit_at = now
         meta = tick_meta_map[tick]
         if is_report_driven_data_source(config.data_source) and report_driven_params and scanner_reports:
             journal_meta = meta

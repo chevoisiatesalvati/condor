@@ -87,6 +87,21 @@ async def get_instance(instance_id: str, user: WebUser = Depends(get_current_use
     return inst
 
 
+@router.get("/instances/{instance_id}/logs")
+async def get_instance_logs(
+    instance_id: str,
+    user: WebUser = Depends(get_current_user),
+    offset: int = Query(0, ge=0),
+    tail: int = Query(200, ge=1, le=2000),
+):
+    """Tail the worker log for a routine instance (live while running)."""
+    store = get_routine_store()
+    payload = store.get_instance_logs(instance_id, offset=offset, tail=tail)
+    if payload is None:
+        raise HTTPException(404, "Instance not found")
+    return payload
+
+
 @router.get("/instances/{instance_id}/image")
 async def get_instance_image(
     instance_id: str, user: WebUser = Depends(get_current_user)

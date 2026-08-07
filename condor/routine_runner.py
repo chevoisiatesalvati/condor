@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from routines.base import RoutineResult
 
+from condor.routine_progress import PROGRESS_ENV, progress_path_for_instance
 from condor.routine_worker import read_envelope, routine_result_from_dict
 
 logger = logging.getLogger(__name__)
@@ -272,6 +273,8 @@ class RoutineWorkerPool:
 
         env = os.environ.copy()
         env.setdefault("PYTHONPATH", str(REPO_ROOT))
+        progress_path = progress_path_for_instance(job.instance_id, RUNS_DIR)
+        env[PROGRESS_ENV] = str(progress_path)
 
         logger.info(
             "Routine worker starting: %s[%s] pid=pending log=%s",

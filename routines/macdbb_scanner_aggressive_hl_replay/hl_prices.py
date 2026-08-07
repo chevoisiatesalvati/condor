@@ -8,7 +8,7 @@ import importlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import aiohttp
 import numpy as np
@@ -443,6 +443,7 @@ async def prefetch_replay_hl_prices(
     *,
     settings: HlPrefetchSettings | None = None,
     extra_pairs: set[str] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> ReplayHlPrefetch:
     """Fetch tick-close prices and OHLC series for replay (price + barrier + vol)."""
     if not session_tick_maps:
@@ -764,6 +765,10 @@ async def prefetch_replay_hl_prices(
                 completed += 1
                 if completed == 1 or completed % 10 == 0 or completed == total_pairs:
                     logger.info("Lazy prefetch progress: %d/%d pairs", completed, total_pairs)
+                if on_progress is not None and (
+                    completed == 1 or completed % 5 == 0 or completed == total_pairs
+                ):
+                    on_progress(completed, total_pairs)
             total_prices = sum(len(cache) for cache in session_caches.values())
             logger.info(
                 "%s lazy prefetch: %d session prices (candle series on demand)",
@@ -788,6 +793,10 @@ async def prefetch_replay_hl_prices(
             completed += 1
             if completed == 1 or completed % 5 == 0 or completed == total_pairs:
                 logger.info("Prefetch progress: %d/%d pairs", completed, total_pairs)
+            if on_progress is not None and (
+                completed == 1 or completed % 5 == 0 or completed == total_pairs
+            ):
+                on_progress(completed, total_pairs)
 
     for pair, requests in pair_requests.items():
         candles = pair_candles.get(pair)

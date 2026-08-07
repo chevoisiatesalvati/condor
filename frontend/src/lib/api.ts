@@ -606,6 +606,25 @@ export interface RoutineInfo {
   preset_overrides?: Record<string, Record<string, unknown>>;
 }
 
+export interface RoutineProgress {
+  phase: string;
+  message?: string;
+  current?: number | null;
+  total?: number | null;
+  percent?: number | null;
+  updated_at?: string;
+}
+
+export interface RoutineInstanceLogs {
+  instance_id: string;
+  lines: string[];
+  next_offset: number;
+  truncated: boolean;
+  complete: boolean;
+  size: number;
+  progress?: RoutineProgress | null;
+}
+
 export interface RoutineInstance {
   instance_id: string;
   routine_name: string;
@@ -631,6 +650,7 @@ export interface RoutineInstance {
   execution_mode?: string;
   worker_pid?: number | null;
   queue_position?: number | null;
+  progress?: RoutineProgress | null;
 }
 
 export interface RoutineHooks {
@@ -1784,6 +1804,19 @@ export const api = {
 
   getRoutineInstance: (id: string) =>
     apiFetch<RoutineInstance>(`/api/v1/routines/instances/${encodeURIComponent(id)}`),
+
+  getRoutineInstanceLogs: (
+    id: string,
+    opts: { tail?: number; offset?: number } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.tail != null) params.set("tail", String(opts.tail));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return apiFetch<RoutineInstanceLogs>(
+      `/api/v1/routines/instances/${encodeURIComponent(id)}/logs${qs ? `?${qs}` : ""}`,
+    );
+  },
 
   runRoutine: (server: string, name: string, config: Record<string, unknown> = {}) =>
     apiFetch<{ instance_id: string }>(
