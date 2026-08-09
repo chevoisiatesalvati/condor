@@ -1,4 +1,4 @@
-"""Tests for Telegram /sessions helpers and callback prefix wiring."""
+"""Tests for Telegram /agents helpers and callback prefix wiring."""
 
 from __future__ import annotations
 
@@ -12,10 +12,15 @@ from condor.agents.performance import (
 )
 from handlers.executors.menu import _list_callback_for_prefix
 from handlers.sessions._shared import (
+    DEFAULT_CALLBACK_PREFIX,
     format_vol_col,
     session_agent_id,
     sort_session_executors,
 )
+
+
+def test_default_callback_prefix_is_agents():
+    assert DEFAULT_CALLBACK_PREFIX == "agents"
 
 
 def test_session_agent_id_matches_web_ui_controller_id():
@@ -43,8 +48,10 @@ def test_format_vol_col():
     assert format_vol_col(1500).strip() == "1.5k"
 
 
-def test_list_callback_for_sessions_uses_stored_view():
+def test_list_callback_for_agents_uses_stored_view():
     context = SimpleNamespace(user_data={"sessions_slug": "foo", "sessions_num": 4})
+    assert _list_callback_for_prefix("agents", context) == "agents:view:foo:4"
+    assert _list_callback_for_prefix("strategies", context) == "strategies:view:foo:4"
     assert _list_callback_for_prefix("sessions", context) == "sessions:view:foo:4"
     assert _list_callback_for_prefix("executors", context) == "executors:menu"
 
@@ -84,8 +91,8 @@ def test_session_totals_exclude_stale_duplicate_pnl():
     assert perf.closed_count == 2
 
 
-def test_stop_confirm_callbacks_use_sessions_prefix():
-    """handle_stop_executor builds sessions: confirm/cancel callbacks."""
+def test_stop_confirm_callbacks_use_agents_prefix():
+    """handle_stop_executor builds agents: confirm/cancel callbacks."""
     import asyncio
     from unittest.mock import AsyncMock
 
@@ -102,7 +109,7 @@ def test_stop_confirm_callbacks_use_sessions_prefix():
     }
 
     asyncio.run(
-        handle_stop_executor(update, context, "abc123", callback_prefix="sessions")
+        handle_stop_executor(update, context, "abc123", callback_prefix="agents")
     )
 
     _args, kwargs = query.message.edit_text.call_args
@@ -110,5 +117,5 @@ def test_stop_confirm_callbacks_use_sessions_prefix():
     callback_datas = [
         btn.callback_data for row in markup.inline_keyboard for btn in row
     ]
-    assert "sessions:confirm_stop:abc123" in callback_datas
-    assert "sessions:detail:abc123" in callback_datas
+    assert "agents:confirm_stop:abc123" in callback_datas
+    assert "agents:detail:abc123" in callback_datas

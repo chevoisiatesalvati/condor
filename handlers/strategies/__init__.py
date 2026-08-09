@@ -1,12 +1,12 @@
 """
-Agents Handler - Browse agent StrategyStore session executors via Telegram.
+Strategies Handler - Browse deterministic strategy overview and sessions via Telegram.
 
 Flow:
-  /agents → pick strategy → pick session → session executors table
-                                        → detail → stop
+  /strategies → pick catalog strategy → overview + pick session → executors
+                                                                  → detail → stop
 
 Commands:
-- /agents [slug] [session_num]
+- /strategies [slug] [session_num]
 """
 
 from __future__ import annotations
@@ -16,36 +16,39 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from condor.agents.strategy import StrategyStore
+from condor.strategy_runners.catalog import get_strategy
 from handlers import clear_all_input_states
 from utils.auth import restricted
 
-from ._shared import clear_sessions_state, resolve_strategy
+from ._shared import clear_strategies_state
 
 logger = logging.getLogger(__name__)
 
 
 @restricted
-async def agents_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /agents [slug] [session_num]."""
+async def strategies_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /strategies [slug] [session_num]."""
     clear_all_input_states(context)
-    clear_sessions_state(context)
+    clear_strategies_state(context)
 
     chat_type = update.effective_chat.type
     if chat_type in ("group", "supergroup"):
-        await update.message.reply_text("Use /agents in a private chat.")
+        await update.message.reply_text("Use /strategies in a private chat.")
         return
 
     args = context.args or []
-    from .menu import show_session_executors, show_session_list, show_strategy_picker
+    from .menu import (
+        show_session_list_with_overview,
+        show_session_view,
+        show_strategy_picker,
+    )
 
     if not args:
         await show_strategy_picker(update, context)
         return
 
     slug = args[0].strip()
-    store = StrategyStore()
-    strategy = resolve_strategy(store, slug)
+    strategy = get_strategy(slug)
     if strategy is None:
         await update.message.reply_text(f"Strategy not found: {slug}")
         return
@@ -56,17 +59,17 @@ async def agents_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except ValueError:
             await update.message.reply_text("Session number must be an integer.")
             return
-        await show_session_executors(update, context, strategy.slug, session_num)
+        await show_session_view(update, context, strategy.slug, session_num)
         return
 
-    await show_session_list(update, context, strategy.slug)
+    await show_session_list_with_overview(update, context, strategy.slug)
 
 
 @restricted
-async def agents_callback_handler(
+async def strategies_callback_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Route agents:* callback queries."""
+    """Route strategies:* callback queries."""
     query = update.callback_query
     await query.answer()
 
@@ -79,13 +82,13 @@ async def agents_callback_handler(
 
     from .menu import (
         handle_close,
-        handle_sessions_confirm_stop,
-        handle_sessions_stop,
-        show_session_executor_detail,
-        show_session_executors,
-        show_session_history,
-        show_session_history_detail,
-        show_session_list,
+        handle_confirm_stop,
+        handle_stop,
+        show_executor_detail,
+        show_history,
+        show_history_detail,
+        show_session_list_with_overview,
+        show_session_view,
         show_strategy_picker,
     )
 
@@ -95,7 +98,7 @@ async def agents_callback_handler(
     elif action == "list" and len(parts) >= 3:
         slug = parts[2]
         page = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 0
-        await show_session_list(update, context, slug, page=page)
+        await show_session_list_with_overview(update, context, slug, page=page)
 
     elif action == "view" and len(parts) >= 4:
         slug = parts[2]
@@ -104,7 +107,7 @@ async def agents_callback_handler(
         except ValueError:
             await query.answer("Invalid session number", show_alert=True)
             return
-        await show_session_executors(update, context, slug, session_num)
+        await show_session_view(update, context, slug, session_num)
 
     elif action == "history" and len(parts) >= 4:
         slug = parts[2]
@@ -114,26 +117,21 @@ async def agents_callback_handler(
             await query.answer("Invalid session number", show_alert=True)
             return
         page = int(parts[4]) if len(parts) >= 5 and parts[4].isdigit() else 0
-        await show_session_history(
+        await show_history(
             update, context, slug=slug, session_num=session_num, page=page
         )
 
     elif action == "hist_detail" and len(parts) >= 3:
-        await show_session_history_detail(update, context, parts[2])
+        await show_history_detail(update, context, parts[2])
 
     elif action == "detail" and len(parts) >= 3:
-        await show_session_executor_detail(update, context, parts[2])
+        await show_executor_detail(update, context, parts[2])
 
     elif action == "stop" and len(parts) >= 3:
-        await handle_sessions_stop(update, context, parts[2])
+        await handle_stop(update, context, parts[2])
 
     elif action == "confirm_stop" and len(parts) >= 3:
-        await handle_sessions_confirm_stop(update, context, parts[2])
+        await handle_confirm_stop(update, context, parts[2])
 
     elif action == "close":
         await handle_close(update, context)
-
-
-# Backward-compatible aliases (package internals / older imports).
-sessions_command = agents_command
-sessions_callback_handler = agents_callback_handler

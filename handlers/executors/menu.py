@@ -842,11 +842,11 @@ async def handle_stop_executor(
 
 def _list_callback_for_prefix(callback_prefix: str, context: ContextTypes.DEFAULT_TYPE) -> str:
     """Return the 'back to list' callback for a stop result screen."""
-    if callback_prefix == "sessions":
+    if callback_prefix in ("agents", "sessions", "strategies"):
         slug = context.user_data.get("sessions_slug")
         session_num = context.user_data.get("sessions_num")
         if slug is not None and session_num is not None:
-            return f"sessions:view:{slug}:{session_num}"
+            return f"{callback_prefix}:view:{slug}:{session_num}"
     return f"{callback_prefix}:menu"
 
 

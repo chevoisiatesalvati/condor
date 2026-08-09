@@ -765,6 +765,7 @@ async def _compute_strategy_performance(
         for aid in active_ids:
             _CLOSED_PERF_CACHE.pop(aid, None)
 
+        bot_name = (default_config or {}).get("bot_name", "") or ""
         if bot_name:
             # Controller mode attributes the bot's live aggregate to every
             # session, so no per-session result is immutable — fetch all.

@@ -1,4 +1,4 @@
-"""Shared helpers for the Telegram /sessions command."""
+"""Shared helpers for the Telegram /agents command (agent StrategyStore browser)."""
 
 from __future__ import annotations
 
@@ -16,11 +16,23 @@ SESSIONS_STATE_KEYS = (
     "sessions_executors_raw",
     "sessions_perf",
     "sessions_history",
+    "sessions_callback_prefix",
 )
+
+DEFAULT_CALLBACK_PREFIX = "agents"
+
+
+def get_callback_prefix(context, default: str = DEFAULT_CALLBACK_PREFIX) -> str:
+    """Return the active browse-flow callback prefix stored in user_data."""
+    return context.user_data.get("sessions_callback_prefix") or default
+
+
+def set_callback_prefix(context, callback_prefix: str) -> None:
+    context.user_data["sessions_callback_prefix"] = callback_prefix
 
 
 def clear_sessions_state(context) -> None:
-    """Clear only /sessions-related keys from user context."""
+    """Clear agent-strategy browse flow keys from user context."""
     for key in SESSIONS_STATE_KEYS:
         context.user_data.pop(key, None)
 
