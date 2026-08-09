@@ -82,18 +82,23 @@ def build_scanner_queue(
     """Build MACD queue from archived scanner report tables + strategy params."""
     params = strategy_params or {}
     regime = _infer_regime(parsed)
+    live_equivalent = bool(_param(params, "live_equivalent_queue", False))
+    default_floor = 0.0 if live_equivalent else (0.08 if regime == "mature" else 0.1)
     natr_floor = float(
         _param(
             params,
             "natr_floor_mature_pct" if regime == "mature" else "natr_floor_degen_pct",
-            0.08 if regime == "mature" else 0.1,
+            default_floor,
         )
     )
+    if live_equivalent:
+        natr_floor = 0.0
     primary_size = int(_param(params, "macd_queue_primary_size", 8))
     pass2_min = int(_param(params, "macd_queue_pass2_min", 8))
     pass2_max = int(_param(params, "macd_queue_pass2_max", 12))
     total_cap = int(_param(params, "macd_queue_total_cap", 20))
-    review_count = int(_param(params, "macd_primary_review_count", 5))
+    review_default = 8 if live_equivalent else 5
+    review_count = int(_param(params, "macd_primary_review_count", review_default))
     min_tradeable = int(_param(params, "min_tradeable_for_adaptive", 1))
     min_analyzed = int(_param(params, "min_scanner_analyzed", 3))
 

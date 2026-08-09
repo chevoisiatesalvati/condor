@@ -212,6 +212,18 @@ def _normalize_momentum(value: str) -> str:
     return token
 
 
+def _optional_float(raw: str | None) -> float | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() in {"unknown", "none", "nan", "null", "-"}:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def _parse_bool_flag(value: str) -> bool:
     return value.strip() in {"1", "true", "True"}
 
@@ -263,10 +275,10 @@ def _parse_filter_4h(raw: str) -> dict[str, Filter4h]:
         filters[pair] = Filter4h(
             pair=pair,
             trend=_normalize_trend(match.group(2)),
-            bb_pos_pct=float(bb_raw) if bb_raw else None,
-            macd=float(macd_raw) if macd_raw else None,
-            signal_line=float(sig_raw) if sig_raw else None,
-            histogram=float(hist_raw) if hist_raw else None,
+            bb_pos_pct=_optional_float(bb_raw),
+            macd=_optional_float(macd_raw),
+            signal_line=_optional_float(sig_raw),
+            histogram=_optional_float(hist_raw),
             passed=match.group(7) == "1",
         )
     return filters

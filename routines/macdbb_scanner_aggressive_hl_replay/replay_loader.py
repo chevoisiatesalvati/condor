@@ -48,6 +48,15 @@ def load_replay_sessions(
                 journal_path.read_text(encoding="utf-8"),
                 session_dir=session_dir,
             )
+            from routines.macdbb_scanner_aggressive_hl_replay.live_tick_jsonl import (
+                enrich_ticks_from_live_jsonl,
+            )
+
+            ticks = enrich_ticks_from_live_jsonl(
+                ticks,
+                session_num,
+                strategy_slug=config.strategy_slug,
+            )
             session_config = config
             if config.config_source == "session":
                 session_config, _ = replay_config_from_session(

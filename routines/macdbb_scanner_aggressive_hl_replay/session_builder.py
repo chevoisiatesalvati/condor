@@ -35,11 +35,13 @@ from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import (
 
 
 def _default_strategy_params(config: DynamicStrategyReplayConfig) -> dict[str, Any]:
+    live_eq = bool(getattr(config, "live_equivalent_queue", False))
     return {
-        "natr_floor_mature_pct": 0.08,
-        "natr_floor_degen_pct": 0.1,
+        "live_equivalent_queue": live_eq,
+        "natr_floor_mature_pct": 0.0 if live_eq else 0.08,
+        "natr_floor_degen_pct": 0.0 if live_eq else 0.1,
         "macd_queue_primary_size": 8,
-        "macd_primary_review_count": 5,
+        "macd_primary_review_count": 8 if live_eq else 5,
         "macd_queue_pass2_min": 8,
         "macd_queue_pass2_max": 12,
         "macd_queue_total_cap": 20,
@@ -276,6 +278,22 @@ def build_session_parity_ticks(
         )
     ticks = build_report_driven_ticks(schedule, replay_config, params)
     journal_ticks = parse_journal_ticks(journal_path.read_text(encoding="utf-8"), session_dir)
+    # DeterministicRunner sessions store signal telemetry in tick JSONL, not
+    # classic signals_1h journal blobs.
+    try:
+        session_num = int(session_dir.name.split("_", 1)[1])
+    except (IndexError, ValueError):
+        session_num = -1
+    if session_num >= 0:
+        from routines.macdbb_scanner_aggressive_hl_replay.live_tick_jsonl import (
+            enrich_ticks_from_live_jsonl,
+        )
+
+        journal_ticks = enrich_ticks_from_live_jsonl(
+            journal_ticks,
+            session_num,
+            strategy_slug=strategy_slug,
+        )
     merged: dict[int, TickMeta] = {}
     for tick_number, meta in ticks.items():
         journal_meta = journal_ticks.get(tick_number)

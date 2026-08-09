@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from condor.strategy_runners.macdbb.presets import PRESET_CAPITAL_KEYS
 from routines.macdbb_scanner_aggressive_hl_backtest import run as run_dynamic_replay
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
     SweepResult,
@@ -56,7 +57,13 @@ DEFAULT_TIME_WINDOW_MIN = 15
 TIMELINE_PRESET_NAME = "hl_dynamic_timeline_refine_v5_winner_binance_1y"
 AGENT_SLUG = "macdbb_scanner_aggressive_hl"
 PRESET_STRIP_KEYS = frozenset(
-    {"preset", "session_nums", "range_start_utc", "range_end_utc"}
+    {
+        "preset",
+        "session_nums",
+        "range_start_utc",
+        "range_end_utc",
+        *PRESET_CAPITAL_KEYS,
+    }
 )
 
 # Benchmark: binance_1y @ 1800s (~13.7k ticks) ≈ 153s per config on this machine.

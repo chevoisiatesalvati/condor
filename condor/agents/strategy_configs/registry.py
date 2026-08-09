@@ -7,14 +7,24 @@ from typing import Any, Type
 from pydantic import BaseModel
 
 from condor.strategy_runners.macdbb.params import (
-    DURATION_EFFECTIVE_TICK_KEYS,
+    DURATION_EFFECTIVE_TICK_KEYS as MACDBB_DURATION_KEYS,
     LEGACY_HOURS_ALIASES,
     LEGACY_TICK_TO_HOURS,
     MacdbbScannerAggressiveHlParams,
 )
+from condor.strategy_runners.macdbb_pullback.params import (
+    DURATION_EFFECTIVE_TICK_KEYS as PULLBACK_DURATION_KEYS,
+    MacdbbPullbackHlParams,
+)
 
 STRATEGY_CONFIG_REGISTRY: dict[str, Type[BaseModel]] = {
     "macdbb_scanner_aggressive_hl": MacdbbScannerAggressiveHlParams,
+    "macdbb_pullback_hl": MacdbbPullbackHlParams,
+}
+
+_DURATION_KEYS_BY_SLUG: dict[str, dict[str, str]] = {
+    "macdbb_scanner_aggressive_hl": MACDBB_DURATION_KEYS,
+    "macdbb_pullback_hl": PULLBACK_DURATION_KEYS,
 }
 
 
@@ -101,11 +111,10 @@ def resolve_effective_strategy_params(
         return {}
 
     resolved = dict(merged)
-    if slug == "macdbb_scanner_aggressive_hl":
-        for hours_key, tick_key in DURATION_EFFECTIVE_TICK_KEYS.items():
-            hours_value = resolved.get(hours_key)
-            if hours_value is not None:
-                resolved[tick_key] = duration_to_ticks(hours_value, freq)
+    for hours_key, tick_key in _DURATION_KEYS_BY_SLUG.get(slug, {}).items():
+        hours_value = resolved.get(hours_key)
+        if hours_value is not None:
+            resolved[tick_key] = duration_to_ticks(hours_value, freq)
 
     resolved["frequency_sec"] = freq
     resolved["tick_interval_hours"] = round(freq / 3600, 4)

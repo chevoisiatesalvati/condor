@@ -29,9 +29,12 @@ from condor.strategy_runners.quantize import apply_fee_slippage, quote_to_base_a
 def test_catalog_registers_macdbb():
     strategies = list_strategies()
     assert any(s.slug == "macdbb_scanner_aggressive_hl" for s in strategies)
+    assert any(s.slug == "macdbb_pullback_hl" for s in strategies)
     assert is_deterministic_strategy_slug("macdbb_scanner_aggressive_hl")
+    assert is_deterministic_strategy_slug("macdbb_pullback_hl")
     assert not is_deterministic_strategy_slug("claude-code")
     assert get_strategy("macdbb_scanner_aggressive_hl") is not None
+    assert get_strategy("macdbb_pullback_hl") is not None
 
 
 def test_quantize_and_fee_helpers():

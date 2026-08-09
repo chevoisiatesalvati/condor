@@ -20,8 +20,6 @@ def _preset_strategy_params() -> dict:
         "enable_dynamic_barriers",
         "sl_pct",
         "tp_pct",
-        "min_notional_quote",
-        "max_notional_quote",
         "min_conviction_mult",
         "max_conviction_mult",
         "strength_mult_per_unit",
@@ -42,6 +40,9 @@ def _preset_strategy_params() -> dict:
         "volatility_source",
     )
     params = {key: preset[key] for key in keys}
+    # Deployment sizing (not part of strategy presets).
+    params["min_notional_quote"] = 200.0
+    params["max_notional_quote"] = 1400.0
     params["adaptive_activation_ticks"] = preset["activation_ticks"]
     return params
 
@@ -69,8 +70,11 @@ def test_live_policy_config_from_params_matches_preset():
     assert config.activation_ticks == preset["activation_ticks"]
     assert config.enable_dynamic_sizing is True
     assert config.enable_dynamic_barriers is True
-    assert config.min_notional_quote == preset["min_notional_quote"]
-    assert config.max_notional_quote == preset["max_notional_quote"]
+    assert config.min_notional_quote == params["min_notional_quote"]
+    assert config.max_notional_quote == params["max_notional_quote"]
+    assert "min_notional_quote" not in preset
+    assert "max_notional_quote" not in preset
+    assert "formal_notional_quote" not in preset
     assert config.tp_min_pct == preset["tp_min_pct"]
     assert config.tp_max_pct == preset["tp_max_pct"]
     assert config.volatility_source == preset["volatility_source"]

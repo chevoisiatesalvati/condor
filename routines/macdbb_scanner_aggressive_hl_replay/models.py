@@ -358,6 +358,10 @@ class ReplayConfigBase(BaseModel):
         default=6,
         description="Scanner NATR lookback (hours)",
     )
+    live_equivalent_queue: bool = Field(
+        default=False,
+        description="Match live Strategies queue (no NATR floor, review>=8)",
+    )
 
 
 class StrategyReplayConfig(ReplayConfigBase):
@@ -520,6 +524,14 @@ def parse_session_selector(session_selector: str, sessions_dir: Any) -> list[int
     for value in session_selector.split(","):
         value = value.strip()
         if not value:
+            continue
+        if "-" in value:
+            start_text, end_text = value.split("-", 1)
+            start_num = int(start_text.strip())
+            end_num = int(end_text.strip())
+            if end_num < start_num:
+                start_num, end_num = end_num, start_num
+            parsed_numbers.extend(range(start_num, end_num + 1))
             continue
         parsed_numbers.append(int(value))
     return sorted(set(parsed_numbers))

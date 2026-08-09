@@ -66,6 +66,8 @@ class SnapshotBuildSettings:
     limit: int = 0
     lookback_hours: int = 6
     sessions: str = ""
+    live_equivalent_queue: bool = False
+    macd_review_count: int = 5
 
 
 @dataclass
@@ -88,6 +90,7 @@ class SnapshotGap:
 
 def settings_from_replay_config(config: DynamicStrategyReplayConfig) -> SnapshotBuildSettings:
     cache_dir_raw = config.hl_cache_dir
+    live_eq = bool(getattr(config, "live_equivalent_queue", False))
     return SnapshotBuildSettings(
         snapshot_dir=snapshot_dir_or_default(config.snapshot_dir),
         candle_source=config.candle_source,
@@ -97,6 +100,8 @@ def settings_from_replay_config(config: DynamicStrategyReplayConfig) -> Snapshot
         request_interval_ms=config.hl_request_interval_ms,
         max_retries=config.hl_max_retries,
         max_concurrent=config.hl_max_concurrent,
+        live_equivalent_queue=live_eq,
+        macd_review_count=8 if live_eq else 5,
     )
 
 
@@ -299,6 +304,11 @@ async def build_snapshots_for_range(
         candle_source=settings.candle_source,
         lookback_hours=settings.lookback_hours,
     )
+    review_count = (
+        max(8, settings.macd_review_count)
+        if settings.live_equivalent_queue
+        else settings.macd_review_count
+    )
     market_settings = TickMarketSettings(
         lookback_hours=backfill_settings.lookback_hours,
         top_n=backfill_settings.top_n,
@@ -306,11 +316,17 @@ async def build_snapshots_for_range(
         mature_count=backfill_settings.mature_count,
         degen_count=backfill_settings.degen_count,
         candidate_pool=backfill_settings.candidate_pool,
-        macd_review_count=backfill_settings.macd_review_count,
-        macd_pairs_superset=backfill_settings.macd_review_count,
+        macd_review_count=review_count,
+        macd_pairs_superset=max(review_count, backfill_settings.macd_review_count),
         max_concurrent=settings.max_concurrent,
+        live_equivalent_queue=settings.live_equivalent_queue,
     )
     strategy_params = _default_strategy_params(DynamicStrategyReplayConfig())
+    if settings.live_equivalent_queue:
+        strategy_params["live_equivalent_queue"] = True
+        strategy_params["natr_floor_mature_pct"] = 0.0
+        strategy_params["natr_floor_degen_pct"] = 0.0
+        strategy_params["macd_primary_review_count"] = review_count
 
     totals = {"ticks": len(tick_times), "built": 0, "skipped": 0, "errors": 0}
     pending_states: list[TickMarketState] = []

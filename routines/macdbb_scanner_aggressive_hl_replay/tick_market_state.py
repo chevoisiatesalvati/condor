@@ -30,6 +30,8 @@ class TickMarketSettings:
     macd_review_count: int = 5
     macd_pairs_superset: int = 12
     max_concurrent: int = 30
+    # When True, match live Strategies queue: no NATR floor, review >= primary (8).
+    live_equivalent_queue: bool = False
 
 
 class CandleWindowLoader(Protocol):
@@ -358,13 +360,22 @@ async def compute_tick_market_state(
     )
 
     macd_pairs: list[str] = []
-    if strategy_params is not None:
-        queue = build_scanner_queue(parsed_scanner, strategy_params)
+    effective_params = dict(strategy_params or {})
+    if settings.live_equivalent_queue:
+        effective_params["live_equivalent_queue"] = True
+        effective_params.setdefault("natr_floor_mature_pct", 0.0)
+        effective_params.setdefault("natr_floor_degen_pct", 0.0)
+        effective_params.setdefault("macd_primary_review_count", max(8, settings.macd_review_count))
+        effective_params.setdefault("macd_queue_primary_size", 8)
+    if strategy_params is not None or settings.live_equivalent_queue:
+        queue = build_scanner_queue(parsed_scanner, effective_params)
         review_count = (
             settings.macd_pairs_superset
             if store_macd_for_superset
             else settings.macd_review_count
         )
+        if settings.live_equivalent_queue:
+            review_count = max(review_count, 8, int(effective_params.get("macd_primary_review_count") or 8))
         macd_pairs = queue.macd_pairs[:review_count]
     else:
         macd_pairs = [row.pair for row in parsed_scanner.mature + parsed_scanner.degen][

@@ -120,9 +120,13 @@ def _merged_default_config(strat) -> dict[str, Any]:
 
 
 def _preset_catalog(data_slug: str) -> list[dict[str, str]]:
-    from condor.strategy_runners.macdbb.presets import agent_preset_catalog
+    if data_slug == "macdbb_pullback_hl":
+        from condor.strategy_runners.macdbb_pullback.presets import (
+            agent_preset_catalog,
+        )
+    else:
+        from condor.strategy_runners.macdbb.presets import agent_preset_catalog
 
-    _ = data_slug
     return list(agent_preset_catalog() or [])
 
 
@@ -130,6 +134,30 @@ def _expand_preset_params(
     data_slug: str, preset: str, *, frequency_sec: int
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return (strategy_params, risk_limits hint) for a named preset."""
+    if data_slug == "macdbb_pullback_hl":
+        from condor.strategy_runners.macdbb_pullback.presets import (
+            agent_preset_catalog,
+            resolve_config_dict,
+            strategy_params_from_preset,
+        )
+
+        catalog = agent_preset_catalog() or []
+        allowed = {row["id"] for row in catalog}
+        if preset not in allowed:
+            raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'")
+        if preset == "custom":
+            return {}, {}
+        params = strategy_params_from_preset(preset, frequency_sec=frequency_sec) or {}
+        risk: dict[str, Any] = {}
+        try:
+            cfg = resolve_config_dict(
+                preset, overrides={"frequency_sec": int(frequency_sec)}
+            )
+            risk = {"max_open_executors": int(cfg.get("max_open_executors") or 10)}
+        except Exception:
+            log.debug("No risk hint for pullback preset %s", preset, exc_info=True)
+        return params, risk
+
     from condor.strategy_runners.macdbb.presets import (
         agent_preset_catalog,
         resolve_config_with_preset,
@@ -139,7 +167,6 @@ def _expand_preset_params(
         DynamicStrategyReplayConfig,
     )
 
-    _ = data_slug
     catalog = agent_preset_catalog() or []
     allowed = {row["id"] for row in catalog}
     if preset not in allowed:
@@ -148,7 +175,7 @@ def _expand_preset_params(
         return {}, {}
 
     params = strategy_params_from_preset(preset, frequency_sec=frequency_sec) or {}
-    risk: dict[str, Any] = {}
+    risk = {}
     try:
         replay_cfg = resolve_config_with_preset(
             DynamicStrategyReplayConfig(preset=preset, frequency_sec=frequency_sec)

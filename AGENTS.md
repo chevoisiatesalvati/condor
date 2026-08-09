@@ -131,6 +131,7 @@ Sweep CLI: `scripts/run_timeline_mega_sweep.py`, `scripts/run_staged_mega_sweep_
 | Slug | Description | Backtest routine |
 |------|-------------|------------------|
 | `macdbb_scanner_aggressive_hl` | Hyperliquid scanner + MACD/BB, dynamic sizing | `macdbb_scanner_aggressive_hl_backtest` |
+| `macdbb_pullback_hl` | MACD/BB thesis + impulse filter + staged pullback entries | `macdbb_pullback_hl_backtest` |
 
 Replay modes (`DynamicStrategyReplayConfig.replay_mode`):
 

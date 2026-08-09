@@ -8,7 +8,14 @@ DEFAULT_SNAPSHOT_DIR = ROOT_DIR / "data" / "replay_snapshots"
 
 
 def strategy_data_dir(strategy_slug: str, agent_slug: str | None = None) -> Path:
-    """Operational strategy root (sessions/, learnings.md, etc.)."""
+    """Operational strategy root (sessions/, learnings.md, etc.).
+
+    Deterministic Strategies (MACDBB) persist under ``data/strategy_runs/{slug}/``.
+    Prefer that when present so session_parity matches live journals.
+    """
+    runs_root = ROOT_DIR / "data" / "strategy_runs" / strategy_slug
+    if (runs_root / "sessions").is_dir():
+        return runs_root
     from condor.agents.strategy_paths import resolve_strategy_data_dir
 
     return resolve_strategy_data_dir(agent_slug or strategy_slug, strategy_slug)

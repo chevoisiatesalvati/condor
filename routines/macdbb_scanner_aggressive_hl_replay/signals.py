@@ -223,10 +223,14 @@ def resolve_snapshot(
     )
     parsed_html = load_parsed_report(report_meta_1h) if report_meta_1h else None
     monitor_computed = False
-    if parsed_html is None and monitor_pair and is_report_driven_data_source(config.data_source):
+    # Inline candle compute for open monitors, and for entry pairs when HTML
+    # reports are missing (DeterministicRunner / HL timeline parity).
+    allow_inline = monitor_pair or is_report_driven_data_source(config.data_source)
+    if parsed_html is None and allow_inline:
         from routines.macdbb_scanner_aggressive_hl_replay import monitor_macdbb
 
-        monitor_macdbb.record_monitor_gap(pair, meta.timestamp)
+        if monitor_pair:
+            monitor_macdbb.record_monitor_gap(pair, meta.timestamp)
         if monitor_macdbb.inline_compute_enabled():
             cache_dir = getattr(config, "hl_cache_dir", None)
             candle_source = getattr(config, "candle_source", "binance_perpetual")
@@ -240,7 +244,8 @@ def resolve_snapshot(
                 parsed_html = computed
                 monitor_computed = True
                 report_meta_1h = None
-                monitor_macdbb.buffer_monitor_macdbb_row(computed, meta.timestamp)
+                if monitor_pair or is_report_driven_data_source(config.data_source):
+                    monitor_macdbb.buffer_monitor_macdbb_row(computed, meta.timestamp)
     journal_signal = meta.signals_1h.get(pair)
     carried_signal = False
     if journal_signal is None and monitor_pair and last_signal_by_pair:

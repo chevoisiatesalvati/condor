@@ -21,11 +21,15 @@ def state_path(session_dir: Path | None) -> Path | None:
     return Path(session_dir) / STATE_FILENAME
 
 
-def load_runner_state(session_dir: Path | None) -> dict[str, Any]:
+def load_runner_state(
+    session_dir: Path | None,
+    *,
+    state_cls: type = MacdbbState,
+) -> dict[str, Any]:
     """Return ``{macdbb_state, pending_opens, last_running_ids, barrier_notified_ids}``."""
     path = state_path(session_dir)
     empty = {
-        "macdbb_state": MacdbbState(),
+        "macdbb_state": state_cls(),
         "pending_opens": {},
         "last_running_ids": [],
         "barrier_notified_ids": [],
@@ -39,8 +43,13 @@ def load_runner_state(session_dir: Path | None) -> dict[str, Any]:
         return empty
     if not isinstance(raw, dict):
         return empty
+    state_payload = raw.get("macdbb_state")
+    if hasattr(state_cls, "from_dict"):
+        engine_state = state_cls.from_dict(state_payload)  # type: ignore[attr-defined]
+    else:
+        engine_state = state_cls()
     return {
-        "macdbb_state": MacdbbState.from_dict(raw.get("macdbb_state")),
+        "macdbb_state": engine_state,
         "pending_opens": dict(raw.get("pending_opens") or {}),
         "last_running_ids": [str(x) for x in (raw.get("last_running_ids") or [])],
         "barrier_notified_ids": [
@@ -52,7 +61,7 @@ def load_runner_state(session_dir: Path | None) -> dict[str, Any]:
 def save_runner_state(
     session_dir: Path | None,
     *,
-    macdbb_state: MacdbbState,
+    macdbb_state: Any,
     pending_opens: dict[str, Any],
     last_running_ids: set[str] | list[str],
     barrier_notified_ids: set[str] | list[str],

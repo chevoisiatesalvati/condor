@@ -57,8 +57,36 @@ _MACDBB = DeterministicStrategy(
     },
 )
 
+_MACDBB_PULLBACK = DeterministicStrategy(
+    slug="macdbb_pullback_hl",
+    name="MACD+BB Pullback HL",
+    description=(
+        "Hyperliquid scanner + MACD/BB thesis with impulse filter and "
+        "staged BB-mid pullback entries. Deterministic runner — no LLM."
+    ),
+    data_slug="macdbb_pullback_hl",
+    strategy_slug="macdbb_pullback_hl",
+    connector="hyperliquid_perpetual",
+    require_promoted=False,
+    default_config={
+        "server_name": "local",
+        "total_amount_quote": 500,
+        "frequency_sec": 60,
+        "execution_mode": "loop",
+        "bot_name": "",
+        "risk_limits": {
+            "max_open_executors": 10,
+            "max_drawdown_pct": -2,
+        },
+        "strategy_preset": "pullback_decay_2h_60s",
+        "tick_log_enabled": True,
+        "tick_log_retention_days": 7,
+    },
+)
+
 _CATALOG: dict[str, DeterministicStrategy] = {
     _MACDBB.slug: _MACDBB,
+    _MACDBB_PULLBACK.slug: _MACDBB_PULLBACK,
 }
 
 

@@ -11,6 +11,22 @@ PresetValue = float | int | bool | str | None
 
 AGENT_SLUG = "macdbb_scanner_aggressive_hl"
 
+# Budget / per-entry notional clamps belong on the deployment (strategy.yaml /
+# session), not in named strategy presets.
+PRESET_CAPITAL_KEYS = frozenset(
+    {
+        "formal_notional_quote",
+        "total_amount_quote",
+        "min_notional_quote",
+        "max_notional_quote",
+    }
+)
+
+
+def strip_preset_capital_keys(values: dict[str, Any]) -> dict[str, Any]:
+    """Drop budget/sizing-clamp keys so presets stay strategy-logic-only."""
+    return {key: value for key, value in values.items() if key not in PRESET_CAPITAL_KEYS}
+
 PUBLIC_PRESET_LABELS: dict[str, str] = {
     "custom": "Custom",
     "hl_dynamic_session_parity": "Session parity",
@@ -120,7 +136,6 @@ def capital_normalized_pnl(
 PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {}
 
 _DYNAMIC_PRESET_INFRA: dict[str, PresetValue] = {
-    "formal_notional_quote": 500.0,
     "price_source": "auto",
     "hl_use_cache": True,
     "require_price_data": True,
@@ -137,7 +152,10 @@ _DRIVER_SESSION: dict[str, PresetValue] = {
 }
 
 DEFAULT_TIMELINE_SNAPSHOT_DIR = "data/replay_snapshots_binance_1y"
-DEFAULT_60S_TIMELINE_SNAPSHOT_DIR = "data/replay_snapshots_binance_60s"
+# Parity / live-equivalent 60s validation uses HL volume ranking + HL candles.
+DEFAULT_60S_TIMELINE_SNAPSHOT_DIR = "data/replay_snapshots_hl_60s"
+# Legacy Binance 60s store retained for old sweeps.
+LEGACY_BINANCE_60S_TIMELINE_SNAPSHOT_DIR = "data/replay_snapshots_binance_60s"
 
 # Snapshot stores are frequency-specific; do not mix grids in one directory.
 SNAPSHOT_DIR_BY_FREQUENCY: dict[int, str] = {
@@ -194,8 +212,6 @@ _STRATEGY_SESSION_MEGA_BEST: dict[str, PresetValue] = {
     "min_tradeable_count": 1,
     "sl_cooldown_ticks": 2,
     "flip_cooldown_ticks": 8,
-    "min_notional_quote": 200.0,
-    "max_notional_quote": 1400.0,
     "min_conviction_mult": 0.7,
     "max_conviction_mult": 1.9,
     "strength_mult_per_unit": 0.42,
@@ -244,8 +260,6 @@ _STRATEGY_TIMELINE_MEGA_BEST: dict[str, PresetValue] = {
     "min_tradeable_count": 1,
     "sl_cooldown_ticks": 2,
     "flip_cooldown_ticks": 8,
-    "min_notional_quote": 200.0,
-    "max_notional_quote": 1100.0,
     "min_conviction_mult": 0.7,
     "max_conviction_mult": 1.4,
     "strength_mult_per_unit": 0.16,
@@ -311,7 +325,9 @@ PUBLIC_DYNAMIC_PRESET_OVERRIDES: dict[str, dict[str, PresetValue]] = {
 def _private_dynamic_overrides() -> dict[str, dict[str, PresetValue]]:
     raw = _private_preset_bundle().get("dynamic_preset_overrides") or {}
     return {
-        str(name): {str(k): v for k, v in overrides.items()}
+        str(name): strip_preset_capital_keys(
+            {str(k): v for k, v in overrides.items()}
+        )
         for name, overrides in raw.items()
         if isinstance(overrides, dict)
     }
@@ -372,6 +388,12 @@ def _with_run_frequency(
         out["snapshot_dir"] = run_dir
     if run_freq <= 60:
         out["time_window_min"] = min(int(out.get("time_window_min") or 15), 1)
+        # Parity 60s store is HL-aligned with live-equivalent queue semantics.
+        if out.get("snapshot_dir") == DEFAULT_60S_TIMELINE_SNAPSHOT_DIR:
+            out["candle_source"] = "hyperliquid"
+            out.setdefault("hl_cache_dir", "data/hl_candles")
+            out["live_equivalent_queue"] = True
+            out["price_source"] = "auto"
     return out
 
 
@@ -551,7 +573,9 @@ def resolve_config_with_preset(config: ConfigT) -> ConfigT:
     )
     config_type = type(config)
     allowed = set(config_type.model_fields)
-    filtered = {key: value for key, value in overrides.items() if key in allowed}
+    filtered = strip_preset_capital_keys(
+        {key: value for key, value in overrides.items() if key in allowed}
+    )
     merged = config_type(**{**config.model_dump(), **filtered, "preset": preset})
     merged = _preserve_user_overrides(config, merged)
     run_freq = max(1, int(getattr(merged, "frequency_sec", calibration_freq) or calibration_freq))
@@ -587,8 +611,10 @@ def strategy_params_from_preset(
         payload["frequency_sec"] = int(frequency_sec)
     config = resolve_config_with_preset(DynamicStrategyReplayConfig(**payload))
     # After resolve, tick fields match config.frequency_sec wall-clock.
-    return replay_config_to_agent_strategy_params(
-        config, frequency_sec=int(config.frequency_sec)
+    return strip_preset_capital_keys(
+        replay_config_to_agent_strategy_params(
+            config, frequency_sec=int(config.frequency_sec)
+        )
     )
 
 

@@ -609,6 +609,11 @@ def _session_parity_journal_allows_entries(
 ) -> bool:
     if not _session_parity_mode(config):
         return True
+    # Shared decide re-runs the live engine on hydrated signals; do not require
+    # the journal to have already recorded a create (DeterministicRunner journals
+    # often omit create_plans / only stamp entry_class on a subset of ticks).
+    if bool(getattr(config, "use_shared_decide", False)):
+        return True
     if meta.create_plans:
         return True
     entry_class = meta.entry_class or "hold"

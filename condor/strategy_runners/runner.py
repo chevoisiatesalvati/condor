@@ -33,7 +33,13 @@ from condor.strategy_runners.macdbb.state_store import (
 )
 from condor.strategy_runners.macdbb.tick_log import maybe_cleanup, write_tick_log
 from condor.strategy_runners.macdbb.types import EntryClass, Side
+from condor.strategy_runners.macdbb_pullback.types import (
+    MacdbbPullbackState,
+    PullbackTickInput,
+)
 from condor.strategy_runners.promote import assert_promoted_or_raise
+
+_PULLBACK_SLUG = "macdbb_pullback_hl"
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +147,9 @@ class DeterministicRunner:
     _task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _running: bool = field(default=False, init=False)
     _paused: bool = field(default=False, init=False)
-    _macdbb_state: MacdbbState = field(default_factory=MacdbbState, init=False)
+    _macdbb_state: MacdbbState | MacdbbPullbackState = field(
+        default_factory=MacdbbState, init=False
+    )
     _pending_opens: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     _last_running_executor_ids: set[str] = field(default_factory=set, init=False)
     _barrier_notified_ids: set[str] = field(default_factory=set, init=False)
@@ -157,7 +165,13 @@ class DeterministicRunner:
     def agent(self) -> Any:
         return type("A", (), {"slug": self.strategy.data_slug})()
 
+    @property
+    def _is_pullback(self) -> bool:
+        return self.strategy.slug == _PULLBACK_SLUG
+
     def __post_init__(self) -> None:
+        if self._is_pullback:
+            self._macdbb_state = MacdbbPullbackState()
         run_key = self.strategy.key
         if self.resume_session_num is not None:
             self.session_num, self.session_dir, self.journal = open_existing_session(
@@ -181,7 +195,8 @@ class DeterministicRunner:
         self._restore_persisted_state()
 
     def _restore_persisted_state(self) -> None:
-        stored = load_runner_state(self.session_dir)
+        state_cls = MacdbbPullbackState if self._is_pullback else MacdbbState
+        stored = load_runner_state(self.session_dir, state_cls=state_cls)
         self._macdbb_state = stored["macdbb_state"]
         self._pending_opens = {
             str(k): dict(v) if isinstance(v, dict) else {"executor_id": str(v), "tick": 0}
@@ -191,9 +206,10 @@ class DeterministicRunner:
         self._barrier_notified_ids = set(stored.get("barrier_notified_ids") or [])
 
     def _persist_state(self) -> None:
+        # state_store expects MacdbbState duck-type with to_dict(); pullback state matches.
         save_runner_state(
             self.session_dir,
-            macdbb_state=self._macdbb_state,
+            macdbb_state=self._macdbb_state,  # type: ignore[arg-type]
             pending_opens=self._pending_opens,
             last_running_ids=self._last_running_executor_ids,
             barrier_notified_ids=self._barrier_notified_ids,
@@ -350,10 +366,16 @@ class DeterministicRunner:
                 continue
             self._pending_opens.pop(pair, None)
             self._macdbb_state.entry_meta_by_pair.pop(pair, None)
-            self._macdbb_state.thesis_decay_by_pair.pop(pair, None)
-            self._macdbb_state.flip_streak_by_pair.pop(pair, None)
-            self._macdbb_state.thesis_decay_extra_pending_by_pair.pop(pair, None)
-            self._macdbb_state.monitor_state_by_pair.pop(pair, None)
+            for attr in (
+                "thesis_decay_by_pair",
+                "flip_streak_by_pair",
+                "thesis_decay_extra_pending_by_pair",
+                "monitor_state_by_pair",
+                "armed_by_pair",
+            ):
+                store = getattr(self._macdbb_state, attr, None)
+                if isinstance(store, dict):
+                    store.pop(pair, None)
             if cooldown_ticks > 0:
                 self._macdbb_state.sl_cooldown_until_tick[pair] = max(
                     self._macdbb_state.sl_cooldown_until_tick.get(pair, 0),
@@ -388,7 +410,9 @@ class DeterministicRunner:
             entry_meta = self._macdbb_state.entry_meta_by_pair.get(pair)
             side: Side = entry_meta.side if entry_meta else "long"
             entry_class: EntryClass = (
-                entry_meta.entry_class if entry_meta else "formal"
+                entry_meta.entry_class
+                if entry_meta
+                else ("immediate" if self._is_pullback else "formal")
             )
             by_pair[pair] = OpenPosition(
                 executor_id=str(meta.get("executor_id") or f"pending:{pair}"),
@@ -449,22 +473,63 @@ class DeterministicRunner:
                 if eid:
                     self._barrier_notified_ids.add(eid)
 
-        tick = MacdbbTickInput(
-            tick_number=tick_num,
-            scanner_regime=scanner_regime,  # type: ignore[arg-type]
-            tradeable_count=tradeable_count,
-            signals=signals,
-            open_positions=open_positions,
-            barrier_closes=barrier_closes,
-            formal_notional_quote=formal,
-            strategy_params=params,
-            max_open_executors=max_open,
-            fee_bps=float(params.get("fee_bps") or 0),
-            slippage_bps=float(params.get("slippage_bps") or 0),
-            amount_step=float(params.get("amount_step") or 0),
-            inventory_available=inventory.available,
-        )
-        decision = decide(tick, self._macdbb_state)
+        if self._is_pullback:
+            from condor.strategy_runners.macdbb_pullback import decide as pullback_decide
+
+            # Map macdbb OpenPosition rows into pullback OpenPosition if needed.
+            from condor.strategy_runners.macdbb_pullback.types import (
+                OpenPosition as PullbackOpenPosition,
+            )
+
+            pullback_positions = []
+            for pos in open_positions:
+                entry_class = str(pos.entry_class or "immediate")
+                if entry_class not in {"immediate", "pullback"}:
+                    entry_class = "immediate"
+                pullback_positions.append(
+                    PullbackOpenPosition(
+                        executor_id=pos.executor_id,
+                        pair=pos.pair,
+                        side=pos.side,
+                        entry_class=entry_class,  # type: ignore[arg-type]
+                        pnl=pos.pnl,
+                        entry_bb_pos_pct=pos.entry_bb_pos_pct,
+                        filled=pos.filled,
+                    )
+                )
+            tick = PullbackTickInput(
+                tick_number=tick_num,
+                tradeable_count=tradeable_count,
+                signals=signals,  # type: ignore[arg-type]
+                open_positions=pullback_positions,
+                barrier_closes=barrier_closes,
+                total_amount_quote=formal,
+                strategy_params=params,
+                max_open_executors=max_open,
+                fee_bps=float(params.get("fee_bps") or 0),
+                slippage_bps=float(params.get("slippage_bps") or 0),
+                amount_step=float(params.get("amount_step") or 0),
+                inventory_available=inventory.available,
+                frequency_sec=int(self.config.get("frequency_sec") or 60),
+            )
+            decision = pullback_decide(tick, self._macdbb_state)  # type: ignore[arg-type]
+        else:
+            tick = MacdbbTickInput(
+                tick_number=tick_num,
+                scanner_regime=scanner_regime,  # type: ignore[arg-type]
+                tradeable_count=tradeable_count,
+                signals=signals,
+                open_positions=open_positions,
+                barrier_closes=barrier_closes,
+                formal_notional_quote=formal,
+                strategy_params=params,
+                max_open_executors=max_open,
+                fee_bps=float(params.get("fee_bps") or 0),
+                slippage_bps=float(params.get("slippage_bps") or 0),
+                amount_step=float(params.get("amount_step") or 0),
+                inventory_available=inventory.available,
+            )
+            decision = decide(tick, self._macdbb_state)  # type: ignore[arg-type]
         self._macdbb_state = decision.state
 
         # Fail closed: never apply creates when inventory is unknown.
@@ -659,7 +724,9 @@ class DeterministicRunner:
                     )
                     side = "long"
                 entry_class: EntryClass = (
-                    entry_meta.entry_class if entry_meta else "formal"
+                    entry_meta.entry_class
+                    if entry_meta
+                    else ("immediate" if self._is_pullback else "formal")
                 )
                 out.append(
                     OpenPosition(
@@ -695,9 +762,15 @@ class DeterministicRunner:
         params: dict[str, Any],
         *,
         extra_pairs: list[str] | None = None,
-    ) -> tuple[list[SignalSnapshot], str | None, int]:
+    ) -> tuple[list[Any], str | None, int]:
         """Load scanner + MACD/BB signals for this tick (no LLM)."""
         try:
+            if self._is_pullback:
+                from condor.strategy_runners.macdbb_pullback.market_data import (
+                    load_pullback_signals,
+                )
+
+                return await load_pullback_signals(params, extra_pairs=extra_pairs)
             from condor.strategy_runners.macdbb.market_data import load_macdbb_signals
 
             return await load_macdbb_signals(params, extra_pairs=extra_pairs)
@@ -1010,9 +1083,18 @@ async def start_deterministic_strategy(
     freq = int(merged.get("frequency_sec") or 1800)
     if preset and not merged.get("strategy_params"):
         try:
-            from condor.strategy_runners.macdbb.presets import strategy_params_from_preset
+            if slug == _PULLBACK_SLUG:
+                from condor.strategy_runners.macdbb_pullback.presets import (
+                    strategy_params_from_preset as pullback_params_from_preset,
+                )
 
-            expanded = strategy_params_from_preset(preset, frequency_sec=freq)
+                expanded = pullback_params_from_preset(preset, frequency_sec=freq)
+            else:
+                from condor.strategy_runners.macdbb.presets import (
+                    strategy_params_from_preset,
+                )
+
+                expanded = strategy_params_from_preset(preset, frequency_sec=freq)
             if expanded:
                 merged["strategy_params"] = expanded
         except Exception:

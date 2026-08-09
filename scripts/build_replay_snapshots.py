@@ -123,6 +123,17 @@ def _parse_args() -> argparse.Namespace:
         default=80,
         help="Max pair-interval candle files kept in memory (default: 80)",
     )
+    parser.add_argument(
+        "--live-equivalent-queue",
+        action="store_true",
+        help="No NATR floor; store >=8 MACD review pairs (live Strategies queue)",
+    )
+    parser.add_argument(
+        "--macd-review-count",
+        type=int,
+        default=5,
+        help="MACD pairs stored per tick (raised to >=8 with --live-equivalent-queue)",
+    )
     return parser.parse_args()
 
 
@@ -162,6 +173,8 @@ async def _run_build(args: argparse.Namespace) -> dict[str, int]:
         force=args.force,
         limit=args.limit,
         sessions=args.sessions,
+        live_equivalent_queue=bool(args.live_equivalent_queue),
+        macd_review_count=int(args.macd_review_count),
     )
     if args.sessions:
         session_nums = _expand_session_selector(args.sessions)

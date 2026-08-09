@@ -87,13 +87,16 @@ def invalidate_agent_preset_cache(slug: str) -> None:
 
 
 def _strip_keys_for_storage(overrides: dict[str, Any]) -> dict[str, Any]:
+    from condor.strategy_runners.macdbb.presets import strip_preset_capital_keys
     from routines.macdbb_scanner_aggressive_hl_replay.timeline_sweep import PRESET_STRIP_KEYS
 
-    return {
-        key: value
-        for key, value in overrides.items()
-        if key not in PRESET_STRIP_KEYS
-    }
+    return strip_preset_capital_keys(
+        {
+            key: value
+            for key, value in overrides.items()
+            if key not in PRESET_STRIP_KEYS
+        }
+    )
 
 
 def _validate_preset_id(preset_id: str) -> str:
@@ -177,13 +180,13 @@ def _preset_detail_from_bundle(
     private_overrides = bundle.get("dynamic_preset_overrides") or {}
     labels = bundle.get("labels") or {}
     if preset_id in private_overrides:
-        overrides = dict(private_overrides[preset_id])
+        overrides = _strip_keys_for_storage(dict(private_overrides[preset_id]))
         source = "private"
         editable = preset_id not in _public_preset_ids(slug)
     elif preset_id in _public_preset_ids(slug):
         module = _import_agent_preset_module(slug)
         public = getattr(module, "PUBLIC_DYNAMIC_PRESET_OVERRIDES", {}) or {}
-        overrides = dict(public.get(preset_id) or {})
+        overrides = _strip_keys_for_storage(dict(public.get(preset_id) or {}))
         source = "public"
         editable = False
     else:

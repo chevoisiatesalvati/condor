@@ -36,6 +36,10 @@ def test_session_parity_preset_merges_strategy_params():
     assert params is not None
     assert params["sl_pct"] == 3.8
     assert params["tp_pct"] == 5.0
+    assert "min_notional_quote" not in params
+    assert "max_notional_quote" not in params
+    assert "formal_notional_quote" not in params
+    assert "total_amount_quote" not in params
 
 
 def test_apply_agent_strategy_preset_noop_for_macdbb():
