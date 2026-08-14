@@ -327,6 +327,36 @@ export function mergeSessionConfigSources(
   return merged;
 }
 
+export function coerceAgentExecutorRow(
+  row: AgentExecutorRow | Record<string, unknown>,
+): AgentExecutorRow {
+  const raw = row as Record<string, unknown>;
+  return {
+    id: String(raw.id ?? ""),
+    type: String(raw.type ?? "position"),
+    connector: String(raw.connector ?? ""),
+    pair: String(raw.pair ?? raw.trading_pair ?? ""),
+    side: String(raw.side ?? ""),
+    status: String(raw.status ?? ""),
+    close_type: String(raw.close_type ?? ""),
+    pnl: Number(raw.pnl ?? raw.net_pnl_quote ?? 0),
+    net_pnl_pct: raw.net_pnl_pct != null ? Number(raw.net_pnl_pct) : undefined,
+    volume: Number(raw.volume ?? 0),
+    fees: Number(raw.fees ?? raw.cum_fees_quote ?? 0),
+    entry_price: Number(raw.entry_price ?? 0),
+    current_price: Number(raw.current_price ?? 0),
+    amount: Number(raw.amount ?? raw.notional_quote ?? 0),
+    notional_quote: raw.notional_quote != null ? Number(raw.notional_quote) : undefined,
+    timestamp: Number(raw.timestamp ?? 0),
+    close_timestamp: Number(raw.close_timestamp ?? 0),
+    created_at: raw.created_at != null ? String(raw.created_at) : undefined,
+    closed_at: raw.closed_at != null ? String(raw.closed_at) : undefined,
+    controller_id: String(raw.controller_id ?? ""),
+    custom_info: (raw.custom_info as Record<string, unknown> | undefined) ?? {},
+    config: (raw.config as Record<string, unknown> | undefined) ?? {},
+  };
+}
+
 export function executorInfoFromAgentRow(row: AgentExecutorRow): ExecutorInfo {
   const config = { ...(row.config ?? {}) };
   // Prefer quote notional. Never promote raw base `config.amount` (e.g. 110152 kBONK)

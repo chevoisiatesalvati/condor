@@ -10,7 +10,7 @@ import { AgentPnlChart, metricsToDataPoints } from "@/components/agent/AgentPnlC
 import { useAgentExecutors } from "@/hooks/useAgentExecutors";
 import { DetailPanel, ExecutorTable, type SortDir, type SortKey } from "@/components/executor/ExecutorTable";
 import { StopConfirmDialog } from "@/components/executor/StopConfirmDialog";
-import { type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
+import { type AgentExecutorRow, type AgentPerformance, type ExecutorInfo, api } from "@/lib/api";
 import {
   controllerIdsForLookup,
   enrichExecutorFromJournal,
@@ -109,6 +109,11 @@ export function SessionActivity({ journal }: { journal: ParsedJournal }) {
 
 // ── Session Executors ──
 
+export type SessionExecutorsDetail = {
+  executors: AgentExecutorRow[];
+  session_config?: Record<string, unknown>;
+};
+
 export function SessionExecutors({
   slug,
   sslug,
@@ -119,6 +124,9 @@ export function SessionExecutors({
   liveSessionStatus,
   journalExecutors,
   isLiveSession = false,
+  source = "agent",
+  fetchSessionDetail,
+  sessionConfig: sessionConfigOverride,
 }: {
   slug: string;
   sslug: string;
@@ -131,17 +139,31 @@ export function SessionExecutors({
   /** True only for the session currently running: lets the WS contribute
    *  executors the session REST endpoint hasn't recorded yet. */
   isLiveSession?: boolean;
+  source?: string;
+  fetchSessionDetail?: (
+    slug: string,
+    sslug: string,
+    sessionNum: number,
+  ) => Promise<SessionExecutorsDetail>;
+  sessionConfig?: Record<string, unknown>;
 }) {
   const queryClient = useQueryClient();
+  const executorsQueryKey =
+    source === "agent"
+      ? (["strategy-session-executors", slug, sslug, sessionNum] as const)
+      : (["strategy-session-executors", source, slug, sslug, sessionNum] as const);
   const { data: sessionDetail } = useQuery({
-    queryKey: ["strategy-session-executors", slug, sslug, sessionNum],
-    queryFn: () => api.getStrategySessionExecutors(slug, sslug, sessionNum),
+    queryKey: executorsQueryKey,
+    queryFn: () =>
+      fetchSessionDetail
+        ? fetchSessionDetail(slug, sslug, sessionNum)
+        : api.getStrategySessionExecutors(slug, sslug, sessionNum),
     refetchInterval: 10000,
     placeholderData: keepPreviousData,
   });
 
   const restExecutors = sessionDetail?.executors ?? [];
-  const sessionConfig = sessionDetail?.session_config;
+  const sessionConfig = sessionDetail?.session_config ?? sessionConfigOverride;
 
   const journalById = useMemo(() => {
     const map = new Map<string, { id: string; side?: string; amount?: number }>();
@@ -282,7 +304,7 @@ export function SessionExecutors({
         vars?.ids.forEach((id) => next.delete(id));
         return next;
       });
-      queryClient.invalidateQueries({ queryKey: ["strategy-session-executors", slug, sslug, sessionNum] });
+      queryClient.invalidateQueries({ queryKey: executorsQueryKey });
       queryClient.invalidateQueries({ queryKey: ["executors", serverName] });
     },
   });

@@ -457,7 +457,7 @@ export function DetailPanel({
   const { data: strategyDefaults } = useQuery({
     queryKey: ["strategy-defaults", sessionRef?.slug, sessionRef?.sslug],
     queryFn: () => api.getStrategyDefaults(sessionRef!.slug, sessionRef!.sslug),
-    enabled: !!sessionRef,
+    enabled: !!sessionRef && useRemoteSessionFetch,
     staleTime: 10 * 60 * 1000,
   });
 
