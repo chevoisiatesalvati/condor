@@ -94,6 +94,13 @@ def test_list_callback_for_strategies_uses_stored_view():
     assert _list_callback_for_prefix("agents", context) == "agents:view:foo:4"
 
 
+def test_list_callback_for_strategies_appends_page_when_set():
+    context = SimpleNamespace(
+        user_data={"sessions_slug": "foo", "sessions_num": 4, "sessions_page": 2}
+    )
+    assert _list_callback_for_prefix("strategies", context) == "strategies:view:foo:4:2"
+
+
 def test_stop_confirm_callbacks_use_strategies_prefix():
     import asyncio
     from unittest.mock import AsyncMock
@@ -135,6 +142,9 @@ def test_strategies_menu_uses_catalog_not_strategy_store():
     assert "StrategyStore" not in menu_src
     assert "StrategyStore" not in init_src
     assert "get_strategy" in init_src
+    assert "show_history" not in menu_src
+    assert "show_history_detail" not in menu_src
+    assert "📜 History" not in menu_src
 
     # Parseable and imports catalog symbols.
     tree = ast.parse(menu_src)

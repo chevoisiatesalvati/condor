@@ -83,8 +83,6 @@ async def agents_callback_handler(
         handle_sessions_stop,
         show_session_executor_detail,
         show_session_executors,
-        show_session_history,
-        show_session_history_detail,
         show_session_list,
         show_strategy_picker,
     )
@@ -97,16 +95,7 @@ async def agents_callback_handler(
         page = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 0
         await show_session_list(update, context, slug, page=page)
 
-    elif action == "view" and len(parts) >= 4:
-        slug = parts[2]
-        try:
-            session_num = int(parts[3])
-        except ValueError:
-            await query.answer("Invalid session number", show_alert=True)
-            return
-        await show_session_executors(update, context, slug, session_num)
-
-    elif action == "history" and len(parts) >= 4:
+    elif action in ("view", "history") and len(parts) >= 4:
         slug = parts[2]
         try:
             session_num = int(parts[3])
@@ -114,14 +103,11 @@ async def agents_callback_handler(
             await query.answer("Invalid session number", show_alert=True)
             return
         page = int(parts[4]) if len(parts) >= 5 and parts[4].isdigit() else 0
-        await show_session_history(
-            update, context, slug=slug, session_num=session_num, page=page
+        await show_session_executors(
+            update, context, slug, session_num, page=page
         )
 
-    elif action == "hist_detail" and len(parts) >= 3:
-        await show_session_history_detail(update, context, parts[2])
-
-    elif action == "detail" and len(parts) >= 3:
+    elif action in ("detail", "hist_detail") and len(parts) >= 3:
         await show_session_executor_detail(update, context, parts[2])
 
     elif action == "stop" and len(parts) >= 3:

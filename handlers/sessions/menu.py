@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
@@ -12,15 +11,10 @@ from telegram.ext import ContextTypes
 from config_manager import get_client, get_config_manager
 from condor.agents.config import load_agent_config
 from condor.agents.engine import get_all_engines
-from condor.agents.performance import fetch_agent_performance, is_running_status
+from condor.agents.performance import fetch_agent_performance
 from condor.agents.sessions_index import list_sessions
 from condor.agents.strategy import StrategyStore
 from condor.fetchers.executors import stop_executor
-from handlers.executors._shared import (
-    SIDE_LONG,
-    get_executor_type,
-    normalize_side,
-)
 from handlers.executors.menu import (
     _render_executor_detail,
     handle_stop_executor,
@@ -29,20 +23,25 @@ from utils.telegram_formatters import escape_markdown_v2, format_error_message
 
 from ._shared import (
     DEFAULT_CALLBACK_PREFIX,
+    MAX_EXECUTORS_SHOWN,
     clear_sessions_state,
-    format_vol_col,
+    executor_row_button_text,
+    format_session_executors_table,
     get_callback_prefix,
     resolve_strategy,
     run_key_for_strategy,
     session_agent_id,
+    session_page_nav_callbacks,
+    session_view_callback,
     set_callback_prefix,
     sort_session_executors,
+    stored_session_page,
+    stored_session_view_callback,
 )
 
 logger = logging.getLogger(__name__)
 
 SESSIONS_PER_PAGE = 10
-MAX_EXECUTORS_SHOWN = 8
 CALLBACK_PREFIX = DEFAULT_CALLBACK_PREFIX
 
 
@@ -286,27 +285,20 @@ async def show_session_list(
 # ============================================
 
 
-def _side_display(row: dict[str, Any]) -> str:
-    config = row.get("config") if isinstance(row.get("config"), dict) else {}
-    side_raw = row.get("side") or config.get("side") or SIDE_LONG
-    side_val = normalize_side(side_raw)
-    leverage = config.get("leverage", 1) or 1
-    return f"{'L' if side_val == SIDE_LONG else 'S'} {leverage}x"
-
-
 async def show_session_executors(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     slug: str,
     session_num: int,
+    page: int = 0,
     callback_prefix: str = CALLBACK_PREFIX,
 ) -> None:
     """Show session-scoped executors table (web UI parity for PnL/volume)."""
     prefix = _resolve_prefix(context, callback_prefix)
     store = StrategyStore()
     strategy = resolve_strategy(store, slug)
-    query = update.callback_query
     chat_id = update.effective_chat.id
+    view_callback = session_view_callback(prefix, slug, session_num, page)
 
     if strategy is None:
         await _edit_or_reply(
@@ -325,6 +317,7 @@ async def show_session_executors(
 
     context.user_data["sessions_slug"] = strategy.slug
     context.user_data["sessions_num"] = session_num
+    context.user_data["sessions_page"] = page
     context.user_data["sessions_run_key"] = run_key
     context.user_data["sessions_server_name"] = server_name
 
@@ -361,7 +354,7 @@ async def show_session_executors(
                     [
                         InlineKeyboardButton(
                             "🔄 Retry",
-                            callback_data=f"{prefix}:view:{strategy.slug}:{session_num}",
+                            callback_data=view_callback,
                         ),
                         InlineKeyboardButton(
                             "⬅️ Back",
@@ -374,6 +367,13 @@ async def show_session_executors(
         return
 
     rows = sort_session_executors(list(perf.executors or []))
+    if rows:
+        max_page = max(0, (len(rows) - 1) // MAX_EXECUTORS_SHOWN)
+        page = min(max(0, page), max_page)
+    else:
+        page = 0
+    context.user_data["sessions_page"] = page
+    view_callback = session_view_callback(prefix, strategy.slug, session_num, page)
     context.user_data["sessions_executors"] = rows
     context.user_data["sessions_perf"] = {
         "total_pnl": perf.total_pnl,
@@ -411,46 +411,14 @@ async def show_session_executors(
         + (f" \\(`{active_count}` active\\)" if active_count else "")
     )
 
-    displayed: list[dict[str, Any]] = []
-    if rows:
-        lines.append("")
-        lines.append("```")
-        lines.append("Pair         Type Side    PnL      Vol")
-        lines.append("──────────── ──── ──── ──────── ───────")
-
-        for row in rows[:MAX_EXECUTORS_SHOWN]:
-            pair = str(row.get("pair") or "???")
-            ex_type = str(row.get("type") or get_executor_type(row) or "ord")
-            type_col = {"grid": "Grid", "position": "Pos"}.get(ex_type, "Ord")
-            side_display = _side_display(row)
-            pnl = float(row.get("pnl") or 0)
-            vol = float(row.get("volume") or 0)
-
-            pair_col = pair[:12].ljust(12)
-            type_display = type_col.ljust(4)
-            side_col = side_display.ljust(4)
-            pnl_col = f"{pnl:+.2f}".rjust(8)
-            vol_col = format_vol_col(vol)
-            status_mark = "*" if is_running_status(str(row.get("status") or "")) else " "
-            lines.append(
-                f"{pair_col} {type_display} {side_col} {pnl_col} {vol_col}{status_mark}"
-            )
-            displayed.append(row)
-
-        if len(rows) > MAX_EXECUTORS_SHOWN:
-            lines.append(f"  ...and {len(rows) - MAX_EXECUTORS_SHOWN} more")
-
-        if len(rows) > 1:
-            lines.append("──────────── ──── ──── ──────── ───────")
-            total_label = "TOTAL".ljust(22)
-            pnl_col = f"{total_pnl:+.2f}".rjust(8)
-            vol_col = format_vol_col(total_volume)
-            lines.append(f"{total_label} {pnl_col} {vol_col}")
-
-        lines.append("```")
-    else:
-        lines.append("")
-        lines.append("_No executors for this session\\._")
+    table_lines, displayed = format_session_executors_table(
+        rows,
+        page=page,
+        per_page=MAX_EXECUTORS_SHOWN,
+        total_pnl=total_pnl,
+        total_volume=total_volume,
+    )
+    lines.extend(table_lines)
 
     keyboard = []
     if displayed:
@@ -459,18 +427,9 @@ async def show_session_executors(
             executor_id = str(row.get("id") or "")
             if not executor_id:
                 continue
-            pair = str(row.get("pair") or "???")[:10]
-            side_val = normalize_side(
-                row.get("side")
-                or (row.get("config") or {}).get("side")
-                or SIDE_LONG
-            )
-            side_label = "L" if side_val == SIDE_LONG else "S"
-            ex_type = str(row.get("type") or "")
-            type_icon = "📐" if ex_type == "grid" else "🎯"
             row_btns.append(
                 InlineKeyboardButton(
-                    f"{type_icon} {pair} {side_label}",
+                    executor_row_button_text(row),
                     callback_data=f"{prefix}:detail:{executor_id[:20]}",
                 )
             )
@@ -480,14 +439,22 @@ async def show_session_executors(
         if row_btns:
             keyboard.append(row_btns)
 
-    keyboard.append(
-        [
-            InlineKeyboardButton(
-                "📜 History",
-                callback_data=f"{prefix}:history:{strategy.slug}:{session_num}",
-            )
-        ]
+    nav_specs = session_page_nav_callbacks(
+        prefix,
+        strategy.slug,
+        session_num,
+        page=page,
+        total=total_count,
+        per_page=MAX_EXECUTORS_SHOWN,
     )
+    if nav_specs:
+        keyboard.append(
+            [
+                InlineKeyboardButton(label, callback_data=callback)
+                for label, callback in nav_specs
+            ]
+        )
+
     if prefix == "strategies":
         back_list_label = "⬅️ Overview"
     elif prefix == "agents":
@@ -500,307 +467,13 @@ async def show_session_executors(
                 back_list_label,
                 callback_data=f"{prefix}:list:{strategy.slug}",
             ),
-            InlineKeyboardButton(
-                "🔄 Refresh",
-                callback_data=f"{prefix}:view:{strategy.slug}:{session_num}",
-            ),
+            InlineKeyboardButton("🔄 Refresh", callback_data=view_callback),
             InlineKeyboardButton("❌ Close", callback_data=f"{prefix}:close"),
         ]
     )
 
     await _edit_or_reply(
         update, context, "\n".join(lines), InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ============================================
-# SESSION HISTORY (terminated executors)
-# ============================================
-
-
-async def show_session_history(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    slug: str | None = None,
-    session_num: int | None = None,
-    page: int = 0,
-    callback_prefix: str | None = None,
-) -> None:
-    """Show terminated executors for the current strategy session."""
-    prefix = _resolve_prefix(context, callback_prefix)
-    slug = slug or context.user_data.get("sessions_slug")
-    session_num = (
-        session_num
-        if session_num is not None
-        else context.user_data.get("sessions_num")
-    )
-    per_page = MAX_EXECUTORS_SHOWN
-
-    if slug is None or session_num is None:
-        await _edit_or_reply(
-            update,
-            context,
-            format_error_message("Session context lost"),
-            InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Back", callback_data=f"{prefix}:menu")]]
-            ),
-        )
-        return
-
-    session_num = int(session_num)
-    store = StrategyStore()
-    strategy = resolve_strategy(store, slug)
-    if strategy is None:
-        await _edit_or_reply(
-            update,
-            context,
-            format_error_message(f"Strategy not found: {slug}"),
-            InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Back", callback_data=f"{prefix}:menu")]]
-            ),
-        )
-        return
-
-    run_key = run_key_for_strategy(strategy)
-    agent_id = session_agent_id(run_key, session_num)
-    chat_id = update.effective_chat.id
-    client, server_name = await _resolve_client_for_strategy(strategy, chat_id, context)
-
-    context.user_data["sessions_slug"] = strategy.slug
-    context.user_data["sessions_num"] = session_num
-    context.user_data["sessions_run_key"] = run_key
-    context.user_data["sessions_server_name"] = server_name
-
-    if not client:
-        await _edit_or_reply(
-            update,
-            context,
-            format_error_message("No Hummingbot API server available."),
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "⬅️ Back",
-                            callback_data=f"{prefix}:view:{strategy.slug}:{session_num}",
-                        )
-                    ]
-                ]
-            ),
-        )
-        return
-
-    try:
-        perf = await fetch_agent_performance(client, agent_id)
-    except Exception as e:
-        logger.exception("fetch_agent_performance(%s) failed for history", agent_id)
-        await _edit_or_reply(
-            update,
-            context,
-            format_error_message(f"Failed to load session history: {e}"),
-            InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "⬅️ Back",
-                            callback_data=f"{prefix}:view:{strategy.slug}:{session_num}",
-                        )
-                    ]
-                ]
-            ),
-        )
-        return
-
-    history = [
-        row
-        for row in (perf.executors or [])
-        if not is_running_status(str(row.get("status") or ""))
-    ]
-    history.sort(key=lambda row: float(row.get("timestamp") or 0), reverse=True)
-    context.user_data["sessions_history"] = history
-
-    total = len(history)
-    start = page * per_page
-    page_items = history[start : start + per_page]
-    server_label = server_name or "default"
-
-    lines = [
-        f"📜 *Session History* \\| `{escape_markdown_v2(strategy.slug)}` "
-        f"`session\\_{session_num}`",
-        f"_{escape_markdown_v2(server_label)}_",
-    ]
-
-    displayed: list[dict[str, Any]] = []
-    if page_items:
-        lines.append("")
-        lines.append("```")
-        lines.append("Pair         Type Side    PnL   Status")
-        lines.append("──────────── ──── ──── ──────── ──────")
-
-        for row in page_items:
-            pair = str(row.get("pair") or "???")
-            ex_type = str(row.get("type") or get_executor_type(row) or "ord")
-            type_col = {"grid": "Grid", "position": "Pos"}.get(ex_type, "Ord")
-            side_display = _side_display(row)
-            pnl = float(row.get("pnl") or 0)
-            status = str(row.get("status") or "?")[:6]
-
-            pair_col = pair[:12].ljust(12)
-            type_display = type_col.ljust(4)
-            side_col = side_display.ljust(4)
-            pnl_col = f"{pnl:+.2f}".rjust(8)
-            status_col = status.ljust(6)
-            lines.append(
-                f"{pair_col} {type_display} {side_col} {pnl_col} {status_col}"
-            )
-            displayed.append(row)
-
-        lines.append("```")
-        if total > per_page:
-            lines.append(
-                f"_Page {page + 1}/{(total + per_page - 1) // per_page} "
-                f"\\({total} total\\)_"
-            )
-    else:
-        lines.append("")
-        lines.append("_No terminated executors for this session\\._")
-
-    keyboard: list[list[InlineKeyboardButton]] = []
-    if displayed:
-        row_btns: list[InlineKeyboardButton] = []
-        for row in displayed:
-            executor_id = str(row.get("id") or "")
-            if not executor_id:
-                continue
-            pair = str(row.get("pair") or "???")[:10]
-            side_val = normalize_side(
-                row.get("side")
-                or (row.get("config") or {}).get("side")
-                or SIDE_LONG
-            )
-            side_label = "L" if side_val == SIDE_LONG else "S"
-            ex_type = str(row.get("type") or "")
-            type_icon = "📐" if ex_type == "grid" else "🎯"
-            pnl = float(row.get("pnl") or 0)
-            pnl_label = f"+{pnl:.0f}" if pnl >= 0 else f"{pnl:.0f}"
-            row_btns.append(
-                InlineKeyboardButton(
-                    f"{type_icon} {pair} {side_label} {pnl_label}",
-                    callback_data=f"{prefix}:hist_detail:{executor_id[:20]}",
-                )
-            )
-            if len(row_btns) == 2:
-                keyboard.append(row_btns)
-                row_btns = []
-        if row_btns:
-            keyboard.append(row_btns)
-
-    if total > per_page:
-        nav_row = []
-        if page > 0:
-            nav_row.append(
-                InlineKeyboardButton(
-                    "◀️ Prev",
-                    callback_data=(
-                        f"{prefix}:history:{strategy.slug}:{session_num}:{page - 1}"
-                    ),
-                )
-            )
-        if start + per_page < total:
-            nav_row.append(
-                InlineKeyboardButton(
-                    "Next ▶️",
-                    callback_data=(
-                        f"{prefix}:history:{strategy.slug}:{session_num}:{page + 1}"
-                    ),
-                )
-            )
-        if nav_row:
-            keyboard.append(nav_row)
-
-    keyboard.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ Session",
-                callback_data=f"{prefix}:view:{strategy.slug}:{session_num}",
-            ),
-            InlineKeyboardButton(
-                "🔄 Refresh",
-                callback_data=f"{prefix}:history:{strategy.slug}:{session_num}:{page}",
-            ),
-            InlineKeyboardButton("❌ Close", callback_data=f"{prefix}:close"),
-        ]
-    )
-
-    await _edit_or_reply(
-        update, context, "\n".join(lines), InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def show_session_history_detail(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    executor_id: str,
-    callback_prefix: str | None = None,
-) -> None:
-    """Show detail for a terminated session executor (Back → History)."""
-    prefix = _resolve_prefix(context, callback_prefix)
-    query = update.callback_query
-    chat_id = update.effective_chat.id
-    slug = context.user_data.get("sessions_slug")
-    session_num = context.user_data.get("sessions_num")
-    back_callback = (
-        f"{prefix}:history:{slug}:{session_num}"
-        if slug is not None and session_num is not None
-        else f"{prefix}:menu"
-    )
-
-    history = context.user_data.get("sessions_history") or []
-    executor = None
-    for ex in history:
-        ex_id = str(ex.get("id") or ex.get("executor_id") or "")
-        if ex_id.startswith(executor_id) or executor_id.startswith(ex_id[:20]):
-            executor = ex
-            break
-
-    store = StrategyStore()
-    strategy = resolve_strategy(store, slug) if slug else None
-    client = None
-    if strategy is not None:
-        client, _ = await _resolve_client_for_strategy(strategy, chat_id, context)
-
-    if executor is None and client is not None:
-        try:
-            executor = await client.executors.get_executor(executor_id=executor_id)
-        except Exception as e:
-            logger.warning("Could not fetch historical executor %s: %s", executor_id, e)
-
-    if executor is not None and client is not None:
-        full_id = str(executor.get("id") or executor.get("executor_id") or "")
-        if full_id:
-            try:
-                fresh = await client.executors.get_executor(executor_id=full_id)
-                if fresh:
-                    executor = fresh
-            except Exception:
-                pass
-
-    if not executor:
-        await query.answer("Executor not found", show_alert=True)
-        await show_session_history(
-            update, context, slug=slug, session_num=session_num, callback_prefix=prefix
-        )
-        return
-
-    full_id = executor.get("id", executor.get("executor_id", executor_id))
-    context.user_data["current_executor"] = executor
-    context.user_data["current_executor_id"] = full_id
-
-    await _render_executor_detail(
-        update,
-        context,
-        executor,
-        back_callback=back_callback,
-        callback_prefix=prefix,
     )
 
 
@@ -821,11 +494,7 @@ async def show_session_executor_detail(
     chat_id = update.effective_chat.id
     slug = context.user_data.get("sessions_slug")
     session_num = context.user_data.get("sessions_num")
-    back_callback = (
-        f"{prefix}:view:{slug}:{session_num}"
-        if slug is not None and session_num is not None
-        else f"{prefix}:menu"
-    )
+    back_callback = stored_session_view_callback(prefix, context) or f"{prefix}:menu"
 
     store = StrategyStore()
     strategy = resolve_strategy(store, slug) if slug else None
@@ -861,7 +530,12 @@ async def show_session_executor_detail(
         await query.answer("Executor not found", show_alert=True)
         if slug is not None and session_num is not None:
             await show_session_executors(
-                update, context, slug, int(session_num), callback_prefix=prefix
+                update,
+                context,
+                slug,
+                int(session_num),
+                page=stored_session_page(context),
+                callback_prefix=prefix,
             )
         return
 
@@ -904,12 +578,7 @@ async def handle_sessions_confirm_stop(
     query = update.callback_query
     chat_id = update.effective_chat.id
     slug = context.user_data.get("sessions_slug")
-    session_num = context.user_data.get("sessions_num")
-    list_callback = (
-        f"{prefix}:view:{slug}:{session_num}"
-        if slug is not None and session_num is not None
-        else f"{prefix}:menu"
-    )
+    list_callback = stored_session_view_callback(prefix, context) or f"{prefix}:menu"
 
     await query.answer("Stopping...")
 
