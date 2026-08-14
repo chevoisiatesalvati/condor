@@ -2,19 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Loader2, Play, Square } from "lucide-react";
 import { Link } from "react-router-dom";
 
+import { StatusBadge } from "@/components/agent/StatusBadge";
 import { api, type DeterministicStrategySummary } from "@/lib/api";
 import { formatCurrencyPnl } from "@/lib/formatters";
 import { useServer } from "@/hooks/useServer";
-
-function statusBadgeClass(status: string) {
-  if (status === "running") return "bg-emerald-500/15 text-emerald-400";
-  if (status === "orphaned") return "bg-amber-500/15 text-amber-400";
-  if (status === "paused") return "bg-sky-500/15 text-sky-400";
-  if (status === "interrupted" || status === "error") {
-    return "bg-red-500/15 text-red-400";
-  }
-  return "bg-[var(--color-bg)]";
-}
 
 function StrategyCard({ strategy }: { strategy: DeterministicStrategySummary }) {
   const queryClient = useQueryClient();
@@ -99,9 +90,7 @@ function StrategyCard({ strategy }: { strategy: DeterministicStrategySummary }) 
             <span className="rounded-md bg-[var(--color-bg)] px-2 py-1">
               {strategy.connector}
             </span>
-            <span className={`rounded-md px-2 py-1 ${statusBadgeClass(strategy.status)}`}>
-              {strategy.status}
-            </span>
+            <StatusBadge status={strategy.status} />
             {strategy.promoted_preset ? (
               <span className="rounded-md bg-[var(--color-bg)] px-2 py-1">
                 promoted: {strategy.promoted_preset}

@@ -1,11 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ArrowLeft, FileText, FlaskConical, Layers, ScrollText, Settings, Trash2, X, Zap } from "lucide-react";
+import { FileText, FlaskConical, Layers, ScrollText, Settings, Trash2, X, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { AgentControls } from "@/components/agent/AgentControls";
-import { StrategyDefaultsDialog } from "@/components/agent/StrategyDefaultsDialog";
-import { StrategyPresetsDialog } from "@/components/agent/StrategyPresetsDialog";
 import {
   InstanceCard,
   LearningsArchivePanel,
@@ -13,8 +11,18 @@ import {
   PerformancePanel,
 } from "@/components/agent/AgentOverviewTab";
 import { SessionReviewer } from "@/components/agent/SessionReviewer";
+import { StrategyDefaultsDialog } from "@/components/agent/StrategyDefaultsDialog";
+import { StrategyPresetsDialog } from "@/components/agent/StrategyPresetsDialog";
 import { DiscardChangesDialog } from "@/components/editor/EditorDialogs";
 import { ReportBrowser } from "@/components/routines/ReportBrowser";
+import { DetailActionButton } from "@/components/strategy/DetailActionButton";
+import {
+  DetailError,
+  DetailLoading,
+  DetailPageHeader,
+  MetaChip,
+} from "@/components/strategy/DetailPageHeader";
+import { SectionCard } from "@/components/strategy/SectionCard";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { api } from "@/lib/api";
 
@@ -115,30 +123,17 @@ export function StrategyDetail() {
 
   if (error && !strategy) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="max-w-sm rounded-lg border border-red-500/30 bg-[var(--color-surface)] p-8 text-center">
-          <AlertCircle className="mx-auto mb-3 h-10 w-10 text-[var(--color-red)]" />
-          <h2 className="mb-1 text-lg font-semibold">Failed to Load Strategy</h2>
-          <p className="text-sm text-[var(--color-text-muted)]">
-            {error instanceof Error ? error.message : "An unexpected error occurred."}
-          </p>
-          <button
-            onClick={() => navigate(`/agents/${slug}`)}
-            className="mt-4 inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)]"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" /> Back to Agent
-          </button>
-        </div>
-      </div>
+      <DetailError
+        title="Failed to Load Strategy"
+        message={error instanceof Error ? error.message : "An unexpected error occurred."}
+        backHref={`/agents/${slug}`}
+        backLabel="Back to Agent"
+      />
     );
   }
 
   if (isLoading || !strategy) {
-    return (
-      <div className="flex h-64 items-center justify-center text-[var(--color-text-muted)]">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--color-border)] border-t-[var(--color-primary)]" />
-      </div>
-    );
+    return <DetailLoading />;
   }
 
   const reviewerOpen = reviewerSessionNum !== null;
@@ -147,127 +142,112 @@ export function StrategyDetail() {
 
   return (
     <div className="w-full">
-      {/* Header */}
-      <div className="mb-4">
-        <button
-          onClick={() => navigate(`/agents/${slug}`)}
-          className="mb-3 flex items-center gap-1 text-xs text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)]"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" /> Back to Agent
-        </button>
-
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h1 className="text-xl font-bold text-[var(--color-text)]">
-              <span className="text-[var(--color-text-muted)]">{slug}</span>
-              <span className="mx-1 text-[var(--color-text-muted)]">/</span>
-              {strategy.name}
-            </h1>
-            {strategy.description && (
-              <p className="mt-1 text-sm text-[var(--color-text-muted)]">{strategy.description}</p>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
+      <DetailPageHeader
+        backHref={`/agents/${slug}`}
+        backLabel="Back to Agent"
+        parentLabel={slug}
+        title={strategy.name}
+        description={strategy.description}
+        meta={
+          <>
+            <MetaChip>
+              {strategy.sessions.length} session{strategy.sessions.length !== 1 ? "s" : ""}
+            </MetaChip>
+            <MetaChip mono>{strategy.slug}</MetaChip>
+            {strategy.agent_id ? <MetaChip mono>{strategy.agent_id}</MetaChip> : null}
+          </>
+        }
+        actions={
+          <>
+            <DetailActionButton
               onClick={() => setShowStrategyModal(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition-all hover:border-[var(--color-primary)]/50 hover:text-[var(--color-primary)]"
               title="Playbook & Learnings"
             >
               <FileText className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Playbook</span>
-            </button>
-            {strategy.experiments.length > 0 && (
-              <button
+            </DetailActionButton>
+            {strategy.experiments.length > 0 ? (
+              <DetailActionButton
                 onClick={() =>
                   handleSessionClick(
-                    Math.max(...strategy.experiments.map((e) => e.number)),
+                    Math.max(...strategy.experiments.map((experiment) => experiment.number)),
                     "experiment",
                   )
                 }
-                className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition-all hover:border-[var(--color-primary)]/50 hover:text-[var(--color-primary)]"
                 title="Dry-run & run-once snapshots"
               >
                 <FlaskConical className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">
                   Dry runs ({strategy.experiments.length})
                 </span>
-              </button>
-            )}
-            <button
+              </DetailActionButton>
+            ) : null}
+            <DetailActionButton
               onClick={() => setShowRoutinesBrowser(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition-all hover:border-[var(--color-primary)]/50 hover:text-[var(--color-primary)]"
               title="Routines & Reports"
             >
               <ScrollText className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Routines</span>
-            </button>
-            {(strategy.strategy_presets?.length ?? 0) > 0 && (
-              <button
+            </DetailActionButton>
+            {(strategy.strategy_presets?.length ?? 0) > 0 ? (
+              <DetailActionButton
                 onClick={() => setShowPresets(true)}
-                className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition-all hover:border-[var(--color-primary)]/50 hover:text-[var(--color-primary)]"
                 title="Manage strategy presets"
               >
                 <Layers className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">Presets</span>
-              </button>
-            )}
-            <button
+              </DetailActionButton>
+            ) : null}
+            <DetailActionButton
               onClick={() => setShowDefaults(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition-all hover:border-[var(--color-primary)]/50 hover:text-[var(--color-primary)]"
               title="Session Defaults"
             >
               <Settings className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Settings</span>
-            </button>
-            <button
+            </DetailActionButton>
+            <DetailActionButton
+              variant="danger"
               onClick={() => setShowDeleteConfirm(true)}
               disabled={hasLiveInstance}
-              className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-400 transition-all hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-30"
-              title={hasLiveInstance ? "Stop all running sessions before deleting" : "Delete strategy"}
+              title={
+                hasLiveInstance
+                  ? "Stop all running sessions before deleting"
+                  : "Delete strategy"
+              }
             >
               <Trash2 className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Delete</span>
-            </button>
+            </DetailActionButton>
             <AgentControls
               slug={slug!}
               sslug={sslug!}
-              defaultContext={strategy.default_trading_context || (strategy.config.trading_context as string) || ""}
+              defaultContext={
+                strategy.default_trading_context ||
+                (strategy.config.trading_context as string) ||
+                ""
+              }
               defaultAgentKey={strategy.defaults?.agent_key ?? ""}
               agentConfig={strategy.defaults?.default_config ?? strategy.config}
               strategyPresets={strategy.strategy_presets ?? []}
             />
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      {/* Meta strip */}
-      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)]">
-        <span className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1">
-          {strategy.sessions.length} session{strategy.sessions.length !== 1 ? "s" : ""}
-        </span>
-        <span className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1 font-mono">
-          {strategy.slug}
-        </span>
-        {strategy.agent_id && (
-          <span className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1 font-mono">
-            {strategy.agent_id}
-          </span>
-        )}
-      </div>
-
-      {/* Running Instances */}
-      {hasRunning && (
-        <div className="mb-6 rounded-lg border border-emerald-500/20 bg-[var(--color-surface)] p-4">
-          <h3 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-emerald-400">
-            <Zap className="h-3.5 w-3.5" /> Active Sessions ({instances.length})
-          </h3>
+      {hasRunning ? (
+        <SectionCard
+          title={`Active Sessions (${instances.length})`}
+          icon={Zap}
+          live
+          className="mb-6"
+        >
           <div className="space-y-3">
             {instances.map((inst) => (
               <InstanceCard key={inst.agent_id} instance={inst} slug={slug!} sslug={sslug!} />
             ))}
           </div>
-        </div>
-      )}
+        </SectionCard>
+      ) : null}
 
       {/* Performance Panel + Sessions table */}
       <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-2">

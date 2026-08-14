@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Loader2, Pause, Play, Save, Square } from "lucide-react";
+import { Loader2, Pause, Play, Save, Square, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import {
   BudgetFrequencyFields,
@@ -9,28 +9,26 @@ import {
   ServerSelect,
   buildRiskLimitsPayload,
 } from "@/components/agent/AgentSessionConfigFields";
+import { StatusBadge } from "@/components/agent/StatusBadge";
 import { StrategyParamsForm } from "@/components/agent/StrategyParamsForm";
 import { StrategyPresetSelect } from "@/components/agent/StrategyPresetSelect";
-import { api } from "@/lib/api";
+import { DetailActionButton } from "@/components/strategy/DetailActionButton";
 import {
-  formatCurrencyPnl,
-  formatCurrencyVolume,
-} from "@/lib/formatters";
+  DetailError,
+  DetailLoading,
+  DetailPageHeader,
+  MetaChip,
+} from "@/components/strategy/DetailPageHeader";
+import { PerformanceStats } from "@/components/strategy/PerformanceStats";
+import { SectionCard } from "@/components/strategy/SectionCard";
+import { SessionsTable, type SessionTableRow } from "@/components/strategy/SessionsTable";
 import { useServer } from "@/hooks/useServer";
+import { api } from "@/lib/api";
+import { formatCurrencyPnl } from "@/lib/formatters";
 
 function formatTs(ts?: number | null) {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleString();
-}
-
-function statusBadgeClass(status: string) {
-  if (status === "running") return "bg-emerald-500/15 text-emerald-400";
-  if (status === "orphaned") return "bg-amber-500/15 text-amber-400";
-  if (status === "paused") return "bg-sky-500/15 text-sky-400";
-  if (status === "interrupted" || status === "error") {
-    return "bg-red-500/15 text-red-400";
-  }
-  return "bg-[var(--color-bg)] text-[var(--color-text-muted)]";
 }
 
 type SessionPerfRow = {
@@ -290,14 +288,17 @@ export function StrategyRunnerDetail() {
   });
 
   if (isLoading || !initialized) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-[var(--color-text-muted)]">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-      </div>
-    );
+    return <DetailLoading />;
   }
   if (error || !strategy) {
-    return <p className="text-sm text-red-400">{(error as Error)?.message || "Not found"}</p>;
+    return (
+      <DetailError
+        title="Failed to Load Strategy"
+        message={(error as Error)?.message || "Not found"}
+        backHref="/strategies"
+        backLabel="Strategies"
+      />
+    );
   }
 
   const busy =
@@ -323,115 +324,134 @@ export function StrategyRunnerDetail() {
   const totals = performance?.totals || {};
   const sessionRows = (performance?.sessions || []) as SessionPerfRow[];
   const sessionStatusByNum = new Map(
-    (sessionsInfo?.sessions || []).map((s) => [s.session_num, s.status || "closed"]),
+    (sessionsInfo?.sessions || []).map((session) => [
+      session.session_num,
+      session.status || "closed",
+    ]),
   );
 
-  return (
-    <div className="space-y-6">
-      <Link
-        to="/strategies"
-        className="inline-flex items-center gap-1.5 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-      >
-        <ArrowLeft className="h-3.5 w-3.5" /> Strategies
-      </Link>
+  const fallbackRows: SessionPerfRow[] = (sessionsInfo?.sessions || []).map((session) => ({
+    session_num: session.session_num,
+    status: session.status,
+    total_pnl: 0,
+    realized_pnl: 0,
+    unrealized_pnl: 0,
+    volume: 0,
+    trade_count: 0,
+    open_count: 0,
+  }));
+  const displayRows = sessionRows.length ? sessionRows : fallbackRows;
 
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold text-[var(--color-text)]">{strategy.name}</h1>
-          <p className="mt-1 max-w-2xl text-sm text-[var(--color-text-muted)]">
-            {strategy.description}
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-            <span className={`rounded-md px-2 py-1 ${statusBadgeClass(strategy.status)}`}>
-              {strategy.status}
-            </span>
+  const tableRows: SessionTableRow[] = displayRows.map((row) => ({
+    id: String(row.agent_id || row.session_num),
+    session_num: row.session_num,
+    status: row.status || sessionStatusByNum.get(row.session_num) || "closed",
+    total_pnl: Number(row.total_pnl || 0),
+    realized_pnl: Number(row.realized_pnl || 0),
+    unrealized_pnl: Number(row.unrealized_pnl || 0),
+    volume: Number(row.volume || 0),
+    trade_count: Number(row.trade_count || 0),
+    open_count: Number(row.open_count || 0),
+  }));
+
+  const chartSessions = tableRows.map((row) => ({
+    session_num: row.session_num,
+    total_pnl: row.total_pnl,
+    status: row.status,
+  }));
+
+  return (
+    <div className="w-full space-y-6">
+      <DetailPageHeader
+        backHref="/strategies"
+        backLabel="Strategies"
+        title={strategy.name}
+        description={strategy.description}
+        meta={
+          <>
+            <StatusBadge status={strategy.status} />
+            <MetaChip mono>{strategy.slug}</MetaChip>
             {strategy.agent_id ? (
-              <span className="font-mono text-[var(--color-text-muted)]">
+              <MetaChip mono>
                 session {strategy.session_num} · {strategy.agent_id}
-              </span>
+              </MetaChip>
             ) : null}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            disabled={saveDefaultsMutation.isPending}
-            onClick={() => saveDefaultsMutation.mutate()}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
-          >
-            {saveDefaultsMutation.isPending ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          </>
+        }
+        actions={
+          <>
+            <DetailActionButton
+              disabled={saveDefaultsMutation.isPending}
+              onClick={() => saveDefaultsMutation.mutate()}
+            >
+              {saveDefaultsMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              <span className="hidden sm:inline">Save as defaults</span>
+            </DetailActionButton>
+            {strategy.status === "running" ? (
+              <>
+                <DetailActionButton disabled={busy} onClick={() => pauseMutation.mutate()}>
+                  <Pause className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Pause</span>
+                </DetailActionButton>
+                <DetailActionButton disabled={busy} onClick={() => stopMutation.mutate()}>
+                  {busy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Square className="h-3.5 w-3.5" />
+                  )}
+                  <span className="hidden sm:inline">Stop</span>
+                </DetailActionButton>
+              </>
+            ) : strategy.status === "paused" ? (
+              <>
+                <DetailActionButton
+                  variant="info"
+                  disabled={busy}
+                  onClick={() => unpauseMutation.mutate()}
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Unpause</span>
+                </DetailActionButton>
+                <DetailActionButton disabled={busy} onClick={() => stopMutation.mutate()}>
+                  <Square className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Stop</span>
+                </DetailActionButton>
+              </>
+            ) : isOrphaned ? (
+              <DetailActionButton
+                variant="success"
+                disabled={busy || strategy.session_num == null}
+                onClick={() => resumeSessionMutation.mutate(strategy.session_num!)}
+              >
+                {busy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Play className="h-3.5 w-3.5" />
+                )}
+                <span className="hidden sm:inline">Resume session {strategy.session_num}</span>
+              </DetailActionButton>
             ) : (
-              <Save className="h-3.5 w-3.5" />
+              <DetailActionButton
+                variant="success"
+                disabled={busy || !canStart}
+                title={startBlockedReason || undefined}
+                onClick={() => startMutation.mutate()}
+              >
+                {busy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Play className="h-3.5 w-3.5" />
+                )}
+                <span className="hidden sm:inline">Start</span>
+              </DetailActionButton>
             )}
-            Save as defaults
-          </button>
-          {strategy.status === "running" ? (
-            <>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => pauseMutation.mutate()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
-              >
-                <Pause className="h-3.5 w-3.5" />
-                Pause
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => stopMutation.mutate()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
-              >
-                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
-                Stop
-              </button>
-            </>
-          ) : strategy.status === "paused" ? (
-            <>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => unpauseMutation.mutate()}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-2 text-sm text-white"
-              >
-                <Play className="h-3.5 w-3.5" />
-                Unpause
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => stopMutation.mutate()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
-              >
-                <Square className="h-3.5 w-3.5" />
-                Stop
-              </button>
-            </>
-          ) : isOrphaned ? (
-            <button
-              type="button"
-              disabled={busy || strategy.session_num == null}
-              onClick={() => resumeSessionMutation.mutate(strategy.session_num!)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-sm text-white"
-            >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-              Resume session {strategy.session_num}
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={busy || !canStart}
-              title={startBlockedReason || undefined}
-              onClick={() => startMutation.mutate()}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm text-white disabled:opacity-50"
-            >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-              Start
-            </button>
-          )}
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {actionErr ? <p className="text-sm text-red-400">{actionErr}</p> : null}
       {saveDefaultsMutation.isSuccess ? (
@@ -441,93 +461,56 @@ export function StrategyRunnerDetail() {
         <p className="text-sm text-amber-400">{startBlockedReason}</p>
       ) : null}
 
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-        <h2 className="mb-3 font-medium text-[var(--color-text)]">Live status</h2>
-        <dl className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 text-[var(--color-text-muted)]">
-          <div className="flex justify-between gap-4 sm:block">
-            <dt>State</dt>
-            <dd className="font-medium text-[var(--color-text)]">{strategy.status}</dd>
-          </div>
-          <div className="flex justify-between gap-4 sm:block">
-            <dt>Session</dt>
-            <dd className="font-mono text-[var(--color-text)]">{strategy.agent_id || "—"}</dd>
-          </div>
-          <div className="flex justify-between gap-4 sm:block">
-            <dt>Ticks</dt>
-            <dd className="text-[var(--color-text)]">{strategy.tick_count ?? "—"}</dd>
-          </div>
-          <div className="flex justify-between gap-4 sm:block">
-            <dt>Last tick</dt>
-            <dd className="text-[var(--color-text)]">{formatTs(strategy.last_tick_at)}</dd>
-          </div>
-          <div className="flex justify-between gap-4 sm:block sm:col-span-2">
-            <dt>Last summary</dt>
-            <dd className="font-mono text-xs text-[var(--color-text)]">
-              {strategy.last_tick_summary || "—"}
-            </dd>
-          </div>
-        </dl>
-        {strategy.last_error ? (
-          <p className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400">
-            {strategy.last_error}
-          </p>
-        ) : null}
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-              Total PnL
-            </span>
-            <span className="font-mono text-lg text-[var(--color-text)]">
-              {formatCurrencyPnl(Number(totals.total_pnl || 0))}
-            </span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-              Realized
-            </span>
-            <span className="font-mono text-lg text-[var(--color-text)]">
-              {formatCurrencyPnl(Number(totals.realized_pnl || 0))}
-            </span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-              Unrealized
-            </span>
-            <span className="font-mono text-lg text-[var(--color-text)]">
-              {formatCurrencyPnl(Number(totals.unrealized_pnl || 0))}
-            </span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-              Volume
-            </span>
-            <span className="font-mono text-lg text-[var(--color-text)]">
-              {formatCurrencyVolume(Number(totals.volume || 0))}
-            </span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-              Open
-            </span>
-            <span className="font-mono text-lg text-[var(--color-text)]">
-              {Number(totals.open_positions || 0)}
-            </span>
-          </div>
-        </div>
-      </div>
-
       {showLiveExecutors ? (
-        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-          <h2 className="mb-3 font-medium text-[var(--color-text)]">
+        <SectionCard
+          title={
+            <>
+              Active session
+              {isOrphaned ? (
+                <span className="ml-2 text-[10px] font-normal normal-case tracking-normal text-amber-400">
+                  (orphaned — positions may still be live)
+                </span>
+              ) : null}
+            </>
+          }
+          icon={Zap}
+          live={isLive}
+        >
+          <dl className="grid gap-2 text-sm text-[var(--color-text-muted)] sm:grid-cols-2 lg:grid-cols-3">
+            <div className="flex justify-between gap-4 sm:block">
+              <dt>State</dt>
+              <dd className="font-medium text-[var(--color-text)]">{strategy.status}</dd>
+            </div>
+            <div className="flex justify-between gap-4 sm:block">
+              <dt>Session</dt>
+              <dd className="font-mono text-[var(--color-text)]">{strategy.agent_id || "—"}</dd>
+            </div>
+            <div className="flex justify-between gap-4 sm:block">
+              <dt>Ticks</dt>
+              <dd className="text-[var(--color-text)]">{strategy.tick_count ?? "—"}</dd>
+            </div>
+            <div className="flex justify-between gap-4 sm:block">
+              <dt>Last tick</dt>
+              <dd className="text-[var(--color-text)]">{formatTs(strategy.last_tick_at)}</dd>
+            </div>
+            <div className="flex justify-between gap-4 sm:col-span-2 sm:block">
+              <dt>Last summary</dt>
+              <dd className="font-mono text-xs text-[var(--color-text)]">
+                {strategy.last_tick_summary || "—"}
+              </dd>
+            </div>
+          </dl>
+          {strategy.last_error ? (
+            <p className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400">
+              {strategy.last_error}
+            </p>
+          ) : null}
+
+          <h4 className="mb-2 mt-4 text-[10px] font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
             Open executors ({openExecutors.length})
-            {isOrphaned ? (
-              <span className="ml-2 text-xs font-normal text-amber-400">
-                (orphaned session — positions may still be live)
-              </span>
-            ) : null}
-          </h2>
+          </h4>
           {openExecutors.length === 0 ? (
-            <p className="text-[var(--color-text-muted)]">No open executors yet.</p>
+            <p className="text-sm text-[var(--color-text-muted)]">No open executors yet.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
@@ -564,190 +547,115 @@ export function StrategyRunnerDetail() {
               </table>
             </div>
           )}
-        </div>
+        </SectionCard>
       ) : null}
 
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-        <h2 className="mb-3 font-medium text-[var(--color-text)]">
-          Sessions ({sessionRows.length || sessionsInfo?.sessions?.length || 0})
-        </h2>
-        {sessionRows.length === 0 && !(sessionsInfo?.sessions || []).length ? (
-          <p className="text-[var(--color-text-muted)]">No sessions yet.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="text-[var(--color-text-muted)]">
-                <tr>
-                  <th className="px-2 py-1">#</th>
-                  <th className="px-2 py-1">Status</th>
-                  <th className="px-2 py-1 text-right">Total PnL</th>
-                  <th className="px-2 py-1 text-right">Realized</th>
-                  <th className="px-2 py-1 text-right">Unrealized</th>
-                  <th className="px-2 py-1 text-right">Volume</th>
-                  <th className="px-2 py-1 text-right">Trades</th>
-                  <th className="px-2 py-1 text-right">Open</th>
-                  <th className="px-2 py-1 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(sessionRows.length
-                  ? sessionRows
-                  : (sessionsInfo?.sessions || []).map((s) => ({
-                      session_num: s.session_num,
-                      status: s.status,
-                      total_pnl: 0,
-                      realized_pnl: 0,
-                      unrealized_pnl: 0,
-                      volume: 0,
-                      trade_count: 0,
-                      open_count: 0,
-                    }))
-                ).map((row) => {
-                  const status =
-                    row.status ||
-                    sessionStatusByNum.get(row.session_num) ||
-                    "closed";
-                  const canResumeRow =
-                    status !== "running" && status !== "paused" && !isLive;
-                  const pnl = Number(row.total_pnl || 0);
-                  return (
-                    <tr
-                      key={row.session_num}
-                      onClick={() => setSelectedSession(row.session_num)}
-                      className={`cursor-pointer border-t border-[var(--color-border)]/40 font-mono hover:bg-[var(--color-surface-hover)] ${
-                        selectedSession === row.session_num
-                          ? "bg-[var(--color-surface-hover)]"
-                          : ""
-                      }`}
-                    >
-                      <td className="px-2 py-1.5 text-[var(--color-text)]">
-                        {row.session_num}
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <span className={`rounded px-1.5 py-0.5 ${statusBadgeClass(status)}`}>
-                          {status}
-                        </span>
-                      </td>
-                      <td
-                        className={`px-2 py-1.5 text-right ${
-                          pnl >= 0 ? "text-emerald-400" : "text-red-400"
-                        }`}
-                      >
-                        {formatCurrencyPnl(pnl)}
-                      </td>
-                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
-                        {formatCurrencyPnl(Number(row.realized_pnl || 0))}
-                      </td>
-                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
-                        {formatCurrencyPnl(Number(row.unrealized_pnl || 0))}
-                      </td>
-                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
-                        {formatCurrencyVolume(Number(row.volume || 0))}
-                      </td>
-                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
-                        {Number(row.trade_count || 0)}
-                      </td>
-                      <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
-                        {Number(row.open_count || 0)}
-                      </td>
-                      <td className="px-2 py-1.5 text-right">
-                        {canResumeRow ? (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              resumeSessionMutation.mutate(row.session_num);
-                            }}
-                            className="rounded bg-emerald-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-emerald-500 disabled:opacity-40"
-                          >
-                            Resume
-                          </button>
-                        ) : null}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <PerformanceStats
+        totals={{
+          total_pnl: Number(totals.total_pnl || 0),
+          realized_pnl: Number(totals.realized_pnl || 0),
+          unrealized_pnl: Number(totals.unrealized_pnl || 0),
+          volume: Number(totals.volume || 0),
+          open_positions: Number(totals.open_positions || 0),
+        }}
+        chartSessions={chartSessions}
+      />
+
+      <SessionsTable
+        rows={tableRows}
+        selectedSession={selectedSession}
+        resetKey={slug}
+        onRowClick={(row) => setSelectedSession(row.session_num)}
+        renderActions={(row) => {
+          const canResumeRow =
+            row.status !== "running" && row.status !== "paused" && !isLive;
+          if (!canResumeRow) return null;
+          return (
+            <DetailActionButton
+              variant="success"
+              disabled={busy}
+              onClick={(event) => {
+                event.stopPropagation();
+                resumeSessionMutation.mutate(row.session_num);
+              }}
+            >
+              Resume
+            </DetailActionButton>
+          );
+        }}
+      />
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="space-y-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-          <h2 className="font-medium text-[var(--color-text)]">Run config</h2>
-          <ServerSelect value={serverName} onChange={setServerName} />
-          <BudgetFrequencyFields
-            executionMode="loop"
-            totalAmountQuote={totalAmountQuote}
-            frequencySec={frequencySec}
-            onBudgetChange={setTotalAmountQuote}
-            onFrequencyChange={setFrequencySec}
-          />
-          <RiskLimitsFields
-            totalAmountQuote={totalAmountQuote}
-            maxOpenExecutors={maxOpenExecutors}
-            maxDrawdown={maxDrawdown}
-            onMaxOpenExecutorsChange={setMaxOpenExecutors}
-            onMaxDrawdownChange={setMaxDrawdown}
-          />
-        </div>
+        <SectionCard title="Run config">
+          <div className="space-y-4 text-sm">
+            <ServerSelect value={serverName} onChange={setServerName} />
+            <BudgetFrequencyFields
+              executionMode="loop"
+              totalAmountQuote={totalAmountQuote}
+              frequencySec={frequencySec}
+              onBudgetChange={setTotalAmountQuote}
+              onFrequencyChange={setFrequencySec}
+            />
+            <RiskLimitsFields
+              totalAmountQuote={totalAmountQuote}
+              maxOpenExecutors={maxOpenExecutors}
+              maxDrawdown={maxDrawdown}
+              onMaxOpenExecutorsChange={setMaxOpenExecutors}
+              onMaxDrawdownChange={setMaxDrawdown}
+            />
+          </div>
+        </SectionCard>
 
-        <div className="space-y-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-          <h2 className="font-medium text-[var(--color-text)]">Preset & promote</h2>
-          <StrategyPresetSelect
-            slug={slug}
-            sslug={slug}
-            value={strategyPreset}
-            presets={presets}
-            frequencySec={freqNum}
-            baseParams={strategyParams}
-            fetchPresetParams={(preset, frequency) =>
-              api.getDeterministicStrategyPresetParams(slug, preset, frequency)
-            }
-            onChange={(preset, params, risk) => {
-              setStrategyPreset(preset);
-              setStrategyParams(params);
-              if (risk?.max_open_executors != null) {
-                setMaxOpenExecutors(String(risk.max_open_executors));
+        <SectionCard title="Preset & promote">
+          <div className="space-y-4 text-sm">
+            <StrategyPresetSelect
+              slug={slug}
+              sslug={slug}
+              value={strategyPreset}
+              presets={presets}
+              frequencySec={freqNum}
+              baseParams={strategyParams}
+              fetchPresetParams={(preset, frequency) =>
+                api.getDeterministicStrategyPresetParams(slug, preset, frequency)
               }
-            }}
-          />
-          {promoteInfo?.promoted ? (
-            <p className="text-emerald-400">
-              Promoted <span className="font-mono">{promotedPreset}</span>
-              {promoteInfo.manifest?.preset_hash
-                ? ` · hash ${String(promoteInfo.manifest.preset_hash)}`
-                : ""}
-              {selectionMatchesPromote ? " · matches selection" : " · selection differs"}
-            </p>
-          ) : (
-            <p className="text-amber-400">No promote manifest yet.</p>
-          )}
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Optional notes (backtest id, commit, …)"
-            className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm"
-            rows={2}
-          />
-          <button
-            type="button"
-            disabled={!canPromote || promoteMutation.isPending}
-            onClick={() => promoteMutation.mutate()}
-            className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-          >
-            {promoteMutation.isPending ? "Promoting…" : "Promote selected preset"}
-          </button>
-        </div>
+              onChange={(preset, params, risk) => {
+                setStrategyPreset(preset);
+                setStrategyParams(params);
+                if (risk?.max_open_executors != null) {
+                  setMaxOpenExecutors(String(risk.max_open_executors));
+                }
+              }}
+            />
+            {promoteInfo?.promoted ? (
+              <p className="text-emerald-400">
+                Promoted <span className="font-mono">{promotedPreset}</span>
+                {promoteInfo.manifest?.preset_hash
+                  ? ` · hash ${String(promoteInfo.manifest.preset_hash)}`
+                  : ""}
+                {selectionMatchesPromote ? " · matches selection" : " · selection differs"}
+              </p>
+            ) : (
+              <p className="text-amber-400">No promote manifest yet.</p>
+            )}
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Optional notes (backtest id, commit, …)"
+              className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm"
+              rows={2}
+            />
+            <DetailActionButton
+              disabled={!canPromote || promoteMutation.isPending}
+              onClick={() => promoteMutation.mutate()}
+            >
+              {promoteMutation.isPending ? "Promoting…" : "Promote selected preset"}
+            </DetailActionButton>
+          </div>
+        </SectionCard>
       </div>
 
       {schema && Object.keys(schema.fields || {}).length > 0 ? (
-        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-          <h2 className="mb-3 text-sm font-medium text-[var(--color-text)]">
-            Strategy params
-          </h2>
+        <SectionCard title="Strategy params">
           <StrategyParamsForm
             fields={schema.fields}
             groups={schema.groups || []}
@@ -759,41 +667,42 @@ export function StrategyRunnerDetail() {
               setStrategyParams((prev) => ({ ...prev, [key]: value }));
             }}
           />
-        </div>
+        </SectionCard>
       ) : (
-        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm text-[var(--color-text-muted)]">
+        <SectionCard title="Strategy params">
           {Object.keys(strategyParams).length > 0 ? (
             <pre className="max-h-64 overflow-auto font-mono text-xs text-[var(--color-text)]">
               {JSON.stringify(strategyParams, null, 2)}
             </pre>
           ) : (
-            "Select a preset to load strategy params."
+            <p className="text-sm text-[var(--color-text-muted)]">
+              Select a preset to load strategy params.
+            </p>
           )}
-        </div>
+        </SectionCard>
       )}
 
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-        <h2 className="mb-3 font-medium text-[var(--color-text)]">
-          Journal{selectedSession != null ? ` · session_${selectedSession}` : ""}
-        </h2>
+      <SectionCard
+        title={`Journal${selectedSession != null ? ` · session_${selectedSession}` : ""}`}
+      >
         {selectedSession == null ? (
-          <p className="text-[var(--color-text-muted)]">Select a session row to read its journal.</p>
+          <p className="text-sm text-[var(--color-text-muted)]">
+            Select a session row to read its journal.
+          </p>
         ) : journal?.content ? (
           <pre className="max-h-96 overflow-auto whitespace-pre-wrap font-mono text-xs text-[var(--color-text)]">
             {journal.content}
           </pre>
         ) : (
-          <p className="text-[var(--color-text-muted)]">Empty journal.</p>
+          <p className="text-sm text-[var(--color-text-muted)]">Empty journal.</p>
         )}
-      </div>
+      </SectionCard>
 
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-        <h2 className="mb-3 font-medium text-[var(--color-text)]">
-          Recent ticks
-          {selectedSession != null ? ` · session_${selectedSession}` : ""}
-        </h2>
+      <SectionCard
+        title={`Recent ticks${selectedSession != null ? ` · session_${selectedSession}` : ""}`}
+      >
         {(ticksInfo?.ticks || []).length === 0 ? (
-          <p className="text-[var(--color-text-muted)]">
+          <p className="text-sm text-[var(--color-text-muted)]">
             No tick audit logs yet (TTL’d JSON under data/strategy_runs).
           </p>
         ) : (
@@ -807,9 +716,7 @@ export function StrategyRunnerDetail() {
                 >
                   <button
                     type="button"
-                    onClick={() =>
-                      setExpandedTickId(isOpen ? null : tick.id)
-                    }
+                    onClick={() => setExpandedTickId(isOpen ? null : tick.id)}
                     className="flex w-full flex-wrap items-center justify-between gap-2 text-left font-mono text-xs text-[var(--color-text-muted)]"
                   >
                     <span>
@@ -832,7 +739,7 @@ export function StrategyRunnerDetail() {
             })}
           </ul>
         )}
-      </div>
+      </SectionCard>
     </div>
   );
 }

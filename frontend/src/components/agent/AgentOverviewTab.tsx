@@ -1,27 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Archive,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Clock,
-  FlaskConical,
-  Save,
-  Zap,
-} from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Archive, ChevronDown, ChevronRight, Save } from "lucide-react";
+import { useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { AgentPnlChart, sessionsToDataPoints } from "@/components/agent/AgentPnlChart";
 import { computeMaxTotalExposure } from "@/components/agent/AgentSessionConfigFields";
 import { ModeBadge } from "@/components/agent/ModeBadge";
 import {
   InstanceLifecycleButtons,
   ResumeSessionButton,
 } from "@/components/agent/SessionLifecycleActions";
+import { PerformanceStats } from "@/components/strategy/PerformanceStats";
+import { SessionsTable, type SessionTableRow } from "@/components/strategy/SessionsTable";
 import { api } from "@/lib/api";
-import { formatCurrency, formatCurrencyPnl, formatCurrencyVolume } from "@/lib/formatters";
+import { formatCurrencyPnl } from "@/lib/formatters";
 
 // ── Markdown Editor ──
 
@@ -228,8 +220,6 @@ export function InstanceCard({
   );
 }
 
-const SESSIONS_PAGE_SIZE = 20;
-
 // ── Performance Panel ──
 
 export function PerformancePanel({
@@ -249,214 +239,62 @@ export function PerformancePanel({
 
   const totals = data?.totals || {};
   const allRows = data?.sessions || [];
-  const sessions = allRows.filter((s) => s.kind === "session");
-  const [page, setPage] = useState(0);
+  const sessions = allRows.filter((session) => session.kind === "session");
 
-  const sortedRows = useMemo(
-    () =>
-      allRows
-        .slice()
-        .sort((a, b) =>
-          b.kind === a.kind ? b.session_num - a.session_num : a.kind === "experiment" ? 1 : -1,
-        ),
-    [allRows],
+  const closed = sessions.reduce((sum, session) => sum + session.closed_count, 0);
+  const wins = sessions.reduce(
+    (sum, session) => sum + Math.round(session.win_rate * session.closed_count),
+    0,
   );
-
-  const totalPages = Math.max(1, Math.ceil(sortedRows.length / SESSIONS_PAGE_SIZE));
-  const pageStart = page * SESSIONS_PAGE_SIZE;
-  const pageRows = sortedRows.slice(pageStart, pageStart + SESSIONS_PAGE_SIZE);
-
-  useEffect(() => {
-    setPage(0);
-  }, [slug, sslug]);
-
-  useEffect(() => {
-    if (page > totalPages - 1) {
-      setPage(Math.max(0, totalPages - 1));
-    }
-  }, [page, totalPages]);
-
-  const totalPnl = Number(totals.total_pnl ?? 0);
-  const realized = Number(totals.realized_pnl ?? 0);
-  const unrealized = Number(totals.unrealized_pnl ?? 0);
-  const volume = Number(totals.volume ?? 0);
-  const fees = Number(totals.fees ?? 0);
-  const openPos = Number(totals.open_positions ?? 0);
-  const pnlColor = totalPnl >= 0 ? "text-[var(--color-green)]" : "text-[var(--color-red)]";
-
-  const closed = sessions.reduce((s, x) => s + x.closed_count, 0);
-  const wins = sessions.reduce((s, x) => s + Math.round(x.win_rate * x.closed_count), 0);
   const winRate = closed > 0 ? (wins / closed) * 100 : 0;
-  const trades = sessions.reduce((s, x) => s + x.trade_count, 0);
+  const trades = sessions.reduce((sum, session) => sum + session.trade_count, 0);
 
-  // PnL chart data from session-level performance
-  const pnlData = useMemo(() => sessionsToDataPoints(sessions), [sessions]);
+  const tableRows: SessionTableRow[] = allRows.map((session) => ({
+    id: session.agent_id,
+    session_num: session.session_num,
+    kind: session.kind,
+    status: session.status,
+    total_pnl: session.total_pnl,
+    realized_pnl: session.realized_pnl,
+    unrealized_pnl: session.unrealized_pnl,
+    volume: session.volume,
+    trade_count: session.trade_count,
+    open_count: session.open_count,
+  }));
 
   return (
     <div className="space-y-4 lg:col-span-2">
-      {/* Stat grid */}
-      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <h3 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
-          <Zap className="h-3.5 w-3.5" /> Performance
-        </h3>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-8">
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">Total PnL</span>
-            <span className={`text-lg font-mono font-semibold ${pnlColor}`}>
-              {formatCurrencyPnl(totalPnl)}
-            </span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">Realized</span>
-            <span className="text-lg font-mono text-[var(--color-text)]">{formatCurrencyPnl(realized)}</span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">Unrealized</span>
-            <span className="text-lg font-mono text-[var(--color-text)]">{formatCurrencyPnl(unrealized)}</span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">Volume</span>
-            <span className="text-lg font-mono text-[var(--color-text)]">
-              {formatCurrencyVolume(volume)}
-            </span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">Fees</span>
-            <span className="text-lg font-mono text-[var(--color-text)]">{formatCurrency(fees)}</span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">Win Rate</span>
-            <span className="text-lg font-mono text-[var(--color-text)]">{winRate.toFixed(0)}%</span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">Trades</span>
-            <span className="text-lg font-mono text-[var(--color-text)]">{trades}</span>
-          </div>
-          <div>
-            <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">Open</span>
-            <span className="text-lg font-mono text-[var(--color-text)]">{openPos}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* PnL equity curve */}
-      {pnlData.length > 1 && (
-        <AgentPnlChart data={pnlData} height={180} title="PnL Equity Curve" />
-      )}
-
-      {/* Sessions & Experiments table */}
-      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <h3 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
-          <Clock className="h-3.5 w-3.5" /> Sessions ({sessions.length})
-          {allRows.filter((s) => s.kind === "experiment").length > 0 && (
-            <span className="ml-1 flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-              <FlaskConical className="h-2.5 w-2.5" />
-              {allRows.filter((s) => s.kind === "experiment").length} experiments
-            </span>
-          )}
-        </h3>
-        {allRows.length === 0 ? (
-          <p className="text-xs text-[var(--color-text-muted)]">No sessions yet.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-                  <th className="px-2 py-1">#</th>
-                  <th className="px-2 py-1">Kind</th>
-                  <th className="px-2 py-1">Status</th>
-                  <th className="px-2 py-1 text-right">Total PnL</th>
-                  <th className="px-2 py-1 text-right">Realized</th>
-                  <th className="px-2 py-1 text-right">Unrealized</th>
-                  <th className="px-2 py-1 text-right">Volume</th>
-                  <th className="px-2 py-1 text-right">Trades</th>
-                  <th className="px-2 py-1 text-right">Open</th>
-                  <th className="px-2 py-1 text-right">Actions</th>
-                  {onSessionClick && <th className="px-2 py-1 w-6" />}
-                </tr>
-              </thead>
-              <tbody>
-                {pageRows.map((s) => {
-                    const pnlCol = s.total_pnl >= 0 ? "text-[var(--color-green)]" : "text-[var(--color-red)]";
-                    const isExperiment = s.kind === "experiment";
-                    return (
-                      <tr
-                        key={s.agent_id}
-                        onClick={() => onSessionClick?.(s.session_num, s.kind)}
-                        className={`border-t border-[var(--color-border)]/40 font-mono ${onSessionClick ? "cursor-pointer transition-colors hover:bg-[var(--color-surface-hover)]" : ""}`}
-                      >
-                        <td className="px-2 py-1.5 text-[var(--color-text)]">{s.session_num}</td>
-                        <td className="px-2 py-1.5">
-                          {isExperiment ? (
-                            <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-400">
-                              <FlaskConical className="h-2.5 w-2.5" />
-                              exp
-                            </span>
-                          ) : (
-                            <span className="text-[var(--color-text-muted)]">{s.kind}</span>
-                          )}
-                        </td>
-                        <td className={`px-2 py-1.5 ${s.status === "running" ? "text-emerald-400" : "text-[var(--color-text-muted)]"}`}>
-                          {s.status || "—"}
-                        </td>
-                        <td className={`px-2 py-1.5 text-right ${pnlCol}`}>
-                          {formatCurrencyPnl(s.total_pnl)}
-                        </td>
-                        <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">{formatCurrencyPnl(s.realized_pnl)}</td>
-                        <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">{formatCurrencyPnl(s.unrealized_pnl)}</td>
-                        <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">
-                          {formatCurrencyVolume(s.volume)}
-                        </td>
-                        <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">{s.trade_count}</td>
-                        <td className="px-2 py-1.5 text-right text-[var(--color-text-muted)]">{s.open_count}</td>
-                        <td className="px-2 py-1.5 text-right">
-                          {!isExperiment && s.status !== "running" && (
-                            <ResumeSessionButton slug={slug} sslug={sslug} sessionNum={s.session_num} />
-                          )}
-                        </td>
-                        {onSessionClick && (
-                          <td className="px-2 py-1.5 text-[var(--color-text-muted)]">
-                            <ChevronRight className="h-3.5 w-3.5" />
-                          </td>
-                        )}
-                      </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {sortedRows.length > SESSIONS_PAGE_SIZE && (
-          <div className="mt-3 flex items-center justify-between border-t border-[var(--color-border)]/40 pt-3">
-            <span className="text-[10px] text-[var(--color-text-muted)]">
-              {pageStart + 1}–{Math.min(pageStart + SESSIONS_PAGE_SIZE, sortedRows.length)} of {sortedRows.length}
-            </span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={page === 0}
-                className="rounded p-1 hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-30"
-                aria-label="Previous page"
-              >
-                <ChevronLeft className="h-3.5 w-3.5" />
-              </button>
-              <span className="px-2 text-[10px] text-[var(--color-text-muted)]">
-                {page + 1} / {totalPages}
-              </span>
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                disabled={page >= totalPages - 1}
-                className="rounded p-1 hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-30"
-                aria-label="Next page"
-              >
-                <ChevronRight className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      <PerformanceStats
+        totals={{
+          total_pnl: Number(totals.total_pnl ?? 0),
+          realized_pnl: Number(totals.realized_pnl ?? 0),
+          unrealized_pnl: Number(totals.unrealized_pnl ?? 0),
+          volume: Number(totals.volume ?? 0),
+          open_positions: Number(totals.open_positions ?? 0),
+        }}
+        extended={{
+          fees: Number(totals.fees ?? 0),
+          win_rate_pct: winRate,
+          trades,
+        }}
+        chartSessions={sessions}
+      />
+      <SessionsTable
+        rows={tableRows}
+        showKind
+        showChevron={Boolean(onSessionClick)}
+        resetKey={`${slug}:${sslug}`}
+        onRowClick={
+          onSessionClick
+            ? (row) => onSessionClick(row.session_num, row.kind)
+            : undefined
+        }
+        renderActions={(row) =>
+          row.kind !== "experiment" && row.status !== "running" ? (
+            <ResumeSessionButton slug={slug} sslug={sslug} sessionNum={row.session_num} />
+          ) : null
+        }
+      />
     </div>
   );
 }
