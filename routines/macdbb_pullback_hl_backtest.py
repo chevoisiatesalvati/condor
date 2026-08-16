@@ -76,7 +76,7 @@ def _loader_config(config: PullbackReplayConfig) -> DynamicStrategyReplayConfig:
         auto_update_snapshots=False,
         write_csv=False,
         use_shared_decide=True,
-        live_equivalent_queue=bool(getattr(config, "live_equivalent_queue", True)),
+        live_equivalent_queue=bool(getattr(config, "live_equivalent_queue", False)),
         min_tradeable_count=int(config.min_tradeable_count or 1),
     )
     return loader

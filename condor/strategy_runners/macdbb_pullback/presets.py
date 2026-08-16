@@ -25,12 +25,16 @@ DEFAULT_TIMELINE_PRESET = "pullback_timeline_v1"
 DEFAULT_TIMELINE_60S_PRESET = "pullback_timeline_v1_60s"
 # Month sweep winner (Binance 60s Jul–Aug 2026): thesis-decay @ 2h.
 DEFAULT_WINNER_PRESET = "pullback_decay_2h_60s"
-DEFAULT_HL_60S_SNAPSHOT_DIR = "data/replay_snapshots_hl_60s"
+DEFAULT_BINANCE_60S_SNAPSHOT_DIR = "data/replay_snapshots_binance_60s"
+DEFAULT_BINANCE_1800S_SNAPSHOT_DIR = "data/replay_snapshots_binance_1y"
+DEFAULT_BINANCE_CANDLE_CACHE_DIR = "data/binance_candles"
+# Kept for import compatibility with older call sites.
+DEFAULT_HL_60S_SNAPSHOT_DIR = DEFAULT_BINANCE_60S_SNAPSHOT_DIR
 
 _PUBLIC_PRESET_LABELS: dict[str, str] = {
     "custom": "Custom",
     DEFAULT_TIMELINE_PRESET: "Pullback timeline v1 (1800s)",
-    DEFAULT_TIMELINE_60S_PRESET: "Pullback timeline v1 (60s HL)",
+    DEFAULT_TIMELINE_60S_PRESET: "Pullback timeline v1 (60s)",
     DEFAULT_WINNER_PRESET: "Pullback decay 2h (60s)",
 }
 
@@ -120,7 +124,7 @@ _DECAY_2H_STRATEGY: dict[str, Any] = {
 _TIMELINE_INFRA: dict[str, Any] = {
     "replay_mode": "timeline_backtest",
     "data_source": "snapshots",
-    "candle_source": "hyperliquid",
+    "candle_source": "binance_perpetual",
     "price_source": "auto",
     "require_price_data": True,
     "use_shared_decide": True,
@@ -128,24 +132,24 @@ _TIMELINE_INFRA: dict[str, Any] = {
     "auto_update_snapshots": False,
     "hl_price_interval": "5m",
     "hl_barrier_interval": "1m",
-    "hl_cache_dir": "data/hl_candles",
+    "hl_cache_dir": DEFAULT_BINANCE_CANDLE_CACHE_DIR,
     "time_window_min": 15,
     "max_open_executors": 10,
-    "live_equivalent_queue": True,
+    "live_equivalent_queue": False,
 }
 
 PRESET_OVERRIDES: dict[str, dict[str, Any]] = {
     DEFAULT_TIMELINE_PRESET: {
         **_TIMELINE_INFRA,
         "frequency_sec": 1800,
-        "snapshot_dir": "data/replay_snapshots_hl_shared_2d",
+        "snapshot_dir": DEFAULT_BINANCE_1800S_SNAPSHOT_DIR,
         "strategy_params": dict(_BASE_STRATEGY),
         **{k: v for k, v in _BASE_STRATEGY.items()},
     },
     DEFAULT_TIMELINE_60S_PRESET: {
         **_TIMELINE_INFRA,
         "frequency_sec": 60,
-        "snapshot_dir": DEFAULT_HL_60S_SNAPSHOT_DIR,
+        "snapshot_dir": DEFAULT_BINANCE_60S_SNAPSHOT_DIR,
         "time_window_min": 1,
         "strategy_params": dict(_BASE_STRATEGY),
         **{k: v for k, v in _BASE_STRATEGY.items()},
@@ -153,7 +157,7 @@ PRESET_OVERRIDES: dict[str, dict[str, Any]] = {
     DEFAULT_WINNER_PRESET: {
         **_TIMELINE_INFRA,
         "frequency_sec": 60,
-        "snapshot_dir": DEFAULT_HL_60S_SNAPSHOT_DIR,
+        "snapshot_dir": DEFAULT_BINANCE_60S_SNAPSHOT_DIR,
         "time_window_min": 1,
         "strategy_params": dict(_DECAY_2H_STRATEGY),
         **{k: v for k, v in _DECAY_2H_STRATEGY.items()},

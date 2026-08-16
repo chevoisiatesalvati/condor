@@ -90,3 +90,33 @@ def test_pullback_replay_reuses_strategy_param_labels():
     assert fields["sl_pct"]["group"] == "Barriers"
     assert fields["enable_thesis_decay_exit"]["group"] == "Position monitor"
     assert fields["min_notional_quote"]["group"] == "Sizing"
+
+
+def test_pullback_winner_preset_uses_binance_data():
+    from condor.strategy_runners.macdbb_pullback.presets import (
+        DEFAULT_BINANCE_60S_SNAPSHOT_DIR,
+        DEFAULT_BINANCE_1800S_SNAPSHOT_DIR,
+        DEFAULT_BINANCE_CANDLE_CACHE_DIR,
+        DEFAULT_TIMELINE_PRESET,
+        DEFAULT_WINNER_PRESET,
+        PRESET_OVERRIDES,
+    )
+    from routines.macdbb_pullback_hl_replay.presets import resolve_pullback_config
+
+    winner = PRESET_OVERRIDES[DEFAULT_WINNER_PRESET]
+    assert winner["candle_source"] == "binance_perpetual"
+    assert winner["snapshot_dir"] == DEFAULT_BINANCE_60S_SNAPSHOT_DIR
+    assert winner["hl_cache_dir"] == DEFAULT_BINANCE_CANDLE_CACHE_DIR
+    assert winner["live_equivalent_queue"] is False
+
+    timeline = PRESET_OVERRIDES[DEFAULT_TIMELINE_PRESET]
+    assert timeline["candle_source"] == "binance_perpetual"
+    assert timeline["snapshot_dir"] == DEFAULT_BINANCE_1800S_SNAPSHOT_DIR
+
+    resolved = resolve_pullback_config(PullbackReplayConfig())
+    assert resolved.candle_source == "binance_perpetual"
+    assert resolved.snapshot_dir == DEFAULT_BINANCE_60S_SNAPSHOT_DIR
+    assert resolved.hl_cache_dir == DEFAULT_BINANCE_CANDLE_CACHE_DIR
+    assert resolved.total_amount_quote == 100.0
+    assert resolved.min_notional_quote == 10.0
+    assert resolved.max_notional_quote == 1000.0

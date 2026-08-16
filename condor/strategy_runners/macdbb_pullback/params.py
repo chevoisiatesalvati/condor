@@ -175,7 +175,7 @@ class MacdbbPullbackHlParams(BaseModel):
     )
 
     min_notional_quote: float = Field(
-        default=100.0,
+        default=10.0,
         ge=0.0,
         description="Minimum notional quote per entry",
         json_schema_extra={"group": "Sizing"},

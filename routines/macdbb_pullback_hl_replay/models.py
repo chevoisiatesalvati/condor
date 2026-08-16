@@ -27,7 +27,7 @@ class PullbackReplayConfig(BaseModel):
         description="Signal and market data source",
     )
     candle_source: Literal["hyperliquid", "binance_perpetual"] = Field(
-        default="hyperliquid",
+        default="binance_perpetual",
         description="Exchange for OHLCV candles",
     )
     price_source: Literal["auto", "reports", "hl_candles", "binance_candles"] = Field(
@@ -35,7 +35,7 @@ class PullbackReplayConfig(BaseModel):
         description="Historical price resolution mode",
     )
     snapshot_dir: str = Field(
-        default="data/replay_snapshots_hl_60s",
+        default="data/replay_snapshots_binance_60s",
         description="Parquet snapshot directory",
     )
     frequency_sec: int = Field(
@@ -76,7 +76,7 @@ class PullbackReplayConfig(BaseModel):
         description="Candle interval for stop-loss / take-profit",
     )
     hl_cache_dir: str | None = Field(
-        default="data/hl_candles",
+        default="data/binance_candles",
         description="Local candle cache directory",
     )
     hl_use_cache: bool = Field(
@@ -92,7 +92,7 @@ class PullbackReplayConfig(BaseModel):
         description="Maximum open positions",
     )
     total_amount_quote: float = Field(
-        default=500.0,
+        default=100.0,
         description="Per-entry notional (USDT)",
     )
     fee_bps: float = Field(default=0.0, description="Fee (basis points)")
@@ -107,7 +107,7 @@ class PullbackReplayConfig(BaseModel):
         description="Use shared decide() for entries",
     )
     live_equivalent_queue: bool = Field(
-        default=True,
+        default=False,
         description="Match live Strategies queue",
     )
     compare_journal_flags: bool = Field(
@@ -129,7 +129,7 @@ class PullbackReplayConfig(BaseModel):
     pullback_timeout_hours: float = 12.0
     sl_pct: float = 3.0
     tp_pct: float = 6.0
-    min_notional_quote: float = 100.0
+    min_notional_quote: float = 10.0
     max_notional_quote: float | None = 1000.0
     sl_symbol_cooldown_hours: float = 5.0
     enable_flip_exit: bool = False
