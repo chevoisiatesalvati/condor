@@ -6,6 +6,7 @@ import type { RoutineInfo } from "@/lib/api";
 export const ROUTINE_CONFIG_KEY_PREFIX = "routine_config:";
 
 const JOURNAL_DATA_SOURCES = new Set(["journal_first", "journal_recompute", "html_only"]);
+const CANDLE_PRICE_SOURCES = new Set(["auto", "hl_candles", "binance_candles"]);
 
 const USER_WINS_AFTER_PRESET_KEYS = [
   "snapshot_dir",
@@ -94,7 +95,14 @@ export function reconcileReplayConfigValues(
       next.data_source = "snapshots";
     }
     if (next.data_source === "snapshots") {
-      next.price_source = "reports";
+      if ("enable_dynamic_barriers" in next) {
+        next.price_source = "reports";
+      } else {
+        const current = String(next.price_source ?? "");
+        if (!CANDLE_PRICE_SOURCES.has(current)) {
+          next.price_source = "auto";
+        }
+      }
     }
   } else {
     next.range_start_utc = null;

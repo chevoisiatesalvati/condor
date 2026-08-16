@@ -208,6 +208,9 @@ class RoutineStore:
         out = []
         for name, info in all_routines.items():
             groups_fn = getattr(info.config_class, "get_routine_groups", None)
+            expanded_fn = getattr(
+                info.config_class, "get_routine_expanded_groups", None
+            )
             try:
                 fields = info.get_routine_field_metadata()
                 overrides = info.resolved_preset_overrides()
@@ -230,6 +233,13 @@ class RoutineStore:
                     entry["groups"] = groups_fn()
                 except Exception as exc:
                     logger.error("Failed to build routine groups for %s: %s", name, exc)
+            if callable(expanded_fn):
+                try:
+                    entry["expanded_groups"] = expanded_fn()
+                except Exception as exc:
+                    logger.error(
+                        "Failed to build expanded routine groups for %s: %s", name, exc
+                    )
             if overrides:
                 entry["preset_overrides"] = overrides
             out.append(entry)

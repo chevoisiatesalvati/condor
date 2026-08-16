@@ -5,6 +5,7 @@ import { RoutineConfigForm } from "@/components/routines/RoutineConfigForm";
 interface Props {
   fields: Record<string, RoutineFieldInfo>;
   groups?: string[];
+  expandedGroups?: string[];
   values: Record<string, unknown>;
   onChange: (key: string, value: unknown) => void;
 }
@@ -12,6 +13,7 @@ interface Props {
 export function RoutineConfigFormShell({
   fields,
   groups,
+  expandedGroups,
   values,
   onChange,
 }: Props) {
@@ -26,6 +28,7 @@ export function RoutineConfigFormShell({
       <GroupedRoutineConfigForm
         fields={fields}
         groups={groups!}
+        expandedGroups={expandedGroups}
         values={values}
         onChange={onChange}
       />

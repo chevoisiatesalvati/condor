@@ -26,3 +26,16 @@ def test_backtest_routine_fields_include_group_metadata():
     fields = routine["fields"]
     assert fields["preset"]["group"] == "Preset & mode"
     assert sum(1 for meta in fields.values() if meta.get("group")) > 20
+
+
+def test_pullback_backtest_routine_fields_include_group_metadata():
+    store = get_routine_store()
+    routine = next(
+        r for r in store.list_routines() if r["name"] == "macdbb_pullback_hl_backtest"
+    )
+    assert routine["groups"][0] == "Preset & data"
+    assert routine["expanded_groups"] == ["Preset & data", "Timeline"]
+    fields = routine["fields"]
+    assert fields["preset"]["widget"] == "select"
+    assert fields["snapshot_dir"]["options_from"] == "replay_snapshot_dirs"
+    assert fields["strategy_params"]["hidden"] is True

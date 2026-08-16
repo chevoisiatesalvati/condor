@@ -15,6 +15,7 @@ import { RoutineFieldInput } from "@/components/routines/RoutineFieldInput";
 interface Props {
   fields: Record<string, RoutineFieldInfo>;
   groups: string[];
+  expandedGroups?: string[];
   values: Record<string, unknown>;
   onChange: (key: string, value: unknown) => void;
 }
@@ -192,11 +193,18 @@ function TimelineDateRangePicker({
 export function GroupedRoutineConfigForm({
   fields,
   groups,
+  expandedGroups: initiallyExpanded,
   values,
   onChange,
 }: Props) {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(groups.map((group) => [group, true])),
+    () =>
+      Object.fromEntries(
+        groups.map((group) => [
+          group,
+          initiallyExpanded == null || initiallyExpanded.includes(group),
+        ]),
+      ),
   );
 
   const fieldsByGroup = groups.map((group) => ({

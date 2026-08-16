@@ -855,6 +855,7 @@ export function ReportBrowser({
               <RoutineConfigFormShell
                 fields={activeRoutine.fields}
                 groups={activeRoutine.groups}
+                expandedGroups={activeRoutine.expanded_groups}
                 values={configValues}
                 onChange={(key, value) => {
                   setConfigValues((prev) => {

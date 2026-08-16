@@ -267,6 +267,25 @@ describe("reconcileReplayConfigValues", () => {
     expect(next.replay_mode).toBe("timeline_backtest");
     expect(next.data_source).toBe("snapshots");
   });
+
+  it("preserves auto price_source for timeline snapshots without dynamic barriers", () => {
+    const next = reconcileReplayConfigValues({
+      replay_mode: "timeline_backtest",
+      data_source: "snapshots",
+      price_source: "auto",
+    });
+    expect(next.price_source).toBe("auto");
+  });
+
+  it("forces report prices for scanner timeline snapshots", () => {
+    const next = reconcileReplayConfigValues({
+      replay_mode: "timeline_backtest",
+      data_source: "snapshots",
+      price_source: "auto",
+      enable_dynamic_barriers: true,
+    });
+    expect(next.price_source).toBe("reports");
+  });
 });
 
 describe("getDisabledSelectOptions", () => {

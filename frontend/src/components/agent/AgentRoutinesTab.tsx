@@ -112,6 +112,7 @@ function RoutineCard({ routine }: { routine: RoutineInfo }) {
           <RoutineConfigFormShell
             fields={routine.fields}
             groups={routine.groups}
+            expandedGroups={routine.expanded_groups}
             values={configValues}
             onChange={handleConfigChange}
           />

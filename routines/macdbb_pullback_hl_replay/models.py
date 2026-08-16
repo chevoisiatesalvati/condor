@@ -8,37 +8,117 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class PullbackReplayConfig(BaseModel):
-    preset: str = Field(default="pullback_decay_2h_60s")
-    strategy_slug: str = "macdbb_pullback_hl"
-    replay_mode: Literal["timeline_backtest", "session_parity"] = "timeline_backtest"
-    data_source: str = "snapshots"
-    candle_source: str = "hyperliquid"
-    price_source: str = "auto"
-    snapshot_dir: str = "data/replay_snapshots_hl_60s"
-    frequency_sec: int = 60
-    range_start_utc: str = ""
-    range_end_utc: str = ""
-    time_window_min: int = 1
-    require_price_data: bool = True
-    write_csv: bool = False
-    auto_update_snapshots: bool = False
-    max_auto_snapshot_days: int = 14
-    hl_price_interval: str = "5m"
-    hl_barrier_interval: str = "1m"
-    hl_cache_dir: str | None = "data/hl_candles"
-    hl_use_cache: bool = True
-    hl_refresh_cache: bool = False
-    max_open_executors: int = 10
-    total_amount_quote: float = 500.0
-    fee_bps: float = 0.0
-    slippage_bps: float = 0.0
-    amount_step: float = 0.0
-    min_tradeable_count: int = 1
-    use_shared_decide: bool = True
-    live_equivalent_queue: bool = True
-    compare_journal_flags: bool = False
-    sessions: str = ""
-    strategy_params: dict[str, Any] = Field(default_factory=dict)
+    """Timeline backtest for macdbb_pullback_hl (thesis + staged pullback entries)."""
+
+    preset: str = Field(
+        default="pullback_decay_2h_60s",
+        description="Named parameter profile",
+    )
+    strategy_slug: str = Field(
+        default="macdbb_pullback_hl",
+        description="Strategy slug",
+    )
+    replay_mode: Literal["timeline_backtest", "session_parity"] = Field(
+        default="timeline_backtest",
+        description="Timeline range or session journal",
+    )
+    data_source: str = Field(
+        default="snapshots",
+        description="Signal and market data source",
+    )
+    candle_source: Literal["hyperliquid", "binance_perpetual"] = Field(
+        default="hyperliquid",
+        description="Exchange for OHLCV candles",
+    )
+    price_source: Literal["auto", "reports", "hl_candles", "binance_candles"] = Field(
+        default="auto",
+        description="Historical price resolution mode",
+    )
+    snapshot_dir: str = Field(
+        default="data/replay_snapshots_hl_60s",
+        description="Parquet snapshot directory",
+    )
+    frequency_sec: int = Field(
+        default=60,
+        description="Tick interval",
+    )
+    range_start_utc: str = Field(
+        default="",
+        description="Timeline start (UTC, inclusive)",
+    )
+    range_end_utc: str = Field(
+        default="",
+        description="Timeline end (UTC, inclusive)",
+    )
+    time_window_min: int = Field(
+        default=1,
+        description="Report-to-tick match window (minutes)",
+    )
+    require_price_data: bool = Field(
+        default=True,
+        description="Skip entries without trusted prices",
+    )
+    write_csv: bool = Field(default=False, description="Write CSV artifacts")
+    auto_update_snapshots: bool = Field(
+        default=False,
+        description="Build missing snapshot ticks before replay",
+    )
+    max_auto_snapshot_days: int = Field(
+        default=14,
+        description="Max gap (days) for automatic snapshot builds",
+    )
+    hl_price_interval: Literal["1m", "5m", "15m", "1h"] = Field(
+        default="5m",
+        description="Candle interval for tick prices",
+    )
+    hl_barrier_interval: Literal["1m", "5m", "15m", "1h"] = Field(
+        default="1m",
+        description="Candle interval for stop-loss / take-profit",
+    )
+    hl_cache_dir: str | None = Field(
+        default="data/hl_candles",
+        description="Local candle cache directory",
+    )
+    hl_use_cache: bool = Field(
+        default=True,
+        description="Use local candle cache",
+    )
+    hl_refresh_cache: bool = Field(
+        default=False,
+        description="Ignore cache and refetch candles",
+    )
+    max_open_executors: int = Field(
+        default=10,
+        description="Maximum open positions",
+    )
+    total_amount_quote: float = Field(
+        default=500.0,
+        description="Per-entry notional (USDT)",
+    )
+    fee_bps: float = Field(default=0.0, description="Fee (basis points)")
+    slippage_bps: float = Field(default=0.0, description="Slippage (basis points)")
+    amount_step: float = Field(default=0.0, description="Amount rounding step")
+    min_tradeable_count: int = Field(
+        default=1,
+        description="Minimum tradeable pairs per tick",
+    )
+    use_shared_decide: bool = Field(
+        default=True,
+        description="Use shared decide() for entries",
+    )
+    live_equivalent_queue: bool = Field(
+        default=True,
+        description="Match live Strategies queue",
+    )
+    compare_journal_flags: bool = Field(
+        default=False,
+        description="Include journal flag mismatch columns",
+    )
+    sessions: str = Field(default="", description="Sessions to replay")
+    strategy_params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Raw strategy parameter overlay",
+    )
     bb_proximity_epsilon_pct: float = 0.22
     impulse_lookback_bars: int = 2
     impulse_atr_mult: float = 1.25
@@ -75,6 +155,26 @@ class PullbackReplayConfig(BaseModel):
         if value not in known_preset_names():
             raise ValueError(f"Unknown preset {value!r}")
         return value
+
+    @classmethod
+    def get_routine_fields(cls) -> dict[str, dict[str, Any]]:
+        from routines.macdbb_pullback_hl_replay.field_ui import (
+            build_pullback_replay_field_metadata,
+        )
+
+        return build_pullback_replay_field_metadata(cls)
+
+    @classmethod
+    def get_routine_groups(cls) -> list[str]:
+        from routines.macdbb_pullback_hl_replay.field_ui import PULLBACK_FIELD_GROUPS
+
+        return list(PULLBACK_FIELD_GROUPS)
+
+    @classmethod
+    def get_routine_expanded_groups(cls) -> list[str]:
+        from routines.macdbb_pullback_hl_replay.field_ui import PULLBACK_EXPANDED_GROUPS
+
+        return list(PULLBACK_EXPANDED_GROUPS)
 
 
 def strategy_params_from_config(config: PullbackReplayConfig) -> dict[str, Any]:

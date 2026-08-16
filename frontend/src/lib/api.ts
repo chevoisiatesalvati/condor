@@ -600,6 +600,8 @@ export interface RoutineInfo {
   source: string;
   fields: Record<string, RoutineFieldInfo>;
   groups?: string[];
+  /** Groups that start expanded; omit to expand every group. */
+  expanded_groups?: string[];
   /** Source-file modification time (epoch seconds), or null if unavailable. */
   last_modified: number | null;
   report_count: number;
