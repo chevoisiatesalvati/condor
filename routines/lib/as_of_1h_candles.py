@@ -8,10 +8,118 @@ forming bar from 1m candles instead.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
+
+import numpy as np
 
 HOUR_MS = 3_600_000
 LIVE_MACD_MAX_RECORDS = 200
+
+_EMPTY_INT64 = np.array([], dtype=np.int64)
+_EMPTY_FLOAT64 = np.array([], dtype=np.float64)
+
+
+@dataclass(frozen=True)
+class OhlcvArrays:
+    """Sorted OHLC columns for as-of slicing without per-tick parquet reads."""
+
+    timestamp_ms: np.ndarray
+    open: np.ndarray
+    high: np.ndarray
+    low: np.ndarray
+    close: np.ndarray
+    volume: np.ndarray
+
+    def __post_init__(self) -> None:
+        count = int(self.timestamp_ms.shape[0])
+        assert self.open.shape[0] == count
+        assert self.high.shape[0] == count
+        assert self.low.shape[0] == count
+        assert self.close.shape[0] == count
+        assert self.volume.shape[0] == count
+
+    def __len__(self) -> int:
+        return int(self.timestamp_ms.shape[0])
+
+    @classmethod
+    def empty(cls) -> OhlcvArrays:
+        return cls(
+            timestamp_ms=_EMPTY_INT64,
+            open=_EMPTY_FLOAT64,
+            high=_EMPTY_FLOAT64,
+            low=_EMPTY_FLOAT64,
+            close=_EMPTY_FLOAT64,
+            volume=_EMPTY_FLOAT64,
+        )
+
+    @classmethod
+    def from_candles(cls, candles: Sequence[Mapping[str, Any]]) -> OhlcvArrays:
+        if not candles:
+            return cls.empty()
+        count = len(candles)
+        timestamp_ms = np.fromiter(
+            (int(candle["timestamp_ms"]) for candle in candles),
+            dtype=np.int64,
+            count=count,
+        )
+        open_px = np.fromiter(
+            (float(candle["open"]) for candle in candles),
+            dtype=np.float64,
+            count=count,
+        )
+        high_px = np.fromiter(
+            (float(candle["high"]) for candle in candles),
+            dtype=np.float64,
+            count=count,
+        )
+        low_px = np.fromiter(
+            (float(candle["low"]) for candle in candles),
+            dtype=np.float64,
+            count=count,
+        )
+        close_px = np.fromiter(
+            (float(candle["close"]) for candle in candles),
+            dtype=np.float64,
+            count=count,
+        )
+        volume = np.fromiter(
+            (float(candle["volume"]) for candle in candles),
+            dtype=np.float64,
+            count=count,
+        )
+        order = np.argsort(timestamp_ms, kind="mergesort")
+        return cls(
+            timestamp_ms=timestamp_ms[order],
+            open=open_px[order],
+            high=high_px[order],
+            low=low_px[order],
+            close=close_px[order],
+            volume=volume[order],
+        )
+
+    def slice(self, start: int, end: int) -> OhlcvArrays:
+        return OhlcvArrays(
+            timestamp_ms=self.timestamp_ms[start:end],
+            open=self.open[start:end],
+            high=self.high[start:end],
+            low=self.low[start:end],
+            close=self.close[start:end],
+            volume=self.volume[start:end],
+        )
+
+    def to_candles(self) -> list[dict[str, float]]:
+        return [
+            {
+                "timestamp_ms": float(self.timestamp_ms[index]),
+                "open": float(self.open[index]),
+                "high": float(self.high[index]),
+                "low": float(self.low[index]),
+                "close": float(self.close[index]),
+                "volume": float(self.volume[index]),
+            }
+            for index in range(len(self))
+        ]
 
 
 def _ts_ms(candle: Mapping[str, Any]) -> int:
@@ -67,4 +175,60 @@ def as_of_1h_candles(
     forming = forming_1h_from_1m(candles_1m or [], as_of_ms)
     series = completed + ([forming] if forming is not None else [])
     series.sort(key=_ts_ms)
+    return series[-max_records:]
+
+
+def forming_1h_from_1m_arrays(
+    candles_1m: OhlcvArrays,
+    as_of_ms: int,
+) -> dict[str, float] | None:
+    """Same forming bar as ``forming_1h_from_1m``, via searchsorted."""
+    if len(candles_1m) == 0:
+        return None
+    hour_open_ms = (as_of_ms // HOUR_MS) * HOUR_MS
+    left = int(np.searchsorted(candles_1m.timestamp_ms, hour_open_ms, side="left"))
+    right = int(np.searchsorted(candles_1m.timestamp_ms, as_of_ms, side="right"))
+    if left >= right:
+        return None
+    return {
+        "timestamp_ms": float(hour_open_ms),
+        "open": float(candles_1m.open[left]),
+        "high": float(np.max(candles_1m.high[left:right])),
+        "low": float(np.min(candles_1m.low[left:right])),
+        "close": float(candles_1m.close[right - 1]),
+        "volume": float(np.sum(candles_1m.volume[left:right])),
+    }
+
+
+def completed_1h_end_index(candles_1h: OhlcvArrays, as_of_ms: int) -> int:
+    """Exclusive end index of 1h bars whose close is at or before as_of."""
+    if len(candles_1h) == 0:
+        return 0
+    return int(
+        np.searchsorted(
+            candles_1h.timestamp_ms,
+            as_of_ms - HOUR_MS,
+            side="right",
+        )
+    )
+
+
+def as_of_1h_from_arrays(
+    candles_1h: OhlcvArrays,
+    candles_1m: OhlcvArrays | None,
+    as_of_ms: int,
+    *,
+    max_records: int = LIVE_MACD_MAX_RECORDS,
+) -> list[dict[str, float]]:
+    """In-memory equivalent of ``as_of_1h_candles`` (must match bar-for-bar)."""
+    assert as_of_ms > 0
+    assert max_records > 0
+    completed_end = completed_1h_end_index(candles_1h, as_of_ms)
+    forming = forming_1h_from_1m_arrays(candles_1m or OhlcvArrays.empty(), as_of_ms)
+    if forming is None:
+        start = max(0, completed_end - max_records)
+        return candles_1h.slice(start, completed_end).to_candles()
+    completed_start = max(0, completed_end - (max_records - 1))
+    series = candles_1h.slice(completed_start, completed_end).to_candles()
+    series.append(forming)
     return series[-max_records:]

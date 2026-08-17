@@ -42,15 +42,15 @@ def signal_from_closes(
     histogram = macd_line - signal_line
     n = len(closes)
     p = bb_period
-    bb_mid = np.array([np.mean(closes[max(0, i - p + 1) : i + 1]) for i in range(n)])
-    bb_std_arr = np.array([np.std(closes[max(0, i - p + 1) : i + 1]) for i in range(n)])
-    bb_upper = bb_mid + bb_std * bb_std_arr
-    bb_lower = bb_mid - bb_std * bb_std_arr
+    bb_window = closes[-p:] if n >= p else closes
+    bb_mid_val = float(np.mean(bb_window))
+    bb_std_val = float(np.std(bb_window))
+    bb_up = bb_mid_val + bb_std * bb_std_val
+    bb_lo = bb_mid_val - bb_std * bb_std_val
     close = float(closes[-1])
     macd_curr, macd_prev = float(macd_line[-1]), float(macd_line[-2])
     sig_curr, sig_prev = float(signal_line[-1]), float(signal_line[-2])
     hist_curr, hist_prev = float(histogram[-1]), float(histogram[-2])
-    bb_up, bb_mid_val, bb_lo = float(bb_upper[-1]), float(bb_mid[-1]), float(bb_lower[-1])
     bb_range = bb_up - bb_lo
     bb_pos = (close - bb_lo) / bb_range if bb_range > 0 else 0.5
     return SignalSnapshot(

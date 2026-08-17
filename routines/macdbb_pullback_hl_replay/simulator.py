@@ -14,6 +14,10 @@ from routines.macdbb_pullback_hl_replay.models import (
     PullbackReplayConfig,
     strategy_params_from_config,
 )
+from routines.macdbb_pullback_hl_replay.signal_tape import (
+    PullbackSignalTape,
+    build_pullback_signal_tape,
+)
 from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
     HlCandleCache,
     HlPriceCache,
@@ -21,11 +25,13 @@ from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
 from routines.macdbb_scanner_aggressive_hl_replay.models import (
     OpenPosition,
     ReportMeta,
+    SignalSnapshot,
     SimTrade,
     TickMeta,
     compute_return_pct,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.signals import (
+    _resolve_price,
     build_tick_snapshots,
     session_has_trusted_prices,
 )
@@ -40,6 +46,59 @@ from routines.macdbb_scanner_aggressive_hl_replay.simulator import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _tick_pairs(meta: TickMeta, extra_pairs: list[str] | None) -> list[str]:
+    pairs = list(meta.macd_pairs)
+    if meta.queue_total:
+        for pair in meta.queue_total:
+            if pair not in pairs:
+                pairs.append(pair)
+    if meta.signals_1h:
+        for pair in meta.signals_1h:
+            if pair not in pairs:
+                pairs.append(pair)
+    if meta.create_plans:
+        for pair in meta.create_plans:
+            if pair not in pairs:
+                pairs.append(pair)
+    if extra_pairs:
+        for pair in extra_pairs:
+            if pair not in pairs:
+                pairs.append(pair)
+    return pairs
+
+
+def _price_snapshots_from_cache(
+    meta: TickMeta,
+    extra_pairs: list[str],
+    last_price_by_pair: dict[str, float],
+    hl_price_cache: HlPriceCache | None,
+    snap_config: Any,
+) -> dict[str, SignalSnapshot]:
+    """Mark prices only — skip report/MACD parse when a signal tape is in use."""
+    snapshots: dict[str, SignalSnapshot] = {}
+    for pair in _tick_pairs(meta, extra_pairs):
+        price, trusted, _tag = _resolve_price(
+            pair,
+            meta,
+            None,
+            snap_config,
+            last_price_by_pair,
+            hl_price_cache,
+        )
+        snapshots[pair] = SignalSnapshot(
+            pair=pair,
+            price=price,
+            signal="",
+            parsed=None,
+            metrics={},
+            filter_4h_pass=None,
+            filter_4h_trend=None,
+            source="tape_price",
+            price_trusted=trusted,
+        )
+    return snapshots
 
 
 def _summary_from_trades(trades: list[SimTrade]) -> dict[str, Any]:
@@ -84,6 +143,9 @@ def simulate_pullback_session(
     hl_vol_candle_cache: HlCandleCache | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     candle_cache_dir: Path | None = None,
+    signal_tape: PullbackSignalTape | None = None,
+    use_signal_tape: bool = True,
+    collect_debug_rows: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[SimTrade], dict[str, Any]]:
     # signal_config: MACDBB ReplayConfigBase used for snapshot/price resolution.
     snap_config = signal_config if signal_config is not None else config
@@ -129,6 +191,17 @@ def simulate_pullback_session(
     last_price_by_pair: dict[str, float] = {}
     filter_4h_cache: dict[tuple[str, int], tuple[bool | None, str | None]] = {}
     candle_memo: dict[tuple[str, int], list[dict[str, float]]] = {}
+    active_tape = signal_tape
+    if use_signal_tape and active_tape is None:
+        active_tape = build_pullback_signal_tape(
+            tick_meta_map,
+            cache_dir=cache_dir,
+            candle_source=config.candle_source,
+            impulse_lookback_bars=int(
+                strategy_params.get("impulse_lookback_bars") or 2
+            ),
+            atr_period=int(strategy_params.get("atr_period") or 14),
+        )
 
     sorted_ticks = sorted(tick_meta_map)
     total_ticks = len(sorted_ticks)
@@ -158,15 +231,25 @@ def simulate_pullback_session(
             last_progress_emit_at = now
 
         meta = tick_meta_map[tick]
-        snapshots = build_tick_snapshots(
-            meta,
-            reports_by_pair,
-            snap_config,
-            last_price_by_pair,
-            extra_pairs=list(open_positions.keys()),
-            hl_price_cache=hl_price_cache,
-            filter_4h_cache=filter_4h_cache,
-        )
+        extra_pairs = list(open_positions.keys())
+        if active_tape is not None:
+            snapshots = _price_snapshots_from_cache(
+                meta,
+                extra_pairs,
+                last_price_by_pair,
+                hl_price_cache,
+                snap_config,
+            )
+        else:
+            snapshots = build_tick_snapshots(
+                meta,
+                reports_by_pair,
+                snap_config,
+                last_price_by_pair,
+                extra_pairs=extra_pairs,
+                hl_price_cache=hl_price_cache,
+                filter_4h_cache=filter_4h_cache,
+            )
 
         closes_this_tick: list[str] = []
         opens_this_tick: list[str] = []
@@ -260,16 +343,24 @@ def simulate_pullback_session(
                     eligible[pair] = snapshots[pair]
 
             candles_1h_by_pair: dict[str, list[dict[str, float]]] = {}
-            for pair in eligible:
-                memo_key = (pair, int(meta.timestamp.timestamp()))
-                if memo_key not in candle_memo:
-                    candle_memo[memo_key] = candles_1h_for_tick(
-                        pair,
-                        meta.timestamp,
-                        cache_dir=cache_dir,
-                        candle_source=config.candle_source,
-                    )
-                candles_1h_by_pair[pair] = candle_memo[memo_key]
+            precomputed_signals = None
+            if active_tape is not None:
+                precomputed_signals = active_tape.materialize_signals(
+                    tick,
+                    eligible.keys(),
+                    strategy_params,
+                )
+            else:
+                for pair in eligible:
+                    memo_key = (pair, int(meta.timestamp.timestamp()))
+                    if memo_key not in candle_memo:
+                        candle_memo[memo_key] = candles_1h_for_tick(
+                            pair,
+                            meta.timestamp,
+                            cache_dir=cache_dir,
+                            candle_source=config.candle_source,
+                        )
+                    candles_1h_by_pair[pair] = candle_memo[memo_key]
 
             decision = decide_from_sim_tick(
                 tick_number=tick,
@@ -286,6 +377,7 @@ def simulate_pullback_session(
                 amount_step=float(config.amount_step or 0),
                 frequency_sec=int(config.frequency_sec or 60),
                 state=engine_state,
+                precomputed_signals=precomputed_signals,
             )
             engine_state = decision.state
 
@@ -336,37 +428,39 @@ def simulate_pullback_session(
                     )
                     opens_this_tick.append(f"{create.entry_class}_{create.side}")
 
-            for pair, snap in snapshots.items():
-                metrics = getattr(snap, "metrics", {}) or {}
-                per_pair_rows.append(
-                    {
-                        "session": session_num,
-                        "tick": tick,
-                        "tick_time_utc": meta.timestamp.isoformat(),
-                        "pair": pair,
-                        "price": snap.price,
-                        "signal": getattr(snap, "signal", ""),
-                        "bb_pos_pct": getattr(getattr(snap, "parsed", None), "bb_pos_pct", 0),
-                        "thesis_long": int(bool(metrics.get("thesis_long"))),
-                        "thesis_short": int(bool(metrics.get("thesis_short"))),
-                        "filter_4h_pass": snap.filter_4h_pass,
-                        "filter_4h_trend": snap.filter_4h_trend,
-                        "armed": int(pair in engine_state.armed_by_pair),
-                        "price_trusted": int(bool(snap.price_trusted)),
-                    }
-                )
+            if collect_debug_rows:
+                for pair, snap in snapshots.items():
+                    metrics = getattr(snap, "metrics", {}) or {}
+                    per_pair_rows.append(
+                        {
+                            "session": session_num,
+                            "tick": tick,
+                            "tick_time_utc": meta.timestamp.isoformat(),
+                            "pair": pair,
+                            "price": snap.price,
+                            "signal": getattr(snap, "signal", ""),
+                            "bb_pos_pct": getattr(getattr(snap, "parsed", None), "bb_pos_pct", 0),
+                            "thesis_long": int(bool(metrics.get("thesis_long"))),
+                            "thesis_short": int(bool(metrics.get("thesis_short"))),
+                            "filter_4h_pass": snap.filter_4h_pass,
+                            "filter_4h_trend": snap.filter_4h_trend,
+                            "armed": int(pair in engine_state.armed_by_pair),
+                            "price_trusted": int(bool(snap.price_trusted)),
+                        }
+                    )
 
-        per_tick_rows.append(
-            {
-                "session": session_num,
-                "tick": tick,
-                "tick_time_utc": meta.timestamp.isoformat(),
-                "open_positions": len(open_positions),
-                "armed": len(engine_state.armed_by_pair),
-                "opens": ",".join(opens_this_tick),
-                "closes": ",".join(closes_this_tick),
-            }
-        )
+        if collect_debug_rows:
+            per_tick_rows.append(
+                {
+                    "session": session_num,
+                    "tick": tick,
+                    "tick_time_utc": meta.timestamp.isoformat(),
+                    "open_positions": len(open_positions),
+                    "armed": len(engine_state.armed_by_pair),
+                    "opens": ",".join(opens_this_tick),
+                    "closes": ",".join(closes_this_tick),
+                }
+            )
 
     # Force-close leftovers at last mark (not entry) so open MTM is visible.
     if sorted_ticks and open_positions:

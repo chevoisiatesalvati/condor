@@ -220,6 +220,16 @@ async def _load_shared_context(
             settings=hl_prefetch_settings_from_config(loader),
         )
 
+    from routines.macdbb_pullback_hl_replay.signal_tape import build_pullback_signal_tapes
+
+    cache_dir = Path(loader.hl_cache_dir or "data/hl_candles")
+    logging.info("Building pullback signal tape (once, reused for every case)...")
+    signal_tapes = build_pullback_signal_tapes(
+        parsed_sessions,
+        cache_dir=cache_dir,
+        candle_source=loader.candle_source,
+    )
+
     return {
         "base_kwargs": kwargs,
         "loader": loader,
@@ -229,6 +239,7 @@ async def _load_shared_context(
         "hl_candle_cache": hl_candle_cache,
         "hl_barrier_candle_cache": hl_barrier_candle_cache,
         "hl_vol_candle_cache": hl_vol_candle_cache,
+        "signal_tapes": signal_tapes,
         "tick_count": tick_count,
     }
 
@@ -257,6 +268,8 @@ def _run_case(case: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
             hl_candle_cache=shared["hl_candle_cache"],
             hl_barrier_candle_cache=shared["hl_barrier_candle_cache"],
             hl_vol_candle_cache=shared["hl_vol_candle_cache"],
+            signal_tape=(shared.get("signal_tapes") or {}).get(session_num),
+            collect_debug_rows=False,
         )
         if summary.get("status") == "skipped_no_price_data":
             continue

@@ -184,18 +184,26 @@ def decide_from_sim_tick(
     amount_step: float = 0.0,
     frequency_sec: int = 60,
     state: MacdbbPullbackState | None = None,
+    precomputed_signals: Mapping[str, SignalSnapshot] | None = None,
 ) -> PullbackDecision:
     candle_map = candles_1h_by_pair or {}
-    signals = [
-        signal_from_sim_snapshot(
-            pair,
-            snap,
-            strategy_params=strategy_params,
-            candles_1h=candle_map.get(pair),
+    taped = precomputed_signals or {}
+    signals: list[SignalSnapshot] = []
+    for pair, snap in snapshots.items():
+        if not getattr(snap, "price_trusted", True):
+            continue
+        taped_signal = taped.get(pair)
+        if taped_signal is not None:
+            signals.append(taped_signal)
+            continue
+        signals.append(
+            signal_from_sim_snapshot(
+                pair,
+                snap,
+                strategy_params=strategy_params,
+                candles_1h=candle_map.get(pair),
+            )
         )
-        for pair, snap in snapshots.items()
-        if getattr(snap, "price_trusted", True)
-    ]
     tick = PullbackTickInput(
         tick_number=int(tick_number),
         tradeable_count=int(tradeable_count),
