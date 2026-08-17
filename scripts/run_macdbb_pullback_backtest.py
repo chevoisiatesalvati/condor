@@ -20,6 +20,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--preset", default="pullback_decay_2h_60s")
     parser.add_argument("--range-start", default="", help="UTC ISO start")
     parser.add_argument("--range-end", default="", help="UTC ISO end")
+    parser.add_argument("--snapshot-dir", default="", help="Parquet snapshot directory")
+    parser.add_argument("--sessions", default="", help="Live session numbers (journal ticks)")
+    parser.add_argument("--total-amount-quote", type=float, default=0.0, help="Per-entry notional")
     parser.add_argument("--frequency-sec", type=int, default=0, help="0 = preset default")
     parser.add_argument("--impulse-atr-mult", type=float, default=0.0)
     parser.add_argument("--pullback-timeout-hours", type=float, default=0.0)
@@ -58,6 +61,12 @@ async def _main() -> int:
         kwargs["range_start_utc"] = args.range_start
     if args.range_end:
         kwargs["range_end_utc"] = args.range_end
+    if args.snapshot_dir:
+        kwargs["snapshot_dir"] = args.snapshot_dir
+    if args.sessions:
+        kwargs["sessions"] = args.sessions
+    if args.total_amount_quote > 0:
+        kwargs["total_amount_quote"] = args.total_amount_quote
     if args.frequency_sec > 0:
         kwargs["frequency_sec"] = args.frequency_sec
     if args.impulse_atr_mult > 0:

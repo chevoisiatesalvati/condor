@@ -237,7 +237,7 @@ def enrich_ticks_from_live_jsonl(
                 else existing.tradeable_count
             ),
             scanner_regime=scanner_regime or existing.scanner_regime,
-            queue_total=queue_total or existing.queue_total,
+            queue_total=queue_total or macd_pairs or existing.queue_total,
             signals_1h=signals or existing.signals_1h,
             barrier_closes=barriers or existing.barrier_closes,
             entry_class=entry_class or existing.entry_class,

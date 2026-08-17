@@ -38,7 +38,10 @@ _STRATEGY_OVERRIDE_KEYS = (
 
 
 def resolve_pullback_config(config: PullbackReplayConfig) -> PullbackReplayConfig:
-    incoming = config.model_dump(exclude_none=True)
+    # Only caller-set fields overlay the preset. model_dump(exclude_none=True)
+    # would treat PullbackReplayConfig defaults (decay off / 28h) as overrides
+    # and wipe pullback_decay_2h_60s.
+    incoming = config.model_dump(exclude_unset=True)
     merged = resolve_config_dict(config.preset, overrides=incoming)
     for key in (
         "range_start_utc",
@@ -53,8 +56,12 @@ def resolve_pullback_config(config: PullbackReplayConfig) -> PullbackReplayConfi
         "candle_source",
         "price_source",
         "hl_cache_dir",
+        "live_equivalent_queue",
+        "sessions",
     ):
-        value = getattr(config, key, None)
+        if key not in incoming:
+            continue
+        value = incoming[key]
         if value not in (None, ""):
             merged[key] = value
     freq = int(merged.get("frequency_sec") or config.frequency_sec or 60)
@@ -65,7 +72,8 @@ def resolve_pullback_config(config: PullbackReplayConfig) -> PullbackReplayConfi
     for key in _STRATEGY_OVERRIDE_KEYS:
         if key in incoming:
             params[key] = incoming[key]
-            merged[key] = incoming[key]
+        if key in params:
+            merged[key] = params[key]
     params["pullback_timeout_ticks"] = max(
         1, int(round(float(params.get("pullback_timeout_hours") or 12) * 3600 / freq))
     )

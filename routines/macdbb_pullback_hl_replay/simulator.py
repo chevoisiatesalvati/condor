@@ -98,7 +98,7 @@ def simulate_pullback_session(
     barrier_candles = (
         hl_barrier_candle_cache if hl_barrier_candle_cache is not None else hl_candle_cache
     )
-    cache_dir = Path(candle_cache_dir or config.hl_cache_dir or "data/binance_candles")
+    cache_dir = Path(candle_cache_dir or config.hl_cache_dir or "data/hl_candles")
     strategy_params = strategy_params_from_config(config)
     cooldown_ticks = int(
         strategy_params.get("sl_symbol_cooldown_ticks")
@@ -264,7 +264,10 @@ def simulate_pullback_session(
                 memo_key = (pair, int(meta.timestamp.timestamp()))
                 if memo_key not in candle_memo:
                     candle_memo[memo_key] = candles_1h_for_tick(
-                        pair, meta.timestamp, cache_dir=cache_dir
+                        pair,
+                        meta.timestamp,
+                        cache_dir=cache_dir,
+                        candle_source=config.candle_source,
                     )
                 candles_1h_by_pair[pair] = candle_memo[memo_key]
 

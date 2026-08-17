@@ -51,6 +51,38 @@ def attach_impulse_to_signal(
     return signal
 
 
+def _signal_from_1h_closes(
+    pair: str,
+    candles_1h: list[Any],
+    strategy_params: dict[str, Any] | None,
+) -> SignalSnapshot | None:
+    """Same MACD/BB path as live load_pullback_signals (forming bar included)."""
+    import numpy as np
+
+    from condor.strategy_runners.macdbb.market_data import signal_from_closes
+
+    closes = np.array([float(c["close"]) for c in candles_1h], dtype=float)
+    base = signal_from_closes(pair, closes)
+    if base is None:
+        return None
+    signal = SignalSnapshot(
+        pair=base.pair,
+        price=float(base.price),
+        bb_pos_pct=float(base.bb_pos_pct),
+        bb_mid=float(base.bb_mid),
+        bb_upper=float(base.bb_upper),
+        macd=float(base.macd),
+        signal_line=float(base.signal_line),
+        histogram=float(base.histogram),
+        trend=str(base.trend),
+        momentum=str(base.momentum),
+        bullish_cross=bool(base.bullish_cross),
+        bearish_cross=bool(base.bearish_cross),
+    )
+    signal.metrics = compute_thesis_metrics(signal, strategy_params)
+    return attach_impulse_to_signal(signal, candles_1h, strategy_params)
+
+
 def signal_from_sim_snapshot(
     pair: str,
     snapshot: Any,
@@ -58,6 +90,10 @@ def signal_from_sim_snapshot(
     strategy_params: dict[str, Any] | None = None,
     candles_1h: list[Any] | None = None,
 ) -> SignalSnapshot:
+    if candles_1h:
+        computed = _signal_from_1h_closes(pair, candles_1h, strategy_params)
+        if computed is not None:
+            return computed
     parsed = getattr(snapshot, "parsed", None)
     price = float(getattr(snapshot, "price", 0) or 0)
     bb_pos = float(getattr(parsed, "bb_pos_pct", 0) or 0) if parsed else 0.0

@@ -81,8 +81,12 @@ def build_scanner_queue(
 ) -> ScannerQueueResult:
     """Build MACD queue from archived scanner report tables + strategy params."""
     params = strategy_params or {}
-    regime = _infer_regime(parsed)
     live_equivalent = bool(_param(params, "live_equivalent_queue", False))
+    # Live fetch_candidate_pairs always takes markdown order (mature table
+    # first) then [:8], and unions open legs afterwards. Do not infer degen.
+    regime: Literal["mature", "degen"] = (
+        "mature" if live_equivalent else _infer_regime(parsed)
+    )
     default_floor = 0.0 if live_equivalent else (0.08 if regime == "mature" else 0.1)
     natr_floor = float(
         _param(
@@ -110,7 +114,7 @@ def build_scanner_queue(
     queue_primary = tradeable_pairs[:primary_size]
     queue_total = list(queue_primary)
 
-    if len(queue_primary) < min_tradeable:
+    if not live_equivalent and len(queue_primary) < min_tradeable:
         remaining = [row for row in filtered if row.pair not in queue_primary]
         pass2_target = min(pass2_max, max(pass2_min, min_tradeable))
         for row in remaining:
@@ -125,9 +129,16 @@ def build_scanner_queue(
         if pair and pair not in queue_total:
             queue_total.append(pair)
 
-    macd_pairs = queue_total[:review_count]
-    if len(macd_pairs) < len(queue_total) and len(queue_total) <= review_count:
-        macd_pairs = list(queue_total)
+    if live_equivalent:
+        # Live: pairs[:8] then extra open legs (may exceed 8).
+        macd_pairs = list(queue_primary)
+        for pair in open_legs:
+            if pair and pair not in macd_pairs:
+                macd_pairs.append(pair)
+    else:
+        macd_pairs = queue_total[:review_count]
+        if len(macd_pairs) < len(queue_total) and len(queue_total) <= review_count:
+            macd_pairs = list(queue_total)
 
     natr_by_pair = {row.pair: row.natr_mean for row in filtered}
     scanner_analyzed = parsed.total_analyzed

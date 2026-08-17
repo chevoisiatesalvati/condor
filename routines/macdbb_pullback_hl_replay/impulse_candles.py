@@ -1,43 +1,40 @@
-"""Load completed 1h OHLC bars for impulse diagnostics / pullback replay."""
+"""Load 1h OHLC as-of a tick for impulse / MACD (matches live forming bar)."""
 
 from __future__ import annotations
 
 import datetime as dt
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from routines.lib.binance_candle_cache import load_candles_in_range
+from routines.lib.as_of_1h_candles import (
+    LIVE_MACD_MAX_RECORDS,
+    as_of_1h_candles,
+)
 
 
-def completed_1h_candles_before(
+CandleSource = Literal["hyperliquid", "binance_perpetual"]
+
+
+def _load_candles_in_range(
     pair: str,
-    as_of: dt.datetime,
+    interval: str,
+    start_ms: int,
+    end_ms: int,
     *,
-    lookback_hours: int = 48,
-    cache_dir: Path | None = None,
+    cache_dir: Path | None,
+    candle_source: CandleSource,
 ) -> list[dict[str, float]]:
-    """Return completed 1h candles with open_time < as_of (UTC)."""
-    if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=dt.timezone.utc)
+    if candle_source == "binance_perpetual":
+        from routines.lib.binance_candle_cache import load_candles_in_range
     else:
-        as_of = as_of.astimezone(dt.timezone.utc)
-    end_ms = int(as_of.timestamp() * 1000) - 1
-    start = as_of - dt.timedelta(hours=max(24, int(lookback_hours)))
-    start_ms = int(start.timestamp() * 1000)
-    candles = load_candles_in_range(
+        from routines.lib.hl_candle_cache import load_candles_in_range
+    return load_candles_in_range(
         pair,
-        "1h",
+        interval,
         start_ms,
         end_ms,
         cache_dir=cache_dir,
     )
-    # Drop any bar that has not fully closed by as_of.
-    hour_ms = 3_600_000
-    return [
-        c
-        for c in candles
-        if int(c["timestamp_ms"]) + hour_ms <= int(as_of.timestamp() * 1000)
-    ]
 
 
 def candles_1h_for_tick(
@@ -45,13 +42,57 @@ def candles_1h_for_tick(
     tick_time: dt.datetime,
     *,
     cache_dir: Path | None = None,
-    lookback_hours: int = 48,
+    candle_source: CandleSource = "hyperliquid",
+    lookback_hours: int = LIVE_MACD_MAX_RECORDS,
 ) -> list[dict[str, float]]:
-    return completed_1h_candles_before(
+    """Completed 1h bars plus 1m-synthesized forming bar, last lookback_hours."""
+    if tick_time.tzinfo is None:
+        tick_time = tick_time.replace(tzinfo=dt.timezone.utc)
+    else:
+        tick_time = tick_time.astimezone(dt.timezone.utc)
+    as_of_ms = int(tick_time.timestamp() * 1000)
+    lookback = max(24, int(lookback_hours))
+    start_1h_ms = as_of_ms - lookback * 3_600_000
+    candles_1h = _load_candles_in_range(
         pair,
-        tick_time,
-        lookback_hours=lookback_hours,
+        "1h",
+        start_1h_ms,
+        as_of_ms,
         cache_dir=cache_dir,
+        candle_source=candle_source,
+    )
+    hour_open_ms = (as_of_ms // 3_600_000) * 3_600_000
+    candles_1m = _load_candles_in_range(
+        pair,
+        "1m",
+        hour_open_ms,
+        as_of_ms,
+        cache_dir=cache_dir,
+        candle_source=candle_source,
+    )
+    return as_of_1h_candles(
+        candles_1h,
+        candles_1m,
+        as_of_ms,
+        max_records=lookback,
+    )
+
+
+def completed_1h_candles_before(
+    pair: str,
+    as_of: dt.datetime,
+    *,
+    lookback_hours: int = LIVE_MACD_MAX_RECORDS,
+    cache_dir: Path | None = None,
+    candle_source: CandleSource = "hyperliquid",
+) -> list[dict[str, float]]:
+    """Alias used by trade-impulse annotation (same as-of series as live)."""
+    return candles_1h_for_tick(
+        pair,
+        as_of,
+        cache_dir=cache_dir,
+        candle_source=candle_source,
+        lookback_hours=lookback_hours,
     )
 
 
@@ -61,6 +102,7 @@ def annotate_trade_impulse(
     cache_dir: Path | None = None,
     lookback_bars: int = 2,
     impulse_atr_mult: float = 1.25,
+    candle_source: CandleSource = "hyperliquid",
 ) -> dict[str, Any]:
     from condor.strategy_runners.macdbb_pullback.entry_quality import compute_impulse_metrics
 
@@ -85,7 +127,9 @@ def annotate_trade_impulse(
     }
     if entry_time is None or not pair:
         return row
-    candles = completed_1h_candles_before(pair, entry_time, cache_dir=cache_dir)
+    candles = candles_1h_for_tick(
+        pair, entry_time, cache_dir=cache_dir, candle_source=candle_source
+    )
     metrics = compute_impulse_metrics(
         candles,
         "long" if side == "long" else "short",

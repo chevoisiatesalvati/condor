@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from routines.lib.as_of_1h_candles import LIVE_MACD_MAX_RECORDS, as_of_1h_candles
 from routines.macdbb_scanner_aggressive_hl_replay.models import ParsedReport
 from routines.macdbb_scanner_aggressive_hl_replay.reports import ParsedScannerReport, ScannerPairRow
 from routines.macdbb_scanner_aggressive_hl_replay.scanner_queue import build_scanner_queue
@@ -30,8 +31,9 @@ class TickMarketSettings:
     macd_review_count: int = 5
     macd_pairs_superset: int = 12
     max_concurrent: int = 30
-    # When True, match live Strategies queue: no NATR floor, review >= primary (8).
+    # When True, match live Strategies queue: mature-first 8, no NATR floor.
     live_equivalent_queue: bool = False
+    macd_max_records: int = 200
 
 
 class CandleWindowLoader(Protocol):
@@ -272,10 +274,18 @@ async def compute_tick_market_state(
     strategy_params: dict[str, Any] | None = None,
     store_macd_for_superset: bool = False,
     volume_loader: CandleWindowLoader | None = None,
+    scanner_interval: str | None = None,
+    allow_5m_fallback: bool = True,
 ) -> TickMarketState:
-    """Compute config-independent scanner + MACD market snapshots for one tick."""
+    """Compute config-independent scanner + MACD market snapshots for one tick.
+
+    Live scanner uses 1m. HL 1m REST retention is short, so ticks older than
+    ``HL_1M_MAX_AGE_DAYS`` use 5m. If a recent tick still has too little 1m
+    history, retry on 5m instead of dropping the snapshot.
+    """
     settings = settings or TickMarketSettings()
-    scanner_interval = scanner_interval_for_tick(tick_time)
+    if scanner_interval is None:
+        scanner_interval = scanner_interval_for_tick(tick_time)
     candle_minutes = CANDLE_MINUTES[scanner_interval]
     fetch_hours = max(settings.lookback_hours + 24, 30)
     min_bars = bars_for_hours(settings.lookback_hours, scanner_interval)
@@ -345,6 +355,18 @@ async def compute_tick_market_state(
             analyses.append(result)
 
     if not analyses:
+        if allow_5m_fallback and scanner_interval == "1m":
+            return await compute_tick_market_state(
+                tick_time,
+                universe=universe,
+                loader=loader,
+                settings=settings,
+                strategy_params=strategy_params,
+                store_macd_for_superset=store_macd_for_superset,
+                volume_loader=volume_loader,
+                scanner_interval="5m",
+                allow_5m_fallback=False,
+            )
         return TickMarketState(
             tick_time=tick_time,
             scanner_interval=scanner_interval,
@@ -395,6 +417,29 @@ async def compute_tick_market_state(
                 )
             except Exception:
                 return None
+            if (
+                settings.live_equivalent_queue
+                and interval == "1h"
+                and candles
+            ):
+                try:
+                    candles_1m = await loader.get_interval_window(
+                        pair,
+                        "1m",
+                        tick_time,
+                        2,
+                    )
+                except Exception:
+                    candles_1m = []
+                as_of_ms = int(tick_time.astimezone(dt.timezone.utc).timestamp() * 1000)
+                candles = as_of_1h_candles(
+                    candles,
+                    candles_1m,
+                    as_of_ms,
+                    max_records=int(settings.macd_max_records or LIVE_MACD_MAX_RECORDS),
+                )
+        if not candles:
+            return None
         closes = np.array([float(c["close"]) for c in candles], dtype=float)
         metrics = compute_macdbb_from_closes(closes)
         if metrics is None:

@@ -83,3 +83,48 @@ async def test_compute_tick_market_state_ranks_by_volume_loader():
     assert state.parsed_scanner is not None
     pairs = [row.pair for row in state.parsed_scanner.mature + state.parsed_scanner.degen]
     assert pairs[0] == "BBB-USD"
+
+
+class _IntervalLoader:
+    def __init__(
+        self,
+        candles_1m: dict[str, list[dict[str, float]]],
+        candles_5m: dict[str, list[dict[str, float]]],
+    ) -> None:
+        self._1m = candles_1m
+        self._5m = candles_5m
+
+    async def get_interval_window(
+        self,
+        trading_pair: str,
+        interval: str,
+        end: dt.datetime,
+        hours: int,
+    ) -> list[dict[str, float]]:
+        source = self._1m if interval == "1m" else self._5m
+        return list(source.get(trading_pair) or [])
+
+
+@pytest.mark.asyncio
+async def test_compute_tick_market_state_falls_back_to_5m_when_1m_empty():
+    tick = dt.datetime(2026, 8, 15, 12, 0, tzinfo=dt.timezone.utc)
+    bars_5m = [_candle(100.0, 50.0)] * 400
+    loader = _IntervalLoader(
+        candles_1m={"BTC-USD": []},
+        candles_5m={"BTC-USD": bars_5m},
+    )
+    state = await compute_tick_market_state(
+        tick,
+        universe=[{"trading_pair": "BTC-USD", "volume_24h_usd": 1.0}],
+        loader=loader,
+        settings=TickMarketSettings(
+            min_volume_usd=0,
+            top_n=1,
+            candidate_pool=1,
+            mature_count=1,
+            degen_count=1,
+        ),
+    )
+    assert state.parsed_scanner is not None
+    assert state.scanner_interval == "5m"
+    assert state.macd_pairs or state.parsed_scanner.mature

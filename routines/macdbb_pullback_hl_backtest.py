@@ -78,8 +78,50 @@ def _loader_config(config: PullbackReplayConfig) -> DynamicStrategyReplayConfig:
         use_shared_decide=True,
         live_equivalent_queue=bool(getattr(config, "live_equivalent_queue", False)),
         min_tradeable_count=int(config.min_tradeable_count or 1),
+        strategy_slug=config.strategy_slug,
+        session_nums=config.sessions or "all",
     )
     return loader
+
+
+def journal_tick_maps(config: PullbackReplayConfig) -> dict[int, dict[int, Any]]:
+    """Journal tick clocks for ``sessions``, so pause gaps match live."""
+    sessions_raw = (config.sessions or "").strip()
+    if not sessions_raw:
+        return {}
+    from routines.macdbb_scanner_aggressive_hl_replay.models import parse_session_selector
+    from routines.macdbb_scanner_aggressive_hl_replay.paths import strategy_sessions_dir
+    from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import (
+        parse_iso_utc,
+        parse_tick_schedule_file,
+    )
+
+    range_start = (
+        parse_iso_utc(config.range_start_utc) if config.range_start_utc else None
+    )
+    range_end = parse_iso_utc(config.range_end_utc) if config.range_end_utc else None
+    sessions_dir = strategy_sessions_dir(config.strategy_slug)
+    tick_maps: dict[int, dict[int, Any]] = {}
+    for session_num in parse_session_selector(sessions_raw, sessions_dir):
+        journal_path = sessions_dir / f"session_{session_num}" / "journal.md"
+        if not journal_path.is_file():
+            continue
+        schedule = parse_tick_schedule_file(journal_path)
+        if range_start is not None:
+            schedule = {
+                tick: meta
+                for tick, meta in schedule.items()
+                if meta.timestamp >= range_start
+            }
+        if range_end is not None:
+            schedule = {
+                tick: meta
+                for tick, meta in schedule.items()
+                if meta.timestamp <= range_end
+            }
+        if schedule:
+            tick_maps[session_num] = schedule
+    return tick_maps
 
 
 async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResult:
@@ -89,7 +131,51 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResu
     configure_replay_data_sources(loader)
 
     write_progress(phase="hydrate", message="Loading timeline ticks")
-    parsed_sessions, _session_configs, selected = load_replay_sessions(loader)
+    journal_maps = journal_tick_maps(config)
+    if journal_maps:
+        from routines.macdbb_scanner_aggressive_hl_replay.replay_range import iso_utc
+        from routines.macdbb_scanner_aggressive_hl_replay.session_builder import (
+            hydrate_timeline_ticks,
+        )
+
+        from routines.macdbb_scanner_aggressive_hl_replay.live_tick_jsonl import (
+            enrich_ticks_from_live_jsonl,
+        )
+
+        parsed_sessions = {}
+        for session_num, schedule in journal_maps.items():
+            hydrated = hydrate_timeline_ticks(loader, schedule=schedule)
+            enriched = enrich_ticks_from_live_jsonl(
+                hydrated,
+                session_num,
+                strategy_slug=config.strategy_slug,
+            )
+            parsed_sessions[session_num] = {
+                tick: meta
+                for tick, meta in enriched.items()
+                if tick in schedule
+            }
+        selected = sorted(parsed_sessions.keys())
+        all_timestamps = [
+            meta.timestamp
+            for ticks in parsed_sessions.values()
+            for meta in ticks.values()
+        ]
+        if all_timestamps:
+            config = config.model_copy(
+                update={
+                    "range_start_utc": iso_utc(min(all_timestamps)),
+                    "range_end_utc": iso_utc(max(all_timestamps)),
+                }
+            )
+            loader = loader.model_copy(
+                update={
+                    "range_start_utc": config.range_start_utc,
+                    "range_end_utc": config.range_end_utc,
+                }
+            )
+    else:
+        parsed_sessions, _session_configs, selected = load_replay_sessions(loader)
     if not selected or not parsed_sessions:
         msg = (
             "Timeline backtest produced no ticks. "

@@ -68,6 +68,7 @@ class SnapshotBuildSettings:
     sessions: str = ""
     live_equivalent_queue: bool = False
     macd_review_count: int = 5
+    exclude_hip3: bool = True
 
 
 @dataclass
@@ -102,6 +103,9 @@ def settings_from_replay_config(config: DynamicStrategyReplayConfig) -> Snapshot
         max_concurrent=config.hl_max_concurrent,
         live_equivalent_queue=live_eq,
         macd_review_count=8 if live_eq else 5,
+        universe_top_n=0 if live_eq else 100,
+        candidate_pool=80 if live_eq else 45,
+        exclude_hip3=False if live_eq else True,
     )
 
 
@@ -315,7 +319,7 @@ async def build_snapshots_for_range(
         min_volume_usd=backfill_settings.min_volume_usd,
         mature_count=backfill_settings.mature_count,
         degen_count=backfill_settings.degen_count,
-        candidate_pool=backfill_settings.candidate_pool,
+        candidate_pool=settings.candidate_pool,
         macd_review_count=review_count,
         macd_pairs_superset=max(review_count, backfill_settings.macd_review_count),
         max_concurrent=settings.max_concurrent,
@@ -398,7 +402,7 @@ async def build_snapshots_for_range(
             else:
                 universe = await fetch_hl_universe(
                     session,
-                    exclude_hip3=backfill_settings.exclude_hip3,
+                    exclude_hip3=settings.exclude_hip3,
                 )
                 if settings.universe_top_n > 0:
                     universe = universe[: settings.universe_top_n]

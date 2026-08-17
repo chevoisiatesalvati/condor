@@ -92,31 +92,112 @@ def test_pullback_replay_reuses_strategy_param_labels():
     assert fields["min_notional_quote"]["group"] == "Sizing"
 
 
-def test_pullback_winner_preset_uses_binance_data():
+def test_pullback_preset_is_strategy_only_hl_run_defaults():
     from condor.strategy_runners.macdbb_pullback.presets import (
-        DEFAULT_BINANCE_60S_SNAPSHOT_DIR,
-        DEFAULT_BINANCE_1800S_SNAPSHOT_DIR,
-        DEFAULT_BINANCE_CANDLE_CACHE_DIR,
+        DEFAULT_HL_60S_SNAPSHOT_DIR,
+        DEFAULT_HL_CANDLE_CACHE_DIR,
         DEFAULT_TIMELINE_PRESET,
         DEFAULT_WINNER_PRESET,
+        PRESET_CAPITAL_KEYS,
         PRESET_OVERRIDES,
+        strategy_params_from_preset,
     )
     from routines.macdbb_pullback_hl_replay.presets import resolve_pullback_config
 
     winner = PRESET_OVERRIDES[DEFAULT_WINNER_PRESET]
-    assert winner["candle_source"] == "binance_perpetual"
-    assert winner["snapshot_dir"] == DEFAULT_BINANCE_60S_SNAPSHOT_DIR
-    assert winner["hl_cache_dir"] == DEFAULT_BINANCE_CANDLE_CACHE_DIR
-    assert winner["live_equivalent_queue"] is False
+    assert "candle_source" not in winner
+    assert "snapshot_dir" not in winner
+    assert "hl_cache_dir" not in winner
+    assert "live_equivalent_queue" not in winner
+    assert "total_amount_quote" not in winner
+    params = strategy_params_from_preset(DEFAULT_WINNER_PRESET)
+    assert not (PRESET_CAPITAL_KEYS & set(params))
 
     timeline = PRESET_OVERRIDES[DEFAULT_TIMELINE_PRESET]
-    assert timeline["candle_source"] == "binance_perpetual"
-    assert timeline["snapshot_dir"] == DEFAULT_BINANCE_1800S_SNAPSHOT_DIR
+    assert "candle_source" not in timeline
+    assert "snapshot_dir" not in timeline
 
     resolved = resolve_pullback_config(PullbackReplayConfig())
-    assert resolved.candle_source == "binance_perpetual"
-    assert resolved.snapshot_dir == DEFAULT_BINANCE_60S_SNAPSHOT_DIR
-    assert resolved.hl_cache_dir == DEFAULT_BINANCE_CANDLE_CACHE_DIR
+    assert resolved.candle_source == "hyperliquid"
+    assert resolved.snapshot_dir == DEFAULT_HL_60S_SNAPSHOT_DIR
+    assert resolved.hl_cache_dir == DEFAULT_HL_CANDLE_CACHE_DIR
+    assert resolved.live_equivalent_queue is True
     assert resolved.total_amount_quote == 100.0
     assert resolved.min_notional_quote == 10.0
     assert resolved.max_notional_quote == 1000.0
+    assert "total_amount_quote" not in resolved.strategy_params
+
+
+def test_resolve_pullback_config_keeps_winner_thesis_decay():
+    from routines.macdbb_pullback_hl_replay.presets import resolve_pullback_config
+
+    resolved = resolve_pullback_config(
+        PullbackReplayConfig(preset="pullback_decay_2h_60s")
+    )
+    assert resolved.enable_thesis_decay_exit is True
+    assert resolved.thesis_decay_exit_hours == 2.0
+    assert resolved.thesis_decay_exit_ticks == 120
+    assert resolved.strategy_params["enable_thesis_decay_exit"] is True
+    assert resolved.strategy_params["thesis_decay_exit_hours"] == 2.0
+    assert resolved.strategy_params["thesis_decay_exit_ticks"] == 120
+
+    overridden = resolve_pullback_config(
+        PullbackReplayConfig(
+            preset="pullback_decay_2h_60s",
+            enable_thesis_decay_exit=False,
+            live_equivalent_queue=True,
+            total_amount_quote=50.0,
+        )
+    )
+    assert overridden.enable_thesis_decay_exit is False
+    assert overridden.live_equivalent_queue is True
+    assert overridden.total_amount_quote == 50.0
+
+
+def test_resolve_keeps_sessions_and_snapshot_dir():
+    from routines.macdbb_pullback_hl_replay.presets import resolve_pullback_config
+
+    resolved = resolve_pullback_config(
+        PullbackReplayConfig(
+            preset="pullback_decay_2h_60s",
+            sessions="2",
+            snapshot_dir="data/replay_snapshots_hl_60s_session2",
+            total_amount_quote=50.0,
+        )
+    )
+    assert resolved.sessions == "2"
+    assert resolved.snapshot_dir == "data/replay_snapshots_hl_60s_session2"
+    assert resolved.total_amount_quote == 50.0
+
+
+def test_journal_tick_maps_reads_session_journal(tmp_path, monkeypatch):
+    from routines.macdbb_pullback_hl_backtest import journal_tick_maps
+
+    session_dir = tmp_path / "session_2"
+    session_dir.mkdir()
+    (session_dir / "journal.md").write_text(
+        "## Ticks\n"
+        "- tick#1 | 2026-08-08 22:00 | actions=0 | no_entry_candidate\n"
+        "- tick#548 | 2026-08-09 08:21 | actions=0 | creates=1 stops=0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "routines.macdbb_scanner_aggressive_hl_replay.paths.strategy_sessions_dir",
+        lambda _slug, agent_slug=None: tmp_path,
+    )
+    maps = journal_tick_maps(
+        PullbackReplayConfig(sessions="2", strategy_slug="macdbb_pullback_hl")
+    )
+    assert set(maps) == {2}
+    assert maps[2][1].timestamp.isoformat() == "2026-08-08T22:00:00+00:00"
+    assert maps[2][548].timestamp.isoformat() == "2026-08-09T08:21:00+00:00"
+    assert journal_tick_maps(PullbackReplayConfig()) == {}
+
+    filtered = journal_tick_maps(
+        PullbackReplayConfig(
+            sessions="2",
+            strategy_slug="macdbb_pullback_hl",
+            range_start_utc="2026-08-09T08:00:00Z",
+        )
+    )
+    assert set(filtered[2]) == {548}

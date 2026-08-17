@@ -35,6 +35,42 @@ def test_infer_regime_degen_when_degen_natr_cv_higher():
     assert _infer_regime(parsed) == "degen"
 
 
+def test_live_equivalent_queue_is_mature_first_plus_open_legs():
+    """Live fetch_candidate_pairs takes mature[:8], then unions open legs."""
+    parsed = _sample_report()
+    result = build_scanner_queue(
+        parsed,
+        {
+            "live_equivalent_queue": True,
+            "macd_queue_primary_size": 2,
+            "macd_primary_review_count": 2,
+        },
+        open_pairs=["SOL-USD", "DOGE-USD"],
+    )
+    assert result.regime == "mature"
+    assert result.natr_floor_used == 0.0
+    assert result.queue_primary == ["BTC-USD", "ETH-USD"]
+    assert result.macd_pairs == ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD"]
+
+
+def test_live_equivalent_queue_ignores_degen_regime():
+    parsed = ParsedScannerReport(
+        total_analyzed=4,
+        mature=[
+            ScannerPairRow("BTC-USD", 2e9, 1.0, 0.30, 0.10, 0.2, 1.0),
+            ScannerPairRow("ETH-USD", 9e8, 0.5, 0.40, 0.10, 0.2, 1.5),
+        ],
+        degen=[
+            ScannerPairRow("PUMP-USD", 5e7, 10.0, 1.20, 0.80, 0.8, 8.0),
+            ScannerPairRow("FART-USD", 4e7, 12.0, 1.50, 0.90, 0.9, 9.0),
+        ],
+    )
+    result = build_scanner_queue(parsed, {"live_equivalent_queue": True})
+    assert result.regime == "mature"
+    assert result.macd_pairs[0] == "BTC-USD"
+    assert "PUMP-USD" not in result.macd_pairs[:2]
+
+
 def test_build_scanner_queue_primary_and_review():
     params = {
         "natr_floor_mature_pct": 0.08,

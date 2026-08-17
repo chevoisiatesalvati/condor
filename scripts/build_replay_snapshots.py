@@ -156,6 +156,7 @@ def _expand_session_selector(raw: str) -> list[int]:
 
 
 async def _run_build(args: argparse.Namespace) -> dict[str, int]:
+    live_eq = bool(args.live_equivalent_queue)
     settings = SnapshotBuildSettings(
         snapshot_dir=args.snapshot_dir,
         candle_source=args.candle_source,
@@ -173,8 +174,9 @@ async def _run_build(args: argparse.Namespace) -> dict[str, int]:
         force=args.force,
         limit=args.limit,
         sessions=args.sessions,
-        live_equivalent_queue=bool(args.live_equivalent_queue),
+        live_equivalent_queue=live_eq,
         macd_review_count=int(args.macd_review_count),
+        exclude_hip3=False if live_eq else True,
     )
     if args.sessions:
         session_nums = _expand_session_selector(args.sessions)

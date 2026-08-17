@@ -27,15 +27,15 @@ class PullbackReplayConfig(BaseModel):
         description="Signal and market data source",
     )
     candle_source: Literal["hyperliquid", "binance_perpetual"] = Field(
-        default="binance_perpetual",
+        default="hyperliquid",
         description="Exchange for OHLCV candles",
     )
     price_source: Literal["auto", "reports", "hl_candles", "binance_candles"] = Field(
-        default="auto",
+        default="hl_candles",
         description="Historical price resolution mode",
     )
     snapshot_dir: str = Field(
-        default="data/replay_snapshots_binance_60s",
+        default="data/replay_snapshots_hl_60s",
         description="Parquet snapshot directory",
     )
     frequency_sec: int = Field(
@@ -76,7 +76,7 @@ class PullbackReplayConfig(BaseModel):
         description="Candle interval for stop-loss / take-profit",
     )
     hl_cache_dir: str | None = Field(
-        default="data/binance_candles",
+        default="data/hl_candles",
         description="Local candle cache directory",
     )
     hl_use_cache: bool = Field(
@@ -107,8 +107,8 @@ class PullbackReplayConfig(BaseModel):
         description="Use shared decide() for entries",
     )
     live_equivalent_queue: bool = Field(
-        default=False,
-        description="Match live Strategies queue",
+        default=True,
+        description="Match live Strategies queue (mature-first 8 + open legs)",
     )
     compare_journal_flags: bool = Field(
         default=False,
