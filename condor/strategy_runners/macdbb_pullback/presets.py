@@ -19,7 +19,15 @@ _PRESETS_YAML = _REPO_ROOT / "strategies" / AGENT_SLUG / "presets.yaml"
 
 
 def _resolve_presets_yaml() -> Path | None:
-    return _PRESETS_YAML if _PRESETS_YAML.is_file() else None
+    from condor.agents.strategy_paths import resolve_presets_yaml
+
+    return resolve_presets_yaml(AGENT_SLUG)
+
+
+def invalidate_preset_cache() -> None:
+    global _bundle_cache, _bundle_mtime
+    _bundle_cache = None
+    _bundle_mtime = None
 
 DEFAULT_TIMELINE_PRESET = "pullback_timeline_v1"
 DEFAULT_TIMELINE_60S_PRESET = "pullback_timeline_v1_60s"
@@ -147,8 +155,35 @@ PRESET_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
+def get_dynamic_preset_overrides() -> dict[str, dict[str, Any]]:
+    raw = _private_preset_bundle().get("dynamic_preset_overrides") or {}
+    return {
+        str(name): dict(payload)
+        for name, payload in raw.items()
+        if isinstance(payload, dict)
+    }
+
+
+def _preset_override_dict(preset: str) -> dict[str, Any]:
+    if preset in PRESET_OVERRIDES:
+        return dict(PRESET_OVERRIDES[preset])
+    yaml_over = get_dynamic_preset_overrides().get(preset)
+    base = dict(PRESET_OVERRIDES[DEFAULT_WINNER_PRESET])
+    if not yaml_over:
+        return base
+    nested = dict(base.get("strategy_params") or {})
+    nested_update = dict(yaml_over)
+    extra_params = nested_update.pop("strategy_params", None)
+    nested.update(nested_update)
+    if isinstance(extra_params, dict):
+        nested.update(extra_params)
+    base.update(yaml_over)
+    base["strategy_params"] = nested
+    return base
+
+
 def known_preset_names() -> set[str]:
-    return set(PRESET_OVERRIDES) | {"custom"}
+    return set(PRESET_OVERRIDES) | set(get_dynamic_preset_overrides()) | {"custom"}
 
 
 def strategy_params_from_preset(
@@ -156,7 +191,7 @@ def strategy_params_from_preset(
     *,
     frequency_sec: int | None = None,
 ) -> dict[str, Any]:
-    overrides = PRESET_OVERRIDES.get(preset) or {}
+    overrides = _preset_override_dict(preset)
     params = strip_preset_capital_keys(
         dict(overrides.get("strategy_params") or default_strategy_params())
     )
@@ -179,9 +214,7 @@ def strategy_params_from_preset(
 
 
 def resolve_config_dict(preset: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    base = strip_preset_capital_keys(
-        dict(PRESET_OVERRIDES.get(preset) or PRESET_OVERRIDES[DEFAULT_WINNER_PRESET])
-    )
+    base = strip_preset_capital_keys(_preset_override_dict(preset))
     if overrides:
         # Caller may still supply budget/sizing for a single run; keep those.
         base.update({k: v for k, v in overrides.items() if v is not None})
