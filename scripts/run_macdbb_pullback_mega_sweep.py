@@ -16,9 +16,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+load_dotenv(_ROOT / ".env")
 
 CHECKPOINT_EVERY = 10
 
@@ -27,7 +31,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pullback mega-sweep (random 2k)")
     parser.add_argument("--preset", default="pullback_decay_2h_60s")
     parser.add_argument("--range-start", default="2026-07-18T00:00:00Z")
-    parser.add_argument("--range-end", default="2026-08-17T23:59:59Z")
+    parser.add_argument("--range-end", default="2026-08-17T10:20:00Z")
     parser.add_argument(
         "--snapshot-dir",
         default="data/replay_snapshots_binance_60s",
@@ -61,6 +65,11 @@ def _parse_args() -> argparse.Namespace:
         "--automation-state",
         default="",
         help="Leader tracker JSON path (default: <out-dir>/automation.json)",
+    )
+    parser.add_argument(
+        "--telegram-chat-id",
+        default="",
+        help="Telegram chat id (default: ADMIN_USER_ID or SWEEP_TELEGRAM_CHAT_ID from .env)",
     )
     return parser.parse_args()
 
@@ -184,7 +193,7 @@ async def _main() -> int:
         LeaderTracker,
         consider_and_promote,
         default_telegram_chat_id,
-        send_promote_telegram,
+        send_promote_telegram_sync,
     )
 
     args = _parse_args()
@@ -203,7 +212,18 @@ async def _main() -> int:
         out_dir / "automation.json"
     )
     tracker = LeaderTracker(state_path)
-    chat_id = None if args.no_promote else default_telegram_chat_id()
+    chat_id = None
+    if not args.no_promote:
+        chat_id = str(args.telegram_chat_id).strip() or default_telegram_chat_id()
+    if args.no_promote:
+        logging.info("Auto-promote disabled")
+    else:
+        logging.info("Auto-promote enabled | telegram=%s", "yes" if chat_id else "no")
+        if not chat_id:
+            logging.warning(
+                "ADMIN_USER_ID / SWEEP_TELEGRAM_CHAT_ID not set; "
+                "lead presets will still be written but Telegram will be skipped"
+            )
 
     cases = pullback_mega_cases(min_configs=args.min_configs, seed=args.seed)
     logging.info("Mega-sweep grid: %d cases (seed=%d)", len(cases), args.seed)
@@ -229,9 +249,6 @@ async def _main() -> int:
 
     logging.info("Resume: %d done, %d pending", len(results), len(pending))
 
-    loop = asyncio.get_running_loop()
-    telegram_tasks: list[asyncio.Task[None]] = []
-
     def _on_result(done_in_batch: int, result: dict[str, Any]) -> None:
         result_path = out_dir / f"{result['name']}.json"
         result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -251,10 +268,19 @@ async def _main() -> int:
                 _result_to_sweep(result),
                 presets_path=presets_path,
             )
-            if job is not None and chat_id:
-                telegram_tasks.append(
-                    loop.create_task(send_promote_telegram(chat_id, job))
-                )
+            if job is not None:
+                if chat_id:
+                    try:
+                        send_promote_telegram_sync(chat_id, job)
+                    except Exception:
+                        logging.exception(
+                            "Telegram promote failed for %s", job.preset_name
+                        )
+                else:
+                    logging.warning(
+                        "Promoted %s but Telegram chat id is unset",
+                        job.preset_name,
+                    )
         if (
             done_in_batch % max(1, args.checkpoint_every) == 0
             or len(results) == len(cases)
@@ -273,8 +299,6 @@ async def _main() -> int:
             workers=args.workers,
             on_result=_on_result,
         )
-        if telegram_tasks:
-            await asyncio.gather(*telegram_tasks, return_exceptions=True)
 
     _write_comparison(
         out_dir,

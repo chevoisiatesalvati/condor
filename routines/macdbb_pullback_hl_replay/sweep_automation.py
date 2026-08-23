@@ -9,6 +9,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+import httpx
 import yaml
 
 from condor.strategy_runners.macdbb.presets import PRESET_CAPITAL_KEYS
@@ -274,24 +275,51 @@ def promote_leader(
     return overrides
 
 
+def promote_telegram_text(job: PromoteJob) -> str:
+    result = job.result
+    stats = result.stats or {}
+    return "\n".join(
+        [
+            "New pullback sweep leader",
+            f"Config: {result.name}",
+            f"Net PnL: ${result.pnl:+.2f}",
+            f"Trades: {result.trades}",
+            f"Immediate: {stats.get('immediate', 0)}  Pullback: {stats.get('pullback', 0)}",
+            f"Preset: {job.preset_name}",
+        ]
+    )
+
+
 async def send_promote_telegram(chat_id: str, job: PromoteJob) -> None:
     from condor.routine_store import _http_bot
 
-    result = job.result
-    stats = result.stats or {}
-    lines = [
-        "New pullback sweep leader",
-        f"Config: {result.name}",
-        f"Net PnL: ${result.pnl:+.2f}",
-        f"Trades: {result.trades}",
-        f"Immediate: {stats.get('immediate', 0)}  Pullback: {stats.get('pullback', 0)}",
-        f"Preset: {job.preset_name}",
-    ]
-    await _http_bot.send_message(chat_id=chat_id, text="\n".join(lines))
+    await _http_bot.send_message(chat_id=chat_id, text=promote_telegram_text(job))
+
+
+def send_promote_telegram_sync(chat_id: str, job: PromoteJob) -> None:
+    """Send immediately from a sync callback (event loop may be blocked by workers)."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or ""
+    if not token:
+        logger.warning("Telegram promote skipped: TELEGRAM_TOKEN not set")
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    with httpx.Client(timeout=30) as client:
+        response = client.post(
+            url,
+            json={"chat_id": chat_id, "text": promote_telegram_text(job)},
+        )
+    payload = response.json()
+    if not payload.get("ok"):
+        logger.warning("Telegram sendMessage failed: %s", response.text)
 
 
 def default_telegram_chat_id() -> str | None:
     raw = os.environ.get("ADMIN_USER_ID") or os.environ.get("SWEEP_TELEGRAM_CHAT_ID")
+    if not (raw and str(raw).strip()):
+        from dotenv import load_dotenv
+
+        load_dotenv()
+        raw = os.environ.get("ADMIN_USER_ID") or os.environ.get("SWEEP_TELEGRAM_CHAT_ID")
     return str(raw).strip() if raw else None
 
 
@@ -319,7 +347,9 @@ __all__ = [
     "consider_and_promote",
     "default_telegram_chat_id",
     "promote_leader",
+    "promote_telegram_text",
     "register_sweep_lead_preset",
     "send_promote_telegram",
+    "send_promote_telegram_sync",
     "strategy_overrides_from_result",
 ]

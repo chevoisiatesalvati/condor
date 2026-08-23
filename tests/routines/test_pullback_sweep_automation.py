@@ -15,9 +15,13 @@ from condor.strategy_runners.macdbb_pullback.presets import (
 from routines.macdbb_pullback_hl_replay.sweep_automation import (
     PRESET_NAME_PREFIX,
     LeaderTracker,
+    PromoteJob,
     PullbackSweepResult,
     consider_and_promote,
+    default_telegram_chat_id,
+    promote_telegram_text,
     register_sweep_lead_preset,
+    send_promote_telegram_sync,
     strategy_overrides_from_result,
 )
 
@@ -209,3 +213,55 @@ def test_yaml_lead_overlays_winner_strategy_params(tmp_path: Path):
     assert params["enable_thesis_decay_exit"] is True
     assert params["enable_flip_exit"] is False
     assert f"{PRESET_NAME_PREFIX}001" in known_preset_names()
+
+
+def test_default_telegram_chat_id_reads_admin_user(monkeypatch):
+    monkeypatch.delenv("SWEEP_TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setenv("ADMIN_USER_ID", "1089320799")
+    assert default_telegram_chat_id() == "1089320799"
+
+
+def test_send_promote_telegram_sync_posts_message(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_TOKEN", "123:abc")
+    job = PromoteJob(
+        result=_result("imp1_pb1.25_sl3.8_tp9_cl80_cs30", 37.54, trades=96),
+        preset_name=f"{PRESET_NAME_PREFIX}005",
+        output_tag="lead_005",
+    )
+    text = promote_telegram_text(job)
+    assert "imp1_pb1.25_sl3.8_tp9_cl80_cs30" in text
+    assert "$+37.54" in text
+    assert f"{PRESET_NAME_PREFIX}005" in text
+
+    posted: dict[str, object] = {}
+
+    class _Response:
+        text = '{"ok": true}'
+
+        def json(self):
+            return {"ok": True}
+
+    class _Client:
+        def __init__(self, timeout=None):
+            posted["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, json=None):
+            posted["url"] = url
+            posted["json"] = json
+            return _Response()
+
+    monkeypatch.setattr(
+        "routines.macdbb_pullback_hl_replay.sweep_automation.httpx.Client",
+        _Client,
+    )
+    send_promote_telegram_sync("1089320799", job)
+    assert posted["url"] == "https://api.telegram.org/bot123:abc/sendMessage"
+    assert posted["json"]["chat_id"] == "1089320799"
+    assert posted["json"]["text"] == text
