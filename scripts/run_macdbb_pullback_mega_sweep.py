@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""2k-config random sweep for macdbb_pullback_hl on a shared 60s tape.
+"""Tape-once pullback sweep: entry-gate 2k or decay/dynamics 3k.
 
 Hydrates ticks/candles/signal tape once. Checkpoints every N cases. Promotes
-strict PnL improvements after a positive anchor into pullback_sweep_lead_NNN
-without changing the live winner default.
+capital-normalized PnL improvements after a positive anchor into
+pullback_sweep_lead_NNN without changing the live winner default.
 """
 
 from __future__ import annotations
@@ -28,7 +28,18 @@ CHECKPOINT_EVERY = 10
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Pullback mega-sweep (random 2k)")
+    parser = argparse.ArgumentParser(description="Pullback mega-sweep (random 2k / dynamics 3k)")
+    parser.add_argument(
+        "--grid",
+        choices=("entry", "dynamics"),
+        default="entry",
+        help="entry = 2k entry/SL/TP grid; dynamics = decay/flip/ATR-vol grid",
+    )
+    parser.add_argument(
+        "--gate-dry-run",
+        action="store_true",
+        help="Run the 3-config dynamics gate (decay-off, decay-2h, dynamic-on)",
+    )
     parser.add_argument("--preset", default="pullback_decay_2h_60s")
     parser.add_argument("--range-start", default="2026-07-18T00:00:00Z")
     parser.add_argument("--range-end", default="2026-08-17T10:20:00Z")
@@ -40,10 +51,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--total-amount-quote", type=float, default=100.0)
     parser.add_argument(
         "--out-dir",
-        default="data/backtests/pullback_mega_sweep",
+        default="",
+        help="Default: pullback_mega_sweep (entry) or pullback_dynamics_sweep (dynamics)",
     )
-    parser.add_argument("--min-configs", type=int, default=2000)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--min-configs", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY)
     parser.add_argument(
@@ -74,15 +86,38 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolve_grid_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    grid = "dynamics" if args.gate_dry_run else args.grid
+    args.grid = grid
+    if not args.out_dir:
+        args.out_dir = (
+            "data/backtests/pullback_dynamics_sweep"
+            if grid == "dynamics"
+            else "data/backtests/pullback_mega_sweep"
+        )
+        if args.gate_dry_run:
+            args.out_dir = "data/backtests/pullback_dynamics_gate"
+    if args.min_configs <= 0:
+        args.min_configs = 3000 if grid == "dynamics" else 2000
+    if args.seed < 0:
+        args.seed = 43 if grid == "dynamics" else 42
+    return args
+
+
+def _rank_metric(row: dict[str, Any]) -> float:
+    stats = row.get("stats") or {}
+    if "capital_normalized_pnl" in stats:
+        return float(stats.get("capital_normalized_pnl") or 0)
+    return float(stats.get("net_pnl_quote") or 0)
+
+
 def _markdown_table(rows: list[dict[str, Any]]) -> str:
-    ranked = sorted(
-        rows,
-        key=lambda row: float((row.get("stats") or {}).get("net_pnl_quote") or 0),
-        reverse=True,
-    )
+    ranked = sorted(rows, key=_rank_metric, reverse=True)
     headers = [
         "case",
+        "cap_norm",
         "pnl",
+        "avg_n",
         "trades",
         "imm",
         "pb",
@@ -98,12 +133,18 @@ def _markdown_table(rows: list[dict[str, Any]]) -> str:
     ]
     for row in ranked[:50]:
         stats = row["stats"]
+        raw_pnl = float(stats.get("net_pnl_quote") or 0)
+        cap_norm = float(stats.get("capital_normalized_pnl", raw_pnl) or 0)
+        avg_n = stats.get("avg_notional")
+        avg_n_cell = f"{float(avg_n):.1f}" if avg_n is not None else "—"
         lines.append(
             "| "
             + " | ".join(
                 [
                     row["name"],
-                    f"{stats['net_pnl_quote']:+.2f}",
+                    f"{cap_norm:+.2f}",
+                    f"{raw_pnl:+.2f}",
+                    avg_n_cell,
                     str(stats["trades"]),
                     str(stats["immediate"]),
                     str(stats["pullback"]),
@@ -135,6 +176,8 @@ def _write_comparison(
         "snapshot_dir": args.snapshot_dir or None,
         "candle_source": args.candle_source or None,
         "total_amount_quote": args.total_amount_quote,
+        "grid": getattr(args, "grid", "entry"),
+        "seed": getattr(args, "seed", None),
         "tick_count": tick_count,
         "case_count": len(results),
         "cases": [
@@ -147,23 +190,33 @@ def _write_comparison(
     )
     ranked = sorted(
         [row for row in results if "stats" in row],
-        key=lambda row: float((row.get("stats") or {}).get("net_pnl_quote") or 0),
+        key=_rank_metric,
         reverse=True,
     )
     leader = ranked[0] if ranked else None
+    title = (
+        "Pullback dynamics sweep"
+        if getattr(args, "grid", "entry") == "dynamics"
+        else "Pullback mega-sweep"
+    )
     md = (
-        f"# Pullback mega-sweep\n\n"
+        f"# {title}\n\n"
         f"Range: `{args.range_start}` → `{args.range_end}`  \n"
         f"Preset: `{args.preset}`  \n"
         f"Snapshot: `{args.snapshot_dir}`  \n"
-        f"Notional: `{args.total_amount_quote}`  \n"
+        f"Budget: `{args.total_amount_quote}`  \n"
+        f"Grid: `{getattr(args, 'grid', 'entry')}`  \n"
         f"Cases: `{len(results)}`\n\n"
     )
     if leader:
+        stats = leader["stats"]
+        cap = stats.get("capital_normalized_pnl", stats.get("net_pnl_quote"))
         md += (
             f"Leader: `{leader['name']}`  "
-            f"pnl=`{leader['stats']['net_pnl_quote']:+.2f}`  "
-            f"trades=`{leader['stats']['trades']}`\n\n"
+            f"cap_norm=`{float(cap):+.2f}`  "
+            f"pnl=`{stats['net_pnl_quote']:+.2f}`  "
+            f"avg_n=`{stats.get('avg_notional', '—')}`  "
+            f"trades=`{stats['trades']}`\n\n"
         )
     md += _markdown_table(results) + "\n"
     (out_dir / "comparison.md").write_text(md, encoding="utf-8")
@@ -173,9 +226,12 @@ def _result_to_sweep(row: dict[str, Any]):
     from routines.macdbb_pullback_hl_replay.sweep_automation import PullbackSweepResult
 
     stats = row.get("stats") or {}
+    raw_pnl = float(stats.get("net_pnl_quote") or 0)
+    cap_norm = stats.get("capital_normalized_pnl")
+    rank_pnl = float(cap_norm) if cap_norm is not None else raw_pnl
     return PullbackSweepResult(
         name=str(row["name"]),
-        pnl=float(stats.get("net_pnl_quote") or 0),
+        pnl=rank_pnl,
         trades=int(stats.get("trades") or 0),
         overrides=dict(row.get("config") or {}),
         stats=dict(stats),
@@ -184,6 +240,11 @@ def _result_to_sweep(row: dict[str, Any]):
 
 async def _main() -> int:
     from scripts.run_macdbb_pullback_entry_sltp_sweep import _load_shared_context
+    from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
+        DYNAMICS_SWEEP_PRESET,
+        gate_dry_run_cases,
+        pullback_dynamics_cases,
+    )
     from routines.macdbb_pullback_hl_replay.mega_sweep import (
         MEGA_SWEEP_PRESET,
         pullback_mega_cases,
@@ -196,22 +257,25 @@ async def _main() -> int:
         send_promote_telegram_sync,
     )
 
-    args = _parse_args()
+    args = _resolve_grid_defaults(_parse_args())
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stdout,
         force=True,
     )
+    preset_default = (
+        DYNAMICS_SWEEP_PRESET if args.grid == "dynamics" else MEGA_SWEEP_PRESET
+    )
     if args.preset == "pullback_decay_2h_60s":
-        args.preset = MEGA_SWEEP_PRESET
+        args.preset = preset_default
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     presets_path = Path(args.presets_path) if args.presets_path else None
     state_path = Path(args.automation_state) if args.automation_state else (
         out_dir / "automation.json"
     )
-    tracker = LeaderTracker(state_path)
+    tracker = LeaderTracker(state_path, presets_path=presets_path)
     chat_id = None
     if not args.no_promote:
         chat_id = str(args.telegram_chat_id).strip() or default_telegram_chat_id()
@@ -225,8 +289,17 @@ async def _main() -> int:
                 "lead presets will still be written but Telegram will be skipped"
             )
 
-    cases = pullback_mega_cases(min_configs=args.min_configs, seed=args.seed)
-    logging.info("Mega-sweep grid: %d cases (seed=%d)", len(cases), args.seed)
+    if args.gate_dry_run:
+        cases = gate_dry_run_cases()
+        logging.info("Dynamics gate dry-run: %d cases", len(cases))
+    elif args.grid == "dynamics":
+        cases = pullback_dynamics_cases(min_configs=args.min_configs, seed=args.seed)
+        logging.info(
+            "Dynamics-sweep grid: %d cases (seed=%d)", len(cases), args.seed
+        )
+    else:
+        cases = pullback_mega_cases(min_configs=args.min_configs, seed=args.seed)
+        logging.info("Mega-sweep grid: %d cases (seed=%d)", len(cases), args.seed)
 
     shared = await _load_shared_context(
         preset=args.preset,
@@ -255,19 +328,25 @@ async def _main() -> int:
         results.append(result)
         stats = result.get("stats") or {}
         logging.info(
-            "[%d/%d] %s trades=%s pnl=%s",
+            "[%d/%d] %s trades=%s pnl=%s cap_norm=%s avg_n=%s",
             len(results),
             len(cases),
             result["name"],
             stats.get("trades"),
             stats.get("net_pnl_quote"),
+            stats.get("capital_normalized_pnl"),
+            stats.get("avg_notional"),
         )
         if not args.no_promote:
-            job = consider_and_promote(
-                tracker,
-                _result_to_sweep(result),
-                presets_path=presets_path,
-            )
+            try:
+                job = consider_and_promote(
+                    tracker,
+                    _result_to_sweep(result),
+                    presets_path=presets_path,
+                )
+            except Exception:
+                logging.exception("Promote failed for %s", result.get("name"))
+                job = None
             if job is not None:
                 if chat_id:
                     try:

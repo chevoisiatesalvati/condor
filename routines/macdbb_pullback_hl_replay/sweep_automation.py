@@ -48,6 +48,17 @@ STRATEGY_PRESET_KEYS: tuple[str, ...] = (
     "pullback_epsilon_pct",
     "sl_pct",
     "tp_pct",
+    "enable_dynamic_barriers",
+    "ref_volatility_pct",
+    "sl_vol_exponent",
+    "tp_vol_exponent",
+    "sl_min_pct",
+    "sl_max_pct",
+    "tp_min_pct",
+    "tp_max_pct",
+    "enable_dynamic_sizing",
+    "min_vol_mult",
+    "max_vol_mult",
     "chase_long_bb_pos_max",
     "chase_short_bb_pos_min",
     "bb_proximity_epsilon_pct",
@@ -116,13 +127,55 @@ class PromoteJob:
     output_tag: str
 
 
+def existing_sweep_lead_numbers(presets_path: Any | None = None) -> set[int]:
+    """Lead indices already present in presets.yaml (``pullback_sweep_lead_NNN``)."""
+    from pathlib import Path
+
+    from condor.strategy_runners.macdbb_pullback.presets import _resolve_presets_yaml
+
+    yaml_path = Path(presets_path) if presets_path is not None else _resolve_presets_yaml()
+    if yaml_path is None or not yaml_path.is_file():
+        return set()
+    try:
+        loaded = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return set()
+    if not isinstance(loaded, dict):
+        return set()
+    names = set(loaded.get("agent_strategy_preset_names") or [])
+    names.update((loaded.get("dynamic_preset_overrides") or {}).keys())
+    names.update((loaded.get("labels") or {}).keys())
+    found: set[int] = set()
+    prefix = PRESET_NAME_PREFIX
+    for name in names:
+        if not str(name).startswith(prefix):
+            continue
+        suffix = str(name)[len(prefix) :]
+        if suffix.isdigit():
+            found.add(int(suffix))
+    return found
+
+
+def next_sweep_lead_number(
+    presets_path: Any | None = None,
+    *,
+    at_least: int = 1,
+) -> int:
+    used = existing_sweep_lead_numbers(presets_path)
+    lead_num = max(1, int(at_least))
+    while lead_num in used:
+        lead_num += 1
+    return lead_num
+
+
 class LeaderTracker:
     """Track net-PnL leader; emit promote jobs after first positive anchor."""
 
-    def __init__(self, state_path: Any) -> None:
+    def __init__(self, state_path: Any, *, presets_path: Any | None = None) -> None:
         from pathlib import Path
 
         self._state_path = Path(state_path)
+        self._presets_path = Path(presets_path) if presets_path is not None else None
         self._state = SweepLeaderState.load(self._state_path)
         self._lock = threading.Lock()
 
@@ -160,7 +213,11 @@ class LeaderTracker:
             self._state.promote_count += 1
             self._state.best_pnl = pnl
             self._state.best_name = result.name
-            lead_num = self._state.promote_count
+            lead_num = next_sweep_lead_number(
+                self._presets_path,
+                at_least=self._state.promote_count,
+            )
+            self._state.promote_count = lead_num
             self._save()
 
         preset_name = f"{PRESET_NAME_PREFIX}{lead_num:03d}"
@@ -278,16 +335,30 @@ def promote_leader(
 def promote_telegram_text(job: PromoteJob) -> str:
     result = job.result
     stats = result.stats or {}
-    return "\n".join(
+    lines = [
+        "New pullback sweep leader",
+        f"Config: {result.name}",
+        f"Net PnL: ${float(stats.get('net_pnl_quote', result.pnl)):+.2f}",
+    ]
+    cap_norm = stats.get("capital_normalized_pnl")
+    if cap_norm is not None:
+        lines.append(f"Cap-norm ($100): ${float(cap_norm):+.2f}")
+    avg_notional = stats.get("avg_notional")
+    if avg_notional is not None:
+        lines.append(f"Avg notional: ${float(avg_notional):.2f}")
+    lines.extend(
         [
-            "New pullback sweep leader",
-            f"Config: {result.name}",
-            f"Net PnL: ${result.pnl:+.2f}",
             f"Trades: {result.trades}",
             f"Immediate: {stats.get('immediate', 0)}  Pullback: {stats.get('pullback', 0)}",
+            (
+                f"SL: {stats.get('sl_hits', stats.get('stop_loss_trades', 0))}  "
+                f"TP: {stats.get('tp_hits', stats.get('take_profit_trades', 0))}  "
+                f"Decay: {stats.get('thesis_decay', stats.get('thesis_decay_trades', 0))}"
+            ),
             f"Preset: {job.preset_name}",
         ]
     )
+    return "\n".join(lines)
 
 
 async def send_promote_telegram(chat_id: str, job: PromoteJob) -> None:
@@ -330,6 +401,10 @@ def consider_and_promote(
     presets_path: Any | None = None,
     telegram_chat_id: str | None = None,
 ) -> PromoteJob | None:
+    if presets_path is not None and tracker._presets_path is None:
+        from pathlib import Path
+
+        tracker._presets_path = Path(presets_path)
     job = tracker.consider(result)
     if job is None:
         return None
@@ -346,6 +421,8 @@ __all__ = [
     "SweepLeaderState",
     "consider_and_promote",
     "default_telegram_chat_id",
+    "existing_sweep_lead_numbers",
+    "next_sweep_lead_number",
     "promote_leader",
     "promote_telegram_text",
     "register_sweep_lead_preset",

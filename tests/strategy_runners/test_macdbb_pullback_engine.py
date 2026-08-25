@@ -398,3 +398,139 @@ def test_thesis_bb_drift_decay_when_enabled():
         decision = decide(tick, state if decision is None else decision.state)
     assert decision is not None
     assert any(s.reason == "thesis_decay" for s in decision.stops)
+
+
+def _create_tick(*, total_amount_quote: float = 100.0, **params) -> PullbackTickInput:
+    return PullbackTickInput(
+        tick_number=1,
+        tradeable_count=5,
+        signals=[],
+        open_positions=[],
+        total_amount_quote=total_amount_quote,
+        strategy_params=params,
+        max_open_executors=3,
+        frequency_sec=60,
+        fee_bps=0.0,
+        slippage_bps=0.0,
+        amount_step=0.0,
+    )
+
+
+def test_build_create_dynamics_off_matches_fixed_path():
+    from condor.strategy_runners.macdbb_pullback.engine import _build_create
+    from condor.strategy_runners.macdbb_pullback.params import default_strategy_params
+    from condor.strategy_runners.quantize import apply_fee_slippage, quote_to_base_amount
+
+    signal = _signal(atr_pct=2.0)
+    params = {
+        "sl_pct": 3.8,
+        "tp_pct": 9.0,
+        "min_notional_quote": 10.0,
+        "max_notional_quote": 1000.0,
+    }
+    tick = _create_tick(total_amount_quote=100.0, **params)
+    create = _build_create(
+        signal=signal,
+        side="long",
+        entry_class="immediate",
+        score=1.0,
+        tick=tick,
+        params=params,
+    )
+    assert create is not None
+    expected = quote_to_base_amount(
+        notional_quote=apply_fee_slippage(100.0, fee_bps=0.0, slippage_bps=0.0),
+        price=signal.price,
+        min_notional_quote=10.0,
+        max_notional_quote=1000.0,
+    )
+    assert create.notional_quote == expected.notional_quote
+    assert create.base_amount == expected.base_amount
+    assert create.sl_pct == 3.8
+    assert create.tp_pct == 9.0
+
+    defaults = default_strategy_params()
+    assert defaults["enable_dynamic_barriers"] is False
+    assert defaults["enable_dynamic_sizing"] is False
+    create_default = _build_create(
+        signal=signal,
+        side="long",
+        entry_class="immediate",
+        score=1.0,
+        tick=_create_tick(total_amount_quote=100.0, **defaults),
+        params={**defaults, "sl_pct": 3.8, "tp_pct": 9.0},
+    )
+    assert create_default is not None
+    assert create_default.notional_quote == create.notional_quote
+    assert create_default.sl_pct == 3.8
+    assert create_default.tp_pct == 9.0
+
+
+def test_build_create_dynamic_sizing_and_barriers_use_atr_pct():
+    from condor.strategy_runners.macdbb_pullback.engine import _build_create
+
+    signal = _signal(atr_pct=2.0, price=100.0)
+    params = {
+        "sl_pct": 3.8,
+        "tp_pct": 9.0,
+        "min_notional_quote": 10.0,
+        "max_notional_quote": 1000.0,
+        "enable_dynamic_sizing": True,
+        "enable_dynamic_barriers": True,
+        "ref_volatility_pct": 1.0,
+        "sl_vol_exponent": 1.0,
+        "tp_vol_exponent": 1.0,
+        "sl_min_pct": 2.0,
+        "sl_max_pct": 6.0,
+        "tp_min_pct": 4.0,
+        "tp_max_pct": 12.0,
+        "min_vol_mult": 0.5,
+        "max_vol_mult": 1.5,
+    }
+    create = _build_create(
+        signal=signal,
+        side="long",
+        entry_class="immediate",
+        score=1.0,
+        tick=_create_tick(total_amount_quote=100.0, **params),
+        params=params,
+    )
+    assert create is not None
+    assert create.notional_quote == 50.0
+    assert create.sl_pct == 6.0
+    assert create.tp_pct == 12.0
+
+
+def test_build_create_missing_atr_falls_back_to_ref_vol():
+    from condor.strategy_runners.macdbb_pullback.engine import _build_create
+
+    signal = _signal(atr_pct=None)
+    params = {
+        "sl_pct": 3.8,
+        "tp_pct": 9.0,
+        "enable_dynamic_sizing": True,
+        "enable_dynamic_barriers": True,
+        "ref_volatility_pct": 1.0,
+        "sl_vol_exponent": 1.0,
+        "tp_vol_exponent": 1.0,
+        "min_vol_mult": 0.5,
+        "max_vol_mult": 1.5,
+        "sl_min_pct": 2.0,
+        "sl_max_pct": 6.0,
+        "tp_min_pct": 4.0,
+        "tp_max_pct": 12.0,
+        "min_notional_quote": 10.0,
+        "max_notional_quote": 1000.0,
+    }
+    create = _build_create(
+        signal=signal,
+        side="long",
+        entry_class="immediate",
+        score=1.0,
+        tick=_create_tick(total_amount_quote=100.0, **params),
+        params=params,
+    )
+    assert create is not None
+    assert create.notional_quote == 100.0
+    assert create.sl_pct == 3.8
+    assert create.tp_pct == 9.0

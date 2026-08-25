@@ -88,8 +88,10 @@ def test_pullback_replay_reuses_strategy_param_labels():
     assert fields["impulse_atr_mult"]["group"] == "Entry quality"
     assert fields["pullback_timeout_hours"]["group"] == "Pullback arm"
     assert fields["sl_pct"]["group"] == "Barriers"
+    assert fields["enable_dynamic_barriers"]["group"] == "Barriers"
     assert fields["enable_thesis_decay_exit"]["group"] == "Position monitor"
     assert fields["min_notional_quote"]["group"] == "Sizing"
+    assert fields["enable_dynamic_sizing"]["group"] == "Sizing"
 
 
 def test_pullback_preset_is_strategy_only_hl_run_defaults():

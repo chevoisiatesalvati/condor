@@ -129,8 +129,19 @@ class PullbackReplayConfig(BaseModel):
     pullback_timeout_hours: float = 12.0
     sl_pct: float = 3.0
     tp_pct: float = 6.0
+    enable_dynamic_barriers: bool = False
+    ref_volatility_pct: float = 1.0
+    sl_vol_exponent: float = 1.0
+    tp_vol_exponent: float = 1.0
+    sl_min_pct: float = 2.0
+    sl_max_pct: float = 6.0
+    tp_min_pct: float = 4.0
+    tp_max_pct: float = 12.0
     min_notional_quote: float = 10.0
     max_notional_quote: float | None = 1000.0
+    enable_dynamic_sizing: bool = False
+    min_vol_mult: float = 0.5
+    max_vol_mult: float = 1.5
     sl_symbol_cooldown_hours: float = 5.0
     enable_flip_exit: bool = False
     flip_confirm_ticks: int = 2
@@ -197,8 +208,19 @@ def strategy_params_from_config(config: PullbackReplayConfig) -> dict[str, Any]:
         "pullback_timeout_hours",
         "sl_pct",
         "tp_pct",
+        "enable_dynamic_barriers",
+        "ref_volatility_pct",
+        "sl_vol_exponent",
+        "tp_vol_exponent",
+        "sl_min_pct",
+        "sl_max_pct",
+        "tp_min_pct",
+        "tp_max_pct",
         "min_notional_quote",
         "max_notional_quote",
+        "enable_dynamic_sizing",
+        "min_vol_mult",
+        "max_vol_mult",
         "sl_symbol_cooldown_hours",
         "enable_flip_exit",
         "flip_confirm_ticks",

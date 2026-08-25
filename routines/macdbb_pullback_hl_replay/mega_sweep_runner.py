@@ -6,6 +6,7 @@ import logging
 import multiprocessing as mp
 from typing import Any, Callable
 
+from condor.strategy_runners.macdbb_pullback.dynamic import capital_normalized_pnl
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import resolve_sweep_workers
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,9 @@ def trade_stats(trades: list[Any]) -> dict[str, Any]:
     immediate = sum(1 for trade in trades if trade.entry_class == "immediate")
     pullback = sum(1 for trade in trades if trade.entry_class == "pullback")
     avg_hold = (sum(trade.hold_ticks for trade in trades) / total) if total else 0.0
+    avg_notional = (
+        sum(float(trade.notional_quote) for trade in trades) / total if total else 0.0
+    )
     return {
         "trades": total,
         "immediate": immediate,
@@ -39,6 +43,14 @@ def trade_stats(trades: list[Any]) -> dict[str, Any]:
         "avg_return_pct": (
             sum(trade.return_pct for trade in trades) / total if total else 0.0
         ),
+        "avg_notional": avg_notional,
+        "avg_sl_pct": (
+            sum(float(trade.sl_pct_used) for trade in trades) / total if total else 0.0
+        ),
+        "avg_tp_pct": (
+            sum(float(trade.tp_pct_used) for trade in trades) / total if total else 0.0
+        ),
+        "capital_normalized_pnl": capital_normalized_pnl(pnl, avg_notional),
     }
 
 
@@ -95,6 +107,17 @@ def run_one_case(case: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]
             "thesis_bb_drift_pts": float(config.thesis_bb_drift_pts),
             "flip_confirm_ticks": int(config.flip_confirm_ticks),
             "flip_cooldown_hours": float(config.flip_cooldown_hours),
+            "enable_dynamic_barriers": bool(config.enable_dynamic_barriers),
+            "ref_volatility_pct": float(config.ref_volatility_pct),
+            "sl_vol_exponent": float(config.sl_vol_exponent),
+            "tp_vol_exponent": float(config.tp_vol_exponent),
+            "sl_min_pct": float(config.sl_min_pct),
+            "sl_max_pct": float(config.sl_max_pct),
+            "tp_min_pct": float(config.tp_min_pct),
+            "tp_max_pct": float(config.tp_max_pct),
+            "enable_dynamic_sizing": bool(config.enable_dynamic_sizing),
+            "min_vol_mult": float(config.min_vol_mult),
+            "max_vol_mult": float(config.max_vol_mult),
             "frequency_sec": int(config.frequency_sec or 60),
         },
         "stats": stats,

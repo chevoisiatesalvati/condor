@@ -104,14 +104,68 @@ class MacdbbPullbackHlParams(BaseModel):
         default=3.0,
         ge=0.1,
         le=25.0,
-        description="Fixed stop-loss %",
+        description="Fixed stop-loss % (base when dynamic barriers are on)",
         json_schema_extra={"group": "Barriers"},
     )
     tp_pct: float = Field(
         default=6.0,
         ge=0.1,
         le=50.0,
-        description="Fixed take-profit %",
+        description="Fixed take-profit % (base when dynamic barriers are on)",
+        json_schema_extra={"group": "Barriers"},
+    )
+    enable_dynamic_barriers: bool = Field(
+        default=False,
+        description="Scale SL/TP with ATR% vs ref volatility",
+        json_schema_extra={"group": "Barriers"},
+    )
+    ref_volatility_pct: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=10.0,
+        description="Reference ATR% for vol-scaled barriers and inverse-vol sizing",
+        json_schema_extra={"group": "Barriers"},
+    )
+    sl_vol_exponent: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=3.0,
+        description="SL scale exponent: base * (pair_vol / ref_vol) ** exponent",
+        json_schema_extra={"group": "Barriers"},
+    )
+    tp_vol_exponent: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=3.0,
+        description="TP scale exponent: base * (pair_vol / ref_vol) ** exponent",
+        json_schema_extra={"group": "Barriers"},
+    )
+    sl_min_pct: float = Field(
+        default=2.0,
+        ge=0.1,
+        le=25.0,
+        description="Minimum dynamic stop-loss %",
+        json_schema_extra={"group": "Barriers"},
+    )
+    sl_max_pct: float = Field(
+        default=6.0,
+        ge=0.1,
+        le=25.0,
+        description="Maximum dynamic stop-loss %",
+        json_schema_extra={"group": "Barriers"},
+    )
+    tp_min_pct: float = Field(
+        default=4.0,
+        ge=0.1,
+        le=50.0,
+        description="Minimum dynamic take-profit %",
+        json_schema_extra={"group": "Barriers"},
+    )
+    tp_max_pct: float = Field(
+        default=12.0,
+        ge=0.1,
+        le=50.0,
+        description="Maximum dynamic take-profit %",
         json_schema_extra={"group": "Barriers"},
     )
     sl_symbol_cooldown_hours: float = Field(
@@ -183,6 +237,25 @@ class MacdbbPullbackHlParams(BaseModel):
     max_notional_quote: float | None = Field(
         default=1000.0,
         description="Maximum notional quote per entry",
+        json_schema_extra={"group": "Sizing"},
+    )
+    enable_dynamic_sizing: bool = Field(
+        default=False,
+        description="Scale notional by inverse ATR% vs ref volatility",
+        json_schema_extra={"group": "Sizing"},
+    )
+    min_vol_mult: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=5.0,
+        description="Lower clamp for inverse-vol size multiplier",
+        json_schema_extra={"group": "Sizing"},
+    )
+    max_vol_mult: float = Field(
+        default=1.5,
+        ge=0.1,
+        le=5.0,
+        description="Upper clamp for inverse-vol size multiplier",
         json_schema_extra={"group": "Sizing"},
     )
 

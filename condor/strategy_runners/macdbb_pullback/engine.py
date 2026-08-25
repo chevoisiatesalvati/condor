@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from condor.strategy_runners.macdbb_pullback.dynamic import (
+    resolve_pullback_entry_policy,
+)
 from condor.strategy_runners.macdbb_pullback.entry_quality import (
     DEFAULT_CHASE_LONG_BB_POS_MAX,
     DEFAULT_CHASE_SHORT_BB_POS_MIN,
@@ -82,8 +85,13 @@ def _build_create(
     tick: PullbackTickInput,
     params: dict[str, Any],
 ) -> CreateAction | None:
+    policy = resolve_pullback_entry_policy(
+        budget_quote=_notional_quote(tick),
+        atr_pct=signal.atr_pct,
+        params=params,
+    )
     notional = apply_fee_slippage(
-        _notional_quote(tick),
+        policy.notional_quote,
         fee_bps=tick.fee_bps,
         slippage_bps=tick.slippage_bps,
     )
@@ -108,8 +116,8 @@ def _build_create(
         entry_class=entry_class,
         notional_quote=q.notional_quote,
         base_amount=q.base_amount,
-        sl_pct=float(params.get("sl_pct") or 3.0),
-        tp_pct=float(params.get("tp_pct") or 6.0),
+        sl_pct=policy.sl_pct,
+        tp_pct=policy.tp_pct,
         score=score,
     )
 

@@ -180,6 +180,42 @@ def test_consider_and_promote_writes_lead(tmp_path: Path):
     assert "total_amount_quote" not in overrides
 
 
+def test_consider_and_promote_skips_existing_lead_numbers(tmp_path: Path):
+    presets_path = tmp_path / "presets.yaml"
+    existing = {
+        f"{PRESET_NAME_PREFIX}{n:03d}": {"sl_pct": 3.0}
+        for n in (1, 2, 3, 4, 5)
+    }
+    presets_path.write_text(
+        yaml.safe_dump(
+            {
+                "current_winner_preset": "pullback_decay_2h_60s",
+                "default_agent_strategy_preset": "pullback_decay_2h_60s",
+                "agent_strategy_preset_names": list(existing),
+                "dynamic_preset_overrides": existing,
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracker = LeaderTracker(tmp_path / "automation.json", presets_path=presets_path)
+    assert consider_and_promote(
+        tracker,
+        _result("anchor", 2.0),
+        presets_path=presets_path,
+    ) is None
+    job = consider_and_promote(
+        tracker,
+        _result("better", 47.15),
+        presets_path=presets_path,
+    )
+    assert job is not None
+    assert job.preset_name == f"{PRESET_NAME_PREFIX}006"
+    bundle = yaml.safe_load(presets_path.read_text(encoding="utf-8"))
+    assert f"{PRESET_NAME_PREFIX}006" in bundle["dynamic_preset_overrides"]
+    assert bundle["current_winner_preset"] == "pullback_decay_2h_60s"
+    assert f"{PRESET_NAME_PREFIX}001" in bundle["dynamic_preset_overrides"]
+
+
 def test_yaml_lead_overlays_winner_strategy_params(tmp_path: Path):
     isolated = tmp_path / "strategies" / "macdbb_pullback_hl"
     isolated.mkdir(parents=True)

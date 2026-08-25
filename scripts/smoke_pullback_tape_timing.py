@@ -53,6 +53,21 @@ def _parse_args() -> argparse.Namespace:
         "--out-json",
         default="data/backtests/pullback_tape_smoke/timing.json",
     )
+    parser.add_argument(
+        "--enable-dynamic-sizing",
+        action="store_true",
+        help="Enable inverse-vol sizing for this smoke config",
+    )
+    parser.add_argument(
+        "--enable-dynamic-barriers",
+        action="store_true",
+        help="Enable ATR-scaled SL/TP for this smoke config",
+    )
+    parser.add_argument(
+        "--require-dynamic-sizes",
+        action="store_true",
+        help="Fail if no trades or all notionals equal the budget (dynamics-on gate)",
+    )
     return parser.parse_args()
 
 
@@ -74,11 +89,16 @@ def _trade_fingerprint(trades: list[Any]) -> list[tuple[Any, ...]]:
 def _stats(trades: list[Any]) -> dict[str, Any]:
     total = len(trades)
     pnl = sum(float(t.pnl_quote) for t in trades)
+    notionals = [round(float(t.notional_quote), 6) for t in trades]
+    unique_notionals = sorted(set(notionals))
     return {
         "trades": total,
         "net_pnl_quote": pnl,
         "immediate": sum(1 for t in trades if t.entry_class == "immediate"),
         "pullback": sum(1 for t in trades if t.entry_class == "pullback"),
+        "avg_notional": (sum(notionals) / total) if total else 0.0,
+        "unique_notional_count": len(unique_notionals),
+        "unique_notionals_sample": unique_notionals[:12],
     }
 
 
@@ -119,6 +139,10 @@ async def _main() -> int:
     )
 
     kwargs = dict(shared["base_kwargs"])
+    if args.enable_dynamic_sizing:
+        kwargs["enable_dynamic_sizing"] = True
+    if args.enable_dynamic_barriers:
+        kwargs["enable_dynamic_barriers"] = True
     config = resolve_pullback_config(Config(**kwargs))
     loader = shared["loader"]
 
@@ -187,6 +211,8 @@ async def _main() -> int:
         "cold_sim_seconds": cold_seconds,
         "tape_matches_cold": match,
         "taped_stats": _stats(taped_trades),
+        "enable_dynamic_sizing": bool(args.enable_dynamic_sizing),
+        "enable_dynamic_barriers": bool(args.enable_dynamic_barriers),
         "speedup_vs_cold": (
             (cold_seconds / taped_seconds) if cold_seconds and taped_seconds else None
         ),
@@ -206,6 +232,21 @@ async def _main() -> int:
     print(json.dumps(payload, indent=2))
     if not match:
         return 1
+    if args.require_dynamic_sizes:
+        taped_stats = payload["taped_stats"]
+        if int(taped_stats["trades"]) <= 0:
+            logging.error("Dynamics smoke failed: no trades")
+            return 1
+        budget = float(args.total_amount_quote)
+        unique = taped_stats["unique_notionals_sample"]
+        all_budget = all(abs(float(value) - budget) < 1e-6 for value in unique)
+        if taped_stats["unique_notional_count"] <= 1 and all_budget:
+            logging.error(
+                "Dynamics smoke failed: all notionals equal budget %s sample=%s",
+                budget,
+                unique,
+            )
+            return 1
     return 0
 
 
