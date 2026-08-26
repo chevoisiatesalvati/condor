@@ -23,7 +23,7 @@ def compute_thesis_metrics(
     signal: SignalSnapshot,
     strategy_params: dict[str, Any] | None = None,
 ) -> dict[str, float | bool]:
-    params = dict(strategy_params or {})
+    params = strategy_params if strategy_params is not None else {}
     epsilon = float(params.get("bb_proximity_epsilon_pct") or 0.22)
     hist_increasing = signal.momentum == "increasing"
 

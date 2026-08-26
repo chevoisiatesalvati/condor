@@ -91,7 +91,9 @@ def test_interactive_report_embeds_safe_runtime(reports_dir):
         "price-table",
         "price-drilldown",
     }
-    assert not list(reports_dir.glob("*.tmp"))
+    assert not list(reports_dir.rglob("*.tmp"))
+    assert entry["filename"].startswith("report_test/")
+    assert (reports_dir / "report_test").is_dir()
 
 
 def test_treemap_requires_values_and_rejects_aggregation():
@@ -169,6 +171,17 @@ def test_cleanup_keeps_recently_updated_report(reports_dir):
 
     assert {entry["id"] for entry in store._read_index()} == {"live", "new"}
     assert not (reports_dir / "middle.html").exists()
+
+
+def test_new_report_lands_in_source_folder(reports_dir):
+    builder = reports.ReportBuilder("Foldered")
+    builder.source("routine", "macd_bb_analysis")
+    builder.markdown("body")
+    report_id = asyncio.run(builder.save())
+    entry = reports.get_report(report_id)
+    assert entry["filename"].startswith("macd_bb_analysis/")
+    assert entry["filename"].endswith(".html")
+    assert (reports_dir / entry["filename"]).is_file()
 
 
 def test_footprint_filters_invalid_rows_and_keeps_zero_visible():

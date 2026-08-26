@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import json
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,10 @@ from pathlib import Path
 CHARTS_DIR = Path(__file__).resolve().parents[2] / "reports"
 INDEX_FILE = CHARTS_DIR / "reports_index.json"
 MAX_REPORTS = int(os.environ.get("CONDOR_MAX_REPORTS", "100"))
+
+_UNNAMED_SOURCE_DIR = "_unnamed"
+_SOURCE_DIR_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_RESERVED_SOURCE_DIRS = frozenset({INDEX_FILE.name, _UNNAMED_SOURCE_DIR})
 
 _index_lock = asyncio.Lock()
 _last_report_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -36,6 +41,14 @@ def _index_file() -> Path:
     from . import INDEX_FILE as configured_file
 
     return configured_file
+
+
+def source_dir_name(source_name: str | None) -> str:
+    """Return a path-safe folder name for a report source (usually a routine)."""
+    slug = _SOURCE_DIR_UNSAFE.sub("_", (source_name or "").strip()).strip("._")
+    if not slug or slug in {".", ".."} or slug in _RESERVED_SOURCE_DIRS:
+        return _UNNAMED_SOURCE_DIR
+    return slug[:80]
 
 
 def reset_last_report_id() -> None:
@@ -111,6 +124,7 @@ def _write_index(entries: list[dict]) -> None:
 
 def _write_report_html(path: Path, content: str) -> None:
     """Atomically create or replace a report HTML file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -231,17 +245,37 @@ async def delete_report(report_id: str) -> bool:
 
 
 def _cleanup_locked(max_reports: int = MAX_REPORTS) -> None:
-    """Run cleanup while the caller already holds the index lock."""
+    """Prune oldest reports per source once that source exceeds ``max_reports``.
+
+    ``CONDOR_MAX_REPORTS`` is a per-routine (per ``source_name``) cap, not a
+    global one, so a high-frequency routine cannot rotate reports from another.
+    ``max_reports <= 0`` retains everything.
+    """
+    if max_reports <= 0:
+        return
     entries = _read_index()
-    if len(entries) <= max_reports:
+    if not entries:
         return
     entries.sort(
         key=lambda entry: entry.get("updated_at") or entry.get("created_at", "")
     )
-    to_remove = entries[: len(entries) - max_reports]
-    keep_ids = {entry["id"] for entry in entries[len(entries) - max_reports :]}
+    by_source: dict[str, list[dict]] = {}
+    for entry in entries:
+        by_source.setdefault(entry.get("source_name") or "", []).append(entry)
+
+    keep_ids: set[str] = set()
+    to_remove: list[dict] = []
+    for group in by_source.values():
+        if len(group) <= max_reports:
+            keep_ids.update(entry["id"] for entry in group)
+            continue
+        to_remove.extend(group[: len(group) - max_reports])
+        keep_ids.update(entry["id"] for entry in group[len(group) - max_reports :])
+    if not to_remove:
+        return
+    charts_dir = _charts_dir()
     for entry in to_remove:
-        path = _charts_dir() / entry["filename"]
+        path = charts_dir / entry["filename"]
         if path.exists():
             path.unlink()
     _write_index([entry for entry in entries if entry["id"] in keep_ids])

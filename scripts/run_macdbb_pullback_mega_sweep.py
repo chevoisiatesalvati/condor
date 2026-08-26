@@ -3,7 +3,8 @@
 
 Hydrates ticks/candles/signal tape once. Checkpoints every N cases. Promotes
 capital-normalized PnL improvements after a positive anchor into
-pullback_sweep_lead_NNN without changing the live winner default.
+pullback_sweep_lead_NNN without changing the live winner default. Winner
+Condor reports are written after the worker pool exits, reusing that tape.
 """
 
 from __future__ import annotations
@@ -249,12 +250,18 @@ async def _main() -> int:
         MEGA_SWEEP_PRESET,
         pullback_mega_cases,
     )
-    from routines.macdbb_pullback_hl_replay.mega_sweep_runner import run_case_batch
+    from routines.macdbb_pullback_hl_replay.mega_sweep_runner import (
+        load_completed_results,
+        run_case_batch,
+    )
     from routines.macdbb_pullback_hl_replay.sweep_automation import (
         LeaderTracker,
         consider_and_promote,
         default_telegram_chat_id,
+        lead_presets_missing_reports,
+        save_lead_reports_from_shared,
         send_promote_telegram_sync,
+        send_report_html_telegram,
     )
 
     args = _resolve_grid_defaults(_parse_args())
@@ -310,17 +317,37 @@ async def _main() -> int:
         total_amount_quote=args.total_amount_quote,
     )
 
-    results: list[dict[str, Any]] = []
-    pending: list[dict[str, Any]] = []
-    for case in cases:
-        result_path = out_dir / f"{case['name']}.json"
-        if result_path.is_file() and not args.force:
-            loaded = json.loads(result_path.read_text(encoding="utf-8"))
-            results.append(loaded)
-            continue
-        pending.append(case)
-
+    results, pending = load_completed_results(
+        cases, out_dir, force=args.force
+    )
     logging.info("Resume: %d done, %d pending", len(results), len(pending))
+
+    async def _write_missing_lead_reports(reason: str) -> None:
+        missing = lead_presets_missing_reports()
+        if not missing:
+            logging.info("No missing pullback lead reports (%s)", reason)
+            return
+        logging.info(
+            "Writing Condor reports for %d lead(s) on the sweep tape (%s)",
+            len(missing),
+            reason,
+        )
+        saved = await save_lead_reports_from_shared(
+            shared,
+            missing,
+            total_amount_quote=args.total_amount_quote,
+        )
+        if chat_id:
+            for preset_name, report_id in saved:
+                try:
+                    await send_report_html_telegram(chat_id, preset_name, report_id)
+                except Exception:
+                    logging.exception(
+                        "Telegram report send failed for %s", preset_name
+                    )
+
+    if not args.no_promote:
+        await _write_missing_lead_reports("existing leads before workers")
 
     def _on_result(done_in_batch: int, result: dict[str, Any]) -> None:
         result_path = out_dir / f"{result['name']}.json"
@@ -385,6 +412,8 @@ async def _main() -> int:
         tick_count=int(shared.get("tick_count") or 0),
         results=results,
     )
+    if not args.no_promote:
+        await _write_missing_lead_reports("new leads after workers")
     print((out_dir / "comparison.md").read_text(encoding="utf-8"))
     return 0
 

@@ -120,6 +120,7 @@ async def _load_shared_context(
     snapshot_dir: str,
     candle_source: str,
     total_amount_quote: float,
+    pack_candles: bool = True,
 ) -> dict[str, Any]:
     from routines.macdbb_pullback_hl_backtest import Config, _loader_config
     from routines.macdbb_pullback_hl_replay.presets import resolve_pullback_config
@@ -179,6 +180,34 @@ async def _load_shared_context(
             parsed_sessions,
             settings=hl_prefetch_settings_from_config(loader),
         )
+        from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+            prepare_shared_candle_stores,
+        )
+
+        if pack_candles and (
+            hl_candle_cache or hl_barrier_candle_cache or hl_vol_candle_cache
+        ):
+            logging.info(
+                "Packing %d price / %d barrier / %d vol candle series into shared memory",
+                len(hl_candle_cache),
+                len(hl_barrier_candle_cache),
+                len(hl_vol_candle_cache),
+            )
+            (
+                _price_dicts,
+                _barrier_dicts,
+                _vol_dicts,
+                price_store,
+                barrier_store,
+                vol_store,
+            ) = prepare_shared_candle_stores(
+                hl_candle_cache,
+                hl_barrier_candle_cache,
+                hl_vol_candle_cache,
+            )
+            hl_candle_cache = price_store or {}
+            hl_barrier_candle_cache = barrier_store or {}
+            hl_vol_candle_cache = vol_store or {}
 
     from routines.macdbb_pullback_hl_replay.signal_tape import build_pullback_signal_tapes
 

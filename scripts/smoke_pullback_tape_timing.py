@@ -68,6 +68,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fail if no trades or all notionals equal the budget (dynamics-on gate)",
     )
+    parser.add_argument(
+        "--identity-packed",
+        action="store_true",
+        help="Hydrate unpacked, sim, pack SharedCandleStore, sim again; require identical trades",
+    )
     return parser.parse_args()
 
 
@@ -124,6 +129,7 @@ async def _main() -> int:
         snapshot_dir=args.snapshot_dir,
         candle_source=args.candle_source,
         total_amount_quote=args.total_amount_quote,
+        pack_candles=not args.identity_packed,
     )
     load_seconds = time.monotonic() - load_started
     tapes = shared.get("signal_tapes") or {}
@@ -176,23 +182,71 @@ async def _main() -> int:
         _stats(taped_trades),
     )
 
-    cold_seconds: float | None = None
+    unpacked_seconds = taped_seconds
+    packed_seconds: float | None = None
+    packed_match: bool | None = None
     match = True
+    if args.identity_packed:
+        from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+            prepare_shared_candle_stores,
+        )
+
+        (
+            _px,
+            _bar,
+            _vol,
+            price_store,
+            barrier_store,
+            vol_store,
+        ) = prepare_shared_candle_stores(
+            shared["hl_candle_cache"] or {},
+            shared["hl_barrier_candle_cache"] or {},
+            shared["hl_vol_candle_cache"] or {},
+        )
+        shared["hl_candle_cache"] = price_store or {}
+        shared["hl_barrier_candle_cache"] = barrier_store or {}
+        shared["hl_vol_candle_cache"] = vol_store or {}
+        packed_trades, packed_seconds = _run(use_signal_tape=True)
+        packed_match = _trade_fingerprint(taped_trades) == _trade_fingerprint(
+            packed_trades
+        )
+        logging.info(
+            "Packed sim %.2fs stats=%s match_unpacked=%s",
+            packed_seconds,
+            _stats(packed_trades),
+            packed_match,
+        )
+        if not packed_match:
+            logging.error(
+                "Packed/unpacked mismatch unpacked=%s packed=%s",
+                _trade_fingerprint(taped_trades),
+                _trade_fingerprint(packed_trades),
+            )
+            match = False
+        else:
+            taped_seconds = packed_seconds
+            taped_trades = packed_trades
+
+    cold_seconds: float | None = None
+    cold_match: bool | None = None
     if not args.skip_cold:
         cold_trades, cold_seconds = _run(use_signal_tape=False)
-        match = _trade_fingerprint(taped_trades) == _trade_fingerprint(cold_trades)
+        cold_match = _trade_fingerprint(taped_trades) == _trade_fingerprint(
+            cold_trades
+        )
         logging.info(
             "Cold sim %.2fs stats=%s match=%s",
             cold_seconds,
             _stats(cold_trades),
-            match,
+            cold_match,
         )
-        if not match:
+        if not cold_match:
             logging.error(
                 "Tape/cold mismatch taped=%s cold=%s",
                 _trade_fingerprint(taped_trades),
                 _trade_fingerprint(cold_trades),
             )
+            match = False
 
     ticks_per_day = 86_400 / 60.0
     window_days = (tick_count / ticks_per_day) if tick_count else 0.0
@@ -208,8 +262,11 @@ async def _main() -> int:
         "load_seconds": load_seconds,
         "tape_build_seconds": tape_build_seconds,
         "taped_sim_seconds": taped_seconds,
+        "unpacked_sim_seconds": unpacked_seconds,
+        "packed_sim_seconds": packed_seconds,
+        "packed_matches_unpacked": packed_match,
         "cold_sim_seconds": cold_seconds,
-        "tape_matches_cold": match,
+        "tape_matches_cold": cold_match,
         "taped_stats": _stats(taped_trades),
         "enable_dynamic_sizing": bool(args.enable_dynamic_sizing),
         "enable_dynamic_barriers": bool(args.enable_dynamic_barriers),
@@ -230,6 +287,11 @@ async def _main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps(payload, indent=2))
+    if args.identity_packed and packed_match is not True:
+        return 1
+    if args.identity_packed and int(payload["taped_stats"]["trades"]) <= 0:
+        logging.error("Identity packed smoke failed: no trades")
+        return 1
     if not match:
         return 1
     if args.require_dynamic_sizes:

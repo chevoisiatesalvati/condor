@@ -8,6 +8,7 @@ RUN_IN_SUBPROCESS = True
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from telegram.ext import ContextTypes
@@ -25,7 +26,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
     prefetch_replay_hl_prices,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
-from routines.macdbb_scanner_aggressive_hl_replay.presets import (
+from condor.strategy_runners.macdbb_pullback.dynamic import (
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
     capital_normalized_pnl,
 )
@@ -81,7 +82,47 @@ def _loader_config(config: PullbackReplayConfig) -> DynamicStrategyReplayConfig:
         strategy_slug=config.strategy_slug,
         session_nums=config.sessions or "all",
     )
+    if loader.candle_source == "binance_perpetual":
+        updates: dict[str, Any] = {}
+        if not loader.hl_cache_dir or loader.hl_cache_dir == "data/hl_candles":
+            updates["hl_cache_dir"] = "data/binance_candles"
+        if loader.price_source == "hl_candles":
+            updates["price_source"] = "binance_candles"
+        if updates:
+            loader = loader.model_copy(update=updates)
     return loader
+
+
+def _snapshot_coverage_hint(snapshot_dir: str) -> str:
+    manifest_path = Path(snapshot_dir) / "manifest.json"
+    if not manifest_path.is_file():
+        return f"No manifest.json under {snapshot_dir}."
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return f"Unreadable manifest.json under {snapshot_dir}."
+    return (
+        f"Snapshot {snapshot_dir} covers "
+        f"{payload.get('range_start_utc') or '?'} → {payload.get('range_end_utc') or '?'} "
+        f"({payload.get('tick_count') or 0} ticks, "
+        f"source={payload.get('candle_source') or '?'})."
+    )
+
+
+def _tick_universe_stats(
+    parsed_sessions: dict[int, dict[int, Any]],
+) -> tuple[int, list[str]]:
+    from routines.macdbb_pullback_hl_replay.signal_tape import universe_pairs_from_ticks
+
+    ticks_with_pairs = 0
+    pairs: dict[str, None] = {}
+    for tick_meta_map in parsed_sessions.values():
+        for meta in tick_meta_map.values():
+            if meta.macd_pairs or meta.queue_total or meta.signals_1h:
+                ticks_with_pairs += 1
+        for pair in universe_pairs_from_ticks(tick_meta_map):
+            pairs.setdefault(pair, None)
+    return ticks_with_pairs, list(pairs)
 
 
 def journal_tick_maps(config: PullbackReplayConfig) -> dict[int, dict[int, Any]]:
@@ -122,6 +163,149 @@ def journal_tick_maps(config: PullbackReplayConfig) -> dict[int, dict[int, Any]]
         if schedule:
             tick_maps[session_num] = schedule
     return tick_maps
+
+
+def _trade_exit_reason(trade: Any) -> str:
+    return str(getattr(trade, "exit_reason", "") or "")
+
+
+def summarize_pullback_trades(all_trades: list[Any]) -> dict[str, Any]:
+    total_trades = len(all_trades)
+    total_pnl = sum(float(t.pnl_quote) for t in all_trades)
+    sl_n = sum(1 for t in all_trades if "stop_loss" in _trade_exit_reason(t))
+    tp_n = sum(1 for t in all_trades if "take_profit" in _trade_exit_reason(t))
+    decay_n = sum(1 for t in all_trades if _trade_exit_reason(t) == "thesis_decay")
+    avg_notional = (
+        sum(float(t.notional_quote) for t in all_trades) / total_trades
+        if total_trades
+        else 0.0
+    )
+    wins = sum(1 for t in all_trades if float(t.pnl_quote) > 0)
+    immediate_n = sum(1 for t in all_trades if t.entry_class == "immediate")
+    pullback_n = sum(1 for t in all_trades if t.entry_class == "pullback")
+    cap_norm = capital_normalized_pnl(
+        total_pnl, avg_notional, FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
+    )
+    return {
+        "total_trades": total_trades,
+        "immediate_n": immediate_n,
+        "pullback_n": pullback_n,
+        "wins": wins,
+        "sl_n": sl_n,
+        "tp_n": tp_n,
+        "decay_n": decay_n,
+        "total_pnl": total_pnl,
+        "avg_notional": avg_notional,
+        "cap_norm": cap_norm,
+        "win_rate_pct": (wins / total_trades * 100.0) if total_trades else 0.0,
+        "sl_rate": (sl_n / total_trades) if total_trades else 0.0,
+        "avg_sl_pct": (
+            sum(float(t.sl_pct_used) for t in all_trades) / total_trades
+            if total_trades
+            else 0.0
+        ),
+        "avg_tp_pct": (
+            sum(float(t.tp_pct_used) for t in all_trades) / total_trades
+            if total_trades
+            else 0.0
+        ),
+    }
+
+
+async def save_pullback_backtest_report(
+    config: PullbackReplayConfig,
+    *,
+    all_trades: list[Any],
+    session_rows: list[dict[str, Any]],
+) -> tuple[str, str | None]:
+    """Write the Condor UI report for a completed pullback backtest.
+
+    Returns ``(summary_text, report_id)``.
+    """
+    stats = summarize_pullback_trades(all_trades)
+    summary_lines = [
+        f"macdbb_pullback_hl backtest — {config.strategy_slug}",
+        f"Preset: {config.preset} ({PRESET_LABELS.get(config.preset, config.preset)})",
+        f"Range: {config.range_start_utc} → {config.range_end_utc}",
+        (
+            f"Trades: {stats['total_trades']} "
+            f"(immediate={stats['immediate_n']}, pullback={stats['pullback_n']})"
+        ),
+        f"Win rate: {stats['win_rate_pct']:.1f}%",
+        (
+            f"SL hits: {stats['sl_n']} | TP hits: {stats['tp_n']} | "
+            f"Decay: {stats['decay_n']} | SL rate: {stats['sl_rate']:.3f}"
+        ),
+        f"Sim PnL: ${stats['total_pnl']:.2f} | Capital-norm PnL: ${stats['cap_norm']:.2f}",
+        (
+            f"Avg notional: ${stats['avg_notional']:.2f} | Avg SL/TP: "
+            f"{stats['avg_sl_pct']:.2f}% / {stats['avg_tp_pct']:.2f}%"
+        ),
+    ]
+    text = "\n".join(summary_lines)
+    logger.info(text)
+
+    report_id: str | None = None
+    try:
+        from condor.reports import ReportBuilder, get_last_report_id, reset_last_report_id
+
+        reset_last_report_id()
+        builder = ReportBuilder(
+            f"MACDBB Pullback Backtest — {PRESET_LABELS.get(config.preset, config.preset)}"
+        )
+        builder.source("routine", "macdbb_pullback_hl_backtest")
+        builder.tags(["backtest", "macdbb_pullback", config.preset])
+        builder.manual_order()
+        builder.kpi("Sim Trades", str(stats["total_trades"]))
+        builder.kpi("Immediate", str(stats["immediate_n"]))
+        builder.kpi("Pullback", str(stats["pullback_n"]))
+        builder.kpi("Sim PnL", f"${stats['total_pnl']:+.2f}")
+        builder.kpi("Capital-norm PnL", f"${stats['cap_norm']:+.2f}")
+        builder.kpi("SL rate", f"{stats['sl_rate']:.3f}")
+        builder.markdown(
+            "## Config\n"
+            f"- **Preset:** {config.preset}\n"
+            f"- **Frequency:** {config.frequency_sec}s\n"
+            f"- **Range:** {config.range_start_utc} → {config.range_end_utc}\n"
+            f"- **Snapshot dir:** `{config.snapshot_dir}`\n"
+            f"- **Budget:** ${float(config.total_amount_quote):.0f}\n"
+            f"- **SL/TP:** {config.sl_pct}% / {config.tp_pct}%\n"
+            f"- **Impulse ATR mult:** {config.impulse_atr_mult}\n"
+            f"- **Pullback epsilon:** {config.pullback_epsilon_pct}%\n"
+            f"- **Decay:** {config.enable_thesis_decay_exit} "
+            f"({config.thesis_decay_exit_hours}h)\n"
+            f"- **Flip exit:** {config.enable_flip_exit}\n"
+            f"- **Dynamic barriers:** {config.enable_dynamic_barriers}\n"
+            f"- **Dynamic sizing:** {config.enable_dynamic_sizing}\n"
+        )
+        if session_rows:
+            builder.markdown("## Sessions")
+            builder.table(session_rows)
+        if all_trades:
+            trade_rows = [
+                {
+                    "Pair": t.pair,
+                    "Side": t.side,
+                    "Class": t.entry_class,
+                    "Notional": round(float(t.notional_quote), 2),
+                    "SL%": round(float(t.sl_pct_used), 3),
+                    "TP%": round(float(t.tp_pct_used), 3),
+                    "Entry": t.entry_time_utc.isoformat() if t.entry_time_utc else "",
+                    "Exit": t.exit_time_utc.isoformat() if t.exit_time_utc else "",
+                    "Reason": _trade_exit_reason(t),
+                    "Return%": round(float(t.return_pct), 3),
+                    "PnL": round(float(t.pnl_quote), 2),
+                }
+                for t in all_trades
+            ]
+            builder.markdown("## Trades")
+            builder.table(trade_rows)
+        report_id = await builder.save()
+        if report_id is None:
+            report_id = get_last_report_id()
+    except Exception:
+        logger.warning("Failed to save pullback backtest report", exc_info=True)
+    return text, report_id
 
 
 async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResult:
@@ -191,18 +375,38 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResu
     reports_by_pair = build_reports_by_pair(reports)
 
     tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
+    ticks_with_pairs, universe_pairs = _tick_universe_stats(parsed_sessions)
     logger.info(
-        "Pullback backtest: preset=%s ticks=%d range %s → %s",
+        "Pullback backtest: preset=%s ticks=%d ticks_with_pairs=%d pairs=%d "
+        "snapshot=%s candle_source=%s range %s → %s",
         config.preset,
         tick_count,
+        ticks_with_pairs,
+        len(universe_pairs),
+        config.snapshot_dir,
+        config.candle_source,
         config.range_start_utc,
         config.range_end_utc,
     )
+    if not universe_pairs:
+        coverage = _snapshot_coverage_hint(str(config.snapshot_dir or ""))
+        msg = (
+            "Timeline ticks have no scanner pairs, so the backtest cannot arm or trade. "
+            f"Requested {config.range_start_utc} → {config.range_end_utc} "
+            f"({tick_count} clock ticks). {coverage} "
+            "Use a snapshot that covers this range (for lead_008: "
+            "data/replay_snapshots_binance_60s + binance_perpetual) and keep the "
+            "end date inside that snapshot."
+        )
+        logger.error(msg)
+        write_progress(phase="error", message=msg)
+        return RoutineResult(text=msg)
 
     hl_caches_by_session: dict = {}
     hl_candle_cache: dict = {}
     hl_barrier_candle_cache: dict = {}
     hl_vol_candle_cache: dict = {}
+    packed_stores: list[Any] = []
     if should_prefetch_replay_candles(loader) and parsed_sessions:
         write_progress(phase="prefetch_candles", message="Prefetching candles")
         (
@@ -214,153 +418,116 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResu
             parsed_sessions,
             settings=hl_prefetch_settings_from_config(loader),
         )
-
-    all_trades: list[Any] = []
-    session_rows: list[dict[str, Any]] = []
-    for session_num, tick_meta_map in parsed_sessions.items():
-        write_progress(
-            phase="simulate",
-            message=f"Simulating session {session_num} ({len(tick_meta_map)} ticks)",
-            current=0,
-            total=len(tick_meta_map),
-        )
-
-        def _progress(cur: int, total: int) -> None:
-            write_progress(
-                phase="simulate",
-                message=f"Simulating session {session_num}: tick {cur}/{total}",
-                current=cur,
-                total=total,
+        if hl_candle_cache or hl_barrier_candle_cache or hl_vol_candle_cache:
+            from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import (
+                prepare_shared_candle_stores,
             )
 
-        _pairs, _ticks, trades, summary = simulate_pullback_session(
-            session_num=session_num,
-            tick_meta_map=tick_meta_map,
-            reports_by_pair=reports_by_pair,
-            config=config,
-            signal_config=loader,
-            hl_price_cache=hl_caches_by_session.get(session_num),
-            hl_candle_cache=hl_candle_cache,
-            hl_barrier_candle_cache=hl_barrier_candle_cache,
-            hl_vol_candle_cache=hl_vol_candle_cache,
-            on_progress=_progress,
-        )
-        if summary.get("status") == "skipped_no_price_data":
-            continue
-        all_trades.extend(trades)
-        session_rows.append(
-            {
-                "Session": session_num,
-                "Status": "ok",
-                "Ticks": len(tick_meta_map),
-                "Trades": summary.get("total_trades", 0),
-                "Immediate": summary.get("immediate_trades", 0),
-                "Pullback": summary.get("pullback_trades", 0),
-                "Win Rate %": summary.get("win_rate_pct", 0),
-                "SL rate": summary.get("sl_before_tp_rate", 0),
-                "Sim PnL $": summary.get("net_pnl_quote", 0),
-            }
-        )
-
-    total_trades = len(all_trades)
-    total_pnl = sum(t.pnl_quote for t in all_trades)
-    wins = sum(1 for t in all_trades if t.pnl_quote > 0)
-    sl_n = sum(1 for t in all_trades if "stop_loss" in t.exit_reason)
-    tp_n = sum(1 for t in all_trades if "take_profit" in t.exit_reason)
-    avg_notional = (
-        sum(t.notional_quote for t in all_trades) / total_trades if total_trades else 0.0
-    )
-    cap_norm = capital_normalized_pnl(
-        total_pnl, avg_notional, FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL
-    )
-    immediate_n = sum(1 for t in all_trades if t.entry_class == "immediate")
-    pullback_n = sum(1 for t in all_trades if t.entry_class == "pullback")
-
-    summary_lines = [
-        f"macdbb_pullback_hl backtest — {config.strategy_slug}",
-        f"Preset: {config.preset} ({PRESET_LABELS.get(config.preset, config.preset)})",
-        f"Range: {config.range_start_utc} → {config.range_end_utc}",
-        f"Trades: {total_trades} (immediate={immediate_n}, pullback={pullback_n})",
-        f"Win rate: {(wins / total_trades * 100.0) if total_trades else 0.0:.1f}%",
-        f"SL hits: {sl_n} | TP hits: {tp_n} | SL rate: {(sl_n / total_trades) if total_trades else 0.0:.3f}",
-        f"Sim PnL: ${total_pnl:.2f} | Capital-norm PnL: ${cap_norm:.2f}",
-        f"Avg notional: ${avg_notional:.2f} | Avg SL/TP: "
-        f"{(sum(t.sl_pct_used for t in all_trades) / total_trades) if total_trades else 0:.2f}% / "
-        f"{(sum(t.tp_pct_used for t in all_trades) / total_trades) if total_trades else 0:.2f}%",
-    ]
-    text = "\n".join(summary_lines)
-    logger.info(text)
+            logger.info(
+                "Packing %d price / %d barrier / %d vol candle series into shared memory",
+                len(hl_candle_cache),
+                len(hl_barrier_candle_cache),
+                len(hl_vol_candle_cache),
+            )
+            (
+                _price_dicts,
+                _barrier_dicts,
+                _vol_dicts,
+                price_store,
+                barrier_store,
+                vol_store,
+            ) = prepare_shared_candle_stores(
+                hl_candle_cache,
+                hl_barrier_candle_cache,
+                hl_vol_candle_cache,
+            )
+            hl_candle_cache = price_store or {}
+            hl_barrier_candle_cache = barrier_store or {}
+            hl_vol_candle_cache = vol_store or {}
+            packed_stores = [
+                store
+                for store in (price_store, barrier_store, vol_store)
+                if store is not None
+            ]
 
     try:
-        from condor.reports import ReportBuilder
+        all_trades: list[Any] = []
+        session_rows: list[dict[str, Any]] = []
+        for session_num, tick_meta_map in parsed_sessions.items():
+            write_progress(
+                phase="simulate",
+                message=f"Simulating session {session_num} ({len(tick_meta_map)} ticks)",
+                current=0,
+                total=len(tick_meta_map),
+            )
 
-        builder = ReportBuilder(
-            f"MACDBB Pullback Backtest — {PRESET_LABELS.get(config.preset, config.preset)}"
-        )
-        builder.source("routine", "macdbb_pullback_hl_backtest")
-        builder.tags(["backtest", "macdbb_pullback"])
-        builder.manual_order()
-        builder.kpi("Sim Trades", str(total_trades))
-        builder.kpi("Immediate", str(immediate_n))
-        builder.kpi("Pullback", str(pullback_n))
-        builder.kpi("Sim PnL", f"${total_pnl:+.2f}")
-        builder.kpi("Capital-norm PnL", f"${cap_norm:+.2f}")
-        builder.kpi("SL rate", f"{(sl_n / total_trades) if total_trades else 0.0:.3f}")
-        builder.markdown(
-            "## Config\n"
-            f"- **Preset:** {config.preset}\n"
-            f"- **Frequency:** {config.frequency_sec}s\n"
-            f"- **Range:** {config.range_start_utc} → {config.range_end_utc}\n"
-            f"- **Snapshot dir:** `{config.snapshot_dir}`\n"
-            f"- **SL/TP:** {config.sl_pct}% / {config.tp_pct}%\n"
-            f"- **Impulse ATR mult:** {config.impulse_atr_mult}\n"
-            f"- **Pullback timeout hours:** {config.pullback_timeout_hours}\n"
-        )
-        if session_rows:
-            builder.markdown("## Sessions")
-            builder.table(session_rows)
-        if all_trades:
-            trade_rows = [
+            def _progress(cur: int, total: int) -> None:
+                write_progress(
+                    phase="simulate",
+                    message=f"Simulating session {session_num}: tick {cur}/{total}",
+                    current=cur,
+                    total=total,
+                )
+
+            _pairs, _ticks, trades, summary = simulate_pullback_session(
+                session_num=session_num,
+                tick_meta_map=tick_meta_map,
+                reports_by_pair=reports_by_pair,
+                config=config,
+                signal_config=loader,
+                hl_price_cache=hl_caches_by_session.get(session_num),
+                hl_candle_cache=hl_candle_cache,
+                hl_barrier_candle_cache=hl_barrier_candle_cache,
+                hl_vol_candle_cache=hl_vol_candle_cache,
+                on_progress=_progress,
+                collect_debug_rows=False,
+            )
+            if summary.get("status") == "skipped_no_price_data":
+                continue
+            all_trades.extend(trades)
+            session_rows.append(
                 {
-                    "Pair": t.pair,
-                    "Side": t.side,
-                    "Class": t.entry_class,
-                    "Notional": round(t.notional_quote, 2),
-                    "SL%": round(t.sl_pct_used, 3),
-                    "TP%": round(t.tp_pct_used, 3),
-                    "Entry": t.entry_time_utc.isoformat() if t.entry_time_utc else "",
-                    "Exit": t.exit_time_utc.isoformat() if t.exit_time_utc else "",
-                    "Reason": t.exit_reason,
-                    "Return%": round(t.return_pct, 3),
-                    "PnL": round(t.pnl_quote, 2),
+                    "Session": session_num,
+                    "Status": "ok",
+                    "Ticks": len(tick_meta_map),
+                    "Trades": summary.get("total_trades", 0),
+                    "Immediate": summary.get("immediate_trades", 0),
+                    "Pullback": summary.get("pullback_trades", 0),
+                    "Win Rate %": summary.get("win_rate_pct", 0),
+                    "SL rate": summary.get("sl_before_tp_rate", 0),
+                    "Sim PnL $": summary.get("net_pnl_quote", 0),
                 }
-                for t in all_trades
-            ]
-            builder.markdown("## Trades")
-            builder.table(trade_rows)
-        await builder.save()
-    except Exception:
-        logger.warning("Failed to save pullback backtest report", exc_info=True)
+            )
 
-    out_dir = __import__("pathlib").Path("data/backtests/macdbb_pullback_hl")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "last_summary.json").write_text(
-        json.dumps(
-            {
-                "preset": config.preset,
-                "total_trades": total_trades,
-                "immediate_trades": immediate_n,
-                "pullback_trades": pullback_n,
-                "sl_hits": sl_n,
-                "tp_hits": tp_n,
-                "sl_rate": (sl_n / total_trades) if total_trades else 0.0,
-                "net_pnl_quote": total_pnl,
-                "capital_norm_pnl": cap_norm,
-                "avg_notional": avg_notional,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    write_progress(phase="done", message="Pullback backtest complete", percent=100.0)
-    return RoutineResult(text=text)
+        text, _report_id = await save_pullback_backtest_report(
+            config,
+            all_trades=all_trades,
+            session_rows=session_rows,
+        )
+        stats = summarize_pullback_trades(all_trades)
+
+        out_dir = __import__("pathlib").Path("data/backtests/macdbb_pullback_hl")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "last_summary.json").write_text(
+            json.dumps(
+                {
+                    "preset": config.preset,
+                    "total_trades": stats["total_trades"],
+                    "immediate_trades": stats["immediate_n"],
+                    "pullback_trades": stats["pullback_n"],
+                    "sl_hits": stats["sl_n"],
+                    "tp_hits": stats["tp_n"],
+                    "sl_rate": stats["sl_rate"],
+                    "net_pnl_quote": stats["total_pnl"],
+                    "capital_norm_pnl": stats["cap_norm"],
+                    "avg_notional": stats["avg_notional"],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        write_progress(phase="done", message="Pullback backtest complete", percent=100.0)
+        return RoutineResult(text=text)
+    finally:
+        for store in packed_stores:
+            store.close_unlink()

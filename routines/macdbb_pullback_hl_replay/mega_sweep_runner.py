@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing as mp
+from pathlib import Path
 from typing import Any, Callable
 
 from condor.strategy_runners.macdbb_pullback.dynamic import capital_normalized_pnl
@@ -12,6 +14,35 @@ from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import resolve_sw
 logger = logging.getLogger(__name__)
 
 _SHARED: dict[str, Any] | None = None
+
+
+def load_completed_results(
+    cases: list[dict[str, Any]],
+    out_dir: Path | str,
+    *,
+    force: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split the grid into already-written JSON results vs cases still to run."""
+    directory = Path(out_dir)
+    completed: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    for case in cases:
+        result_path = directory / f"{case['name']}.json"
+        if force or not result_path.is_file():
+            pending.append(case)
+            continue
+        try:
+            loaded = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Unreadable result %s — will re-run", result_path)
+            pending.append(case)
+            continue
+        if not isinstance(loaded, dict) or "stats" not in loaded:
+            logger.warning("Incomplete result %s — will re-run", result_path)
+            pending.append(case)
+            continue
+        completed.append(loaded)
+    return completed, pending
 
 
 def trade_stats(trades: list[Any]) -> dict[str, Any]:
@@ -165,4 +196,4 @@ def run_case_batch(
     return results
 
 
-__all__ = ["run_case_batch", "run_one_case", "trade_stats"]
+__all__ = ["load_completed_results", "run_case_batch", "run_one_case", "trade_stats"]

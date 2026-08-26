@@ -444,8 +444,10 @@ class ReportBuilder:
             new_id = uuid.uuid4().hex[:6]
             timestamp = now.strftime("%Y%m%d_%H%M%S")
             slug = rendering.slugify(self._title)
-            filename = f"{timestamp}_{slug}_{new_id}.html"
-            store._write_report_html(charts_dir / filename, html_content)
+            source_folder = store.source_dir_name(self._source_name)
+            basename = f"{timestamp}_{slug}_{new_id}.html"
+            filename = f"{source_folder}/{basename}"
+            store._write_report_html(charts_dir / source_folder / basename, html_content)
             entry = {
                 "id": new_id,
                 "title": self._title,

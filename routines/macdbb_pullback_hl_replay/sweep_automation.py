@@ -1,12 +1,15 @@
-"""Auto-promote pullback sweep leaders: preset + Telegram (no refine)."""
+"""Auto-promote pullback sweep leaders: preset, backtest report, Telegram."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import subprocess
+import sys
 import threading
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -22,6 +25,33 @@ from condor.strategy_runners.macdbb_pullback.presets import (
 logger = logging.getLogger(__name__)
 
 PRESET_NAME_PREFIX = "pullback_sweep_lead_"
+
+
+def lead_preset_names() -> list[str]:
+    from condor.strategy_runners.macdbb_pullback.presets import known_preset_names
+
+    return sorted(
+        name
+        for name in known_preset_names()
+        if str(name).startswith(PRESET_NAME_PREFIX)
+    )
+
+
+def preset_has_backtest_report(preset_name: str) -> bool:
+    from condor.reports import list_reports
+
+    entries, _total = list_reports(
+        source_type="routine",
+        source_names=["macdbb_pullback_hl_backtest"],
+        tag=preset_name,
+        limit=1,
+    )
+    return bool(entries)
+
+
+def lead_presets_missing_reports() -> list[str]:
+    return [name for name in lead_preset_names() if not preset_has_backtest_report(name)]
+
 
 PRESET_STRIP_KEYS = frozenset(
     {
@@ -412,6 +442,189 @@ def consider_and_promote(
     return job
 
 
+async def run_backtest_for_preset(
+    preset_name: str,
+    *,
+    range_start_utc: str = "",
+    range_end_utc: str = "",
+    snapshot_dir: str = "data/replay_snapshots_binance_60s",
+    candle_source: str = "binance_perpetual",
+    total_amount_quote: float = 100.0,
+) -> tuple[str | None, str]:
+    """Run macdbb_pullback_hl_backtest for a named preset and persist the UI report."""
+    from condor.reports import get_last_report_id, reset_last_report_id
+    from routines.macdbb_pullback_hl_backtest import Config, run as run_pullback_backtest
+
+    reset_last_report_id()
+    config = Config(
+        preset=preset_name,
+        range_start_utc=range_start_utc,
+        range_end_utc=range_end_utc,
+        snapshot_dir=snapshot_dir,
+        candle_source=candle_source,  # type: ignore[arg-type]
+        total_amount_quote=float(total_amount_quote),
+        live_equivalent_queue=True,
+    )
+    result = await run_pullback_backtest(config, None)
+    text = result.text if hasattr(result, "text") else str(result)
+    return get_last_report_id(), text
+
+
+async def send_report_html_telegram(
+    chat_id: str, preset_name: str, report_id: str | None
+) -> None:
+    from condor.routine_hooks import _resolve_report_html
+    from condor.routine_store import _http_bot
+
+    await _http_bot.send_message(
+        chat_id=chat_id,
+        text=f"Pullback backtest report saved\nPreset: {preset_name}",
+    )
+    if not report_id:
+        return
+    html, filename = _resolve_report_html(report_id, None)
+    await _http_bot.send_document(
+        chat_id=chat_id,
+        document=html.encode("utf-8"),
+        caption=f"Backtest report: {preset_name}",
+        filename=filename or f"{preset_name}.html",
+    )
+
+
+async def save_lead_reports_from_shared(
+    shared: dict[str, Any],
+    preset_names: list[str],
+    *,
+    total_amount_quote: float = 100.0,
+) -> list[tuple[str, str | None]]:
+    """Simulate each lead on an already-hydrated tape and save Condor UI reports.
+
+    Intended to run after sweep workers exit so it does not allocate a second tape.
+    """
+    from routines.macdbb_pullback_hl_backtest import Config, save_pullback_backtest_report
+    from routines.macdbb_pullback_hl_replay.presets import resolve_pullback_config
+    from routines.macdbb_pullback_hl_replay.simulator import simulate_pullback_session
+
+    unique_names = list(dict.fromkeys(preset_names))
+    tapes = shared.get("signal_tapes") or {}
+    loader = shared["loader"]
+    saved: list[tuple[str, str | None]] = []
+    for preset_name in unique_names:
+        logger.info("Saving pullback backtest report for %s on shared tape", preset_name)
+        kwargs = {
+            **shared["base_kwargs"],
+            "preset": preset_name,
+            "total_amount_quote": float(total_amount_quote),
+        }
+        config = resolve_pullback_config(Config(**kwargs))
+        all_trades: list[Any] = []
+        session_rows: list[dict[str, Any]] = []
+        for session_num, tick_meta_map in shared["parsed_sessions"].items():
+            _pairs, _ticks, trades, summary = simulate_pullback_session(
+                session_num=session_num,
+                tick_meta_map=tick_meta_map,
+                reports_by_pair=shared["reports_by_pair"],
+                config=config,
+                signal_config=loader,
+                hl_price_cache=shared["hl_caches_by_session"].get(session_num),
+                hl_candle_cache=shared["hl_candle_cache"],
+                hl_barrier_candle_cache=shared["hl_barrier_candle_cache"],
+                hl_vol_candle_cache=shared["hl_vol_candle_cache"],
+                signal_tape=tapes.get(session_num),
+                collect_debug_rows=False,
+            )
+            if summary.get("status") == "skipped_no_price_data":
+                continue
+            all_trades.extend(trades)
+            session_rows.append(
+                {
+                    "Session": session_num,
+                    "Status": "ok",
+                    "Ticks": len(tick_meta_map),
+                    "Trades": summary.get("total_trades", 0),
+                    "Immediate": summary.get("immediate_trades", 0),
+                    "Pullback": summary.get("pullback_trades", 0),
+                    "Win Rate %": summary.get("win_rate_pct", 0),
+                    "SL rate": summary.get("sl_before_tp_rate", 0),
+                    "Sim PnL $": summary.get("net_pnl_quote", 0),
+                }
+            )
+        _text, report_id = await save_pullback_backtest_report(
+            config,
+            all_trades=all_trades,
+            session_rows=session_rows,
+        )
+        logger.info(
+            "Saved report id=%s for %s trades=%d",
+            report_id,
+            preset_name,
+            len(all_trades),
+        )
+        saved.append((preset_name, report_id))
+    return saved
+
+
+def start_lead_report_process(
+    *,
+    preset_name: str,
+    range_start_utc: str,
+    range_end_utc: str,
+    snapshot_dir: str,
+    candle_source: str = "binance_perpetual",
+    total_amount_quote: float = 100.0,
+    telegram_chat_id: str | None = None,
+    log_dir: Any | None = None,
+    repo_root: Any | None = None,
+) -> int:
+    """Spawn the pullback backtest routine so the Condor UI gets a report."""
+    root = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[2]
+    log_path_dir = (
+        Path(log_dir)
+        if log_dir is not None
+        else root / "data" / "backtests" / "pullback_lead_reports"
+    )
+    log_path_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_path_dir / f"{preset_name}.log"
+    command = [
+        sys.executable,
+        str(root / "scripts" / "run_macdbb_pullback_lead_report.py"),
+        "--preset",
+        preset_name,
+        "--range-start",
+        range_start_utc,
+        "--range-end",
+        range_end_utc,
+        "--snapshot-dir",
+        snapshot_dir,
+        "--candle-source",
+        candle_source,
+        "--total-amount-quote",
+        str(total_amount_quote),
+    ]
+    if telegram_chat_id:
+        command.extend(["--telegram-chat-id", str(telegram_chat_id)])
+    env = dict(os.environ)
+    env["PYTHONPATH"] = (
+        f"{root}{os.pathsep}{env['PYTHONPATH']}" if env.get("PYTHONPATH") else str(root)
+    )
+    with log_path.open("ab") as log_file:
+        process = subprocess.Popen(
+            command,
+            cwd=str(root),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=env,
+        )
+    logger.info(
+        "Started pullback lead report pid=%d preset=%s log=%s",
+        process.pid,
+        preset_name,
+        log_path,
+    )
+    return int(process.pid)
+
+
 __all__ = [
     "LeaderTracker",
     "PRESET_NAME_PREFIX",
@@ -422,11 +635,18 @@ __all__ = [
     "consider_and_promote",
     "default_telegram_chat_id",
     "existing_sweep_lead_numbers",
+    "lead_preset_names",
+    "lead_presets_missing_reports",
     "next_sweep_lead_number",
+    "preset_has_backtest_report",
     "promote_leader",
     "promote_telegram_text",
     "register_sweep_lead_preset",
+    "run_backtest_for_preset",
+    "save_lead_reports_from_shared",
     "send_promote_telegram",
     "send_promote_telegram_sync",
+    "send_report_html_telegram",
+    "start_lead_report_process",
     "strategy_overrides_from_result",
 ]

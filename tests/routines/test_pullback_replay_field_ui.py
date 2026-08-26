@@ -203,3 +203,41 @@ def test_journal_tick_maps_reads_session_journal(tmp_path, monkeypatch):
         )
     )
     assert set(filtered[2]) == {548}
+
+
+def test_loader_config_binance_uses_binance_candle_cache():
+    from routines.macdbb_pullback_hl_backtest import Config, _loader_config
+
+    loader = _loader_config(Config(candle_source="binance_perpetual"))
+    assert loader.hl_cache_dir == "data/binance_candles"
+    assert loader.price_source == "binance_candles"
+
+    hl_loader = _loader_config(Config())
+    assert hl_loader.candle_source == "hyperliquid"
+    assert hl_loader.hl_cache_dir == "data/hl_candles"
+
+
+def test_snapshot_coverage_hint_reads_manifest():
+    from routines.macdbb_pullback_hl_backtest import _snapshot_coverage_hint
+
+    hint = _snapshot_coverage_hint("data/replay_snapshots_hl_60s")
+    assert "2026-08-05T00:00:00Z" in hint
+    assert "hyperliquid" in hint
+
+
+def test_tick_universe_stats_empty_when_no_pairs():
+    import datetime as dt
+
+    from routines.macdbb_pullback_hl_backtest import _tick_universe_stats
+    from routines.macdbb_scanner_aggressive_hl_replay.models import TickMeta
+
+    ticks = {
+        1: TickMeta(
+            tick=1,
+            timestamp=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc),
+            macd_pairs=[],
+        )
+    }
+    with_pairs, universe = _tick_universe_stats({0: ticks})
+    assert with_pairs == 0
+    assert universe == []

@@ -21,7 +21,7 @@ from typing import Any
 import aiohttp
 import numpy as np
 
-from condor.reports import ReportBuilder
+from condor.reports import ReportBuilder, source_dir_name
 from routines.lib.hl_candle_cache import fetch_hl_candles_between_cached
 from routines.lib.binance_candle_cache import (
     fetch_binance_candles_between_cached,
@@ -130,8 +130,12 @@ def save_report_at(
     ts_str = created_at.strftime("%Y%m%d_%H%M%S")
     slug = _slugify(builder._title)
     extra = f"_{suffix}" if suffix else ""
-    filename = f"{ts_str}_{slug}{extra}_{new_id}.html"
-    (REPORTS_DIR / filename).write_text(html_content, encoding="utf-8")
+    source_folder = source_dir_name(builder._source_name)
+    basename = f"{ts_str}_{slug}{extra}_{new_id}.html"
+    filename = f"{source_folder}/{basename}"
+    report_dir = REPORTS_DIR / source_folder
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / basename).write_text(html_content, encoding="utf-8")
 
     entry = {
         "id": new_id,

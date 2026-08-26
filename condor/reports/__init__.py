@@ -13,6 +13,7 @@ from .store import (
     list_reports,
     list_reports_grouped,
     reset_last_report_id,
+    source_dir_name,
 )
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "list_reports_grouped",
     "get_report",
     "delete_report",
+    "source_dir_name",
 ]

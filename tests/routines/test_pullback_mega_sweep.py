@@ -47,3 +47,24 @@ def test_seed_is_deterministic():
     other = [case["name"] for case in pullback_mega_cases(min_configs=20, seed=7)]
     assert first == second
     assert first != other
+
+
+def test_load_completed_results_resumes_from_json(tmp_path):
+    import json
+
+    from routines.macdbb_pullback_hl_replay.mega_sweep_runner import (
+        load_completed_results,
+    )
+
+    (tmp_path / "a.json").write_text(
+        json.dumps({"name": "a", "stats": {"trades": 1}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "b.json").write_text("{not json", encoding="utf-8")
+    cases = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+    done, pending = load_completed_results(cases, tmp_path)
+    assert [row["name"] for row in done] == ["a"]
+    assert [case["name"] for case in pending] == ["b", "c"]
+    done_forced, pending_forced = load_completed_results(cases, tmp_path, force=True)
+    assert done_forced == []
+    assert [case["name"] for case in pending_forced] == ["a", "b", "c"]
