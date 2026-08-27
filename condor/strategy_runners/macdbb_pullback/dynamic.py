@@ -98,6 +98,22 @@ def capital_normalized_pnl(
     return float(raw_pnl) * (benchmark_avg_notional / avg_notional)
 
 
+_MONTH_ABBR = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+
 def _parse_range_utc(value: str) -> dt.datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -111,6 +127,56 @@ def _parse_range_utc(value: str) -> dt.datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.timezone.utc)
     return parsed.astimezone(dt.timezone.utc)
+
+
+def _is_calendar_date_bound(moment: dt.datetime) -> bool:
+    if moment.hour == 0 and moment.minute == 0 and moment.second == 0:
+        return True
+    return moment.hour == 23 and moment.minute == 59
+
+
+def _format_range_bound(
+    moment: dt.datetime,
+    *,
+    date_only: bool,
+    include_year: bool,
+) -> str:
+    date_part = f"{moment.day} {_MONTH_ABBR[moment.month - 1]}"
+    if include_year:
+        date_part = f"{date_part} {moment.year}"
+    if date_only:
+        return date_part
+    return f"{date_part} {moment.strftime('%H:%M')} UTC"
+
+
+def format_range_utc(range_start_utc: str, range_end_utc: str) -> str:
+    """Human-readable UTC window for reports.
+
+    Midnight and 23:59 bounds render as calendar dates. Same-year date-only
+    windows omit the year on the start bound (``18 Jul → 17 Aug 2026``).
+    """
+    start = _parse_range_utc(range_start_utc)
+    end = _parse_range_utc(range_end_utc)
+    if start is None and end is None:
+        return ""
+    if start is None or end is None:
+        left = str(range_start_utc or "").strip() or "?"
+        right = str(range_end_utc or "").strip() or "?"
+        return f"{left} → {right}"
+    start_date_only = _is_calendar_date_bound(start)
+    end_date_only = _is_calendar_date_bound(end)
+    both_date_only = start_date_only and end_date_only
+    start_label = _format_range_bound(
+        start,
+        date_only=start_date_only,
+        include_year=not (both_date_only and start.year == end.year),
+    )
+    end_label = _format_range_bound(
+        end,
+        date_only=end_date_only,
+        include_year=True,
+    )
+    return f"{start_label} → {end_label}"
 
 
 def window_days(range_start_utc: str, range_end_utc: str) -> float:

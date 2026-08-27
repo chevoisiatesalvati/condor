@@ -734,13 +734,18 @@ def test_save_pullback_backtest_report_includes_telegram_kpis(
 
     import asyncio
 
+    from condor.strategy_runners.macdbb_pullback.dynamic import ANNUALIZATION_DAYS
     from routines.macdbb_pullback_hl_backtest import Config, save_pullback_backtest_report
 
     _install_named_preset(tmp_path, "pullback_sweep_lead_001")
 
     text, report_id = asyncio.run(
         save_pullback_backtest_report(
-            Config(preset="pullback_sweep_lead_001"),
+            Config(
+                preset="pullback_sweep_lead_001",
+                range_start_utc="2026-07-18T00:00:00Z",
+                range_end_utc="2026-08-17T00:00:00Z",
+            ),
             all_trades=[
                 _report_trade(
                     exit_reason="stop_loss_close_proxy",
@@ -755,6 +760,8 @@ def test_save_pullback_backtest_report_includes_telegram_kpis(
         )
     )
     kpi_map = dict(captured["kpis"])
+    expected_annualized = 6.9 * (ANNUALIZATION_DAYS / 30.0)
+    annualized_cell = f"${expected_annualized:+.2f} (30.0d window)"
     assert report_id == "rep1"
     assert kpi_map["Sim Trades"] == "4"
     assert kpi_map["Immediate"] == "1"
@@ -765,6 +772,8 @@ def test_save_pullback_backtest_report_includes_telegram_kpis(
     assert kpi_map["Decay"] == "1"
     assert kpi_map["Session end"] == "1"
     assert "Flip" not in kpi_map
+    assert kpi_map["Capital-norm PnL"] == "$+6.90"
+    assert kpi_map["Annualized cap-norm"] == annualized_cell
     assert kpi_map["SL rate"] == "0.250"
     assert kpi_map["Avg notional"] == "$100.00"
     assert kpi_map["Avg SL/TP"] == "3.80% / 9.00%"
@@ -773,6 +782,8 @@ def test_save_pullback_backtest_report_includes_telegram_kpis(
     assert "Decay: 1" in text
     assert "Session end: 1" in text
     assert "Avg SL/TP: 3.80% / 9.00%" in text
+    assert f"Annualized cap-norm: {annualized_cell}" in text
+    assert "Range: 18 Jul → 17 Aug 2026" in text
 
 
 def test_send_promote_telegram_sync_posts_message(monkeypatch):

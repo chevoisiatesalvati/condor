@@ -28,7 +28,10 @@ from routines.macdbb_scanner_aggressive_hl_replay.hl_prices import (
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 from condor.strategy_runners.macdbb_pullback.dynamic import (
     FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL,
+    annualized_cap_norm,
     capital_normalized_pnl,
+    format_range_utc,
+    window_days,
 )
 from routines.macdbb_scanner_aggressive_hl_replay.replay_data import (
     configure_replay_data_sources,
@@ -309,10 +312,14 @@ async def save_pullback_backtest_report(
     Returns ``(summary_text, report_id)``.
     """
     stats = summarize_pullback_trades(all_trades)
+    days = window_days(config.range_start_utc, config.range_end_utc)
+    annualized = annualized_cap_norm(stats["cap_norm"], window_days=days)
+    window_note = f" ({days:.1f}d window)" if days > 0 else ""
+    range_label = format_range_utc(config.range_start_utc, config.range_end_utc) or "—"
     summary_lines = [
         f"macdbb_pullback_hl backtest — {config.strategy_slug}",
         f"Preset: {config.preset} ({PRESET_LABELS.get(config.preset, config.preset)})",
-        f"Range: {config.range_start_utc} → {config.range_end_utc}",
+        f"Range: {range_label}",
         (
             f"Trades: {stats['total_trades']} "
             f"(immediate={stats['immediate_n']}, pullback={stats['pullback_n']})"
@@ -328,7 +335,11 @@ async def save_pullback_backtest_report(
             )
             + f" | SL rate: {stats['sl_rate']:.3f}"
         ),
-        f"Sim PnL: ${stats['total_pnl']:.2f} | Capital-norm PnL: ${stats['cap_norm']:.2f}",
+        (
+            f"Sim PnL: ${stats['total_pnl']:.2f} | "
+            f"Capital-norm PnL: ${stats['cap_norm']:.2f} | "
+            f"Annualized cap-norm: ${annualized:+.2f}{window_note}"
+        ),
         (
             f"Avg notional: ${stats['avg_notional']:.2f} | Avg SL/TP: "
             f"{stats['avg_sl_pct']:.2f}% / {stats['avg_tp_pct']:.2f}%"
@@ -360,6 +371,7 @@ async def save_pullback_backtest_report(
             builder.kpi("Flip", str(stats["flip_n"]))
         builder.kpi("Sim PnL", f"${stats['total_pnl']:+.2f}")
         builder.kpi("Capital-norm PnL", f"${stats['cap_norm']:+.2f}")
+        builder.kpi("Annualized cap-norm", f"${annualized:+.2f}{window_note}")
         builder.kpi("SL rate", f"{stats['sl_rate']:.3f}")
         builder.kpi("Avg notional", f"${stats['avg_notional']:.2f}")
         builder.kpi(
@@ -370,7 +382,7 @@ async def save_pullback_backtest_report(
             "## Config\n"
             f"- **Preset:** {config.preset}\n"
             f"- **Frequency:** {config.frequency_sec}s\n"
-            f"- **Range:** {config.range_start_utc} → {config.range_end_utc}\n"
+            f"- **Range:** {range_label}\n"
             f"- **Snapshot dir:** `{config.snapshot_dir}`\n"
             f"- **Budget:** ${float(config.total_amount_quote):.0f}\n"
             f"- **SL/TP:** {config.sl_pct}% / {config.tp_pct}%\n"
