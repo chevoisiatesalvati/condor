@@ -76,6 +76,7 @@ class MacdbbPullbackState:
     thesis_decay_by_pair: dict[str, int] = field(default_factory=dict)
     flip_streak_by_pair: dict[str, int] = field(default_factory=dict)
     thesis_decay_extra_pending_by_pair: dict[str, bool] = field(default_factory=dict)
+    thesis_decay_grace_until_tick: dict[str, int] = field(default_factory=dict)
     flip_cooldown_until_tick: dict[str, int] = field(default_factory=dict)
     monitor_state_by_pair: dict[str, str] = field(default_factory=dict)
 
@@ -93,6 +94,7 @@ class MacdbbPullbackState:
             "thesis_decay_extra_pending_by_pair": dict(
                 self.thesis_decay_extra_pending_by_pair
             ),
+            "thesis_decay_grace_until_tick": dict(self.thesis_decay_grace_until_tick),
             "flip_cooldown_until_tick": dict(self.flip_cooldown_until_tick),
             "monitor_state_by_pair": dict(self.monitor_state_by_pair),
         }
@@ -149,6 +151,10 @@ class MacdbbPullbackState:
             thesis_decay_extra_pending_by_pair={
                 str(k): bool(v)
                 for k, v in (raw.get("thesis_decay_extra_pending_by_pair") or {}).items()
+            },
+            thesis_decay_grace_until_tick={
+                str(k): int(v)
+                for k, v in (raw.get("thesis_decay_grace_until_tick") or {}).items()
             },
             flip_cooldown_until_tick={
                 str(k): int(v)

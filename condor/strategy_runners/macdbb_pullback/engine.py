@@ -35,6 +35,7 @@ from condor.strategy_runners.macdbb_pullback.types import (
     SignalSnapshot,
     StopAction,
 )
+from condor.strategy_runners.macdbb_pullback.params import minutes_to_ticks
 from condor.strategy_runners.quantize import apply_fee_slippage, quote_to_base_amount
 
 
@@ -48,6 +49,7 @@ def _copy_state(state: MacdbbPullbackState, **overrides: Any) -> MacdbbPullbackS
         "thesis_decay_extra_pending_by_pair": dict(
             state.thesis_decay_extra_pending_by_pair
         ),
+        "thesis_decay_grace_until_tick": dict(state.thesis_decay_grace_until_tick),
         "flip_cooldown_until_tick": dict(state.flip_cooldown_until_tick),
         "monitor_state_by_pair": dict(state.monitor_state_by_pair),
     }
@@ -64,6 +66,15 @@ def _ensure_metrics(signal: SignalSnapshot, params: dict[str, Any]) -> dict[str,
 def _hours_to_ticks(hours: float, frequency_sec: int) -> int:
     freq = max(1, int(frequency_sec or 60))
     return max(1, int(round(float(hours) * 3600.0 / freq)))
+
+
+def _decay_grace_ticks(params: dict[str, Any], frequency_sec: int) -> int:
+    if "thesis_decay_negative_grace_ticks" in params:
+        return max(0, int(params.get("thesis_decay_negative_grace_ticks") or 0))
+    return minutes_to_ticks(
+        float(params.get("thesis_decay_negative_grace_minutes") or 30.0),
+        frequency_sec,
+    )
 
 
 def _impulse_for_side(signal: SignalSnapshot, side: Side) -> bool:
@@ -207,7 +218,10 @@ def _monitor_stops(
 
     thesis = dict(state.thesis_decay_by_pair)
     flips = dict(state.flip_streak_by_pair)
-    extra_pending = dict(state.thesis_decay_extra_pending_by_pair)
+    grace_until = dict(state.thesis_decay_grace_until_tick)
+    for pair, pending in state.thesis_decay_extra_pending_by_pair.items():
+        if pending and pair not in grace_until:
+            grace_until[pair] = tick.tick_number + 1
     monitor = dict(state.monitor_state_by_pair)
     flip_cooldown = {
         pair: until
@@ -215,6 +229,7 @@ def _monitor_stops(
         if until > tick.tick_number
     }
     entry_meta = dict(state.entry_meta_by_pair)
+    grace_ticks = _decay_grace_ticks(params, tick.frequency_sec)
 
     stops: list[StopAction] = []
 
@@ -255,7 +270,7 @@ def _monitor_stops(
             ) or (pos.side == "short" and bool(metrics.get("thesis_short")))
             if same_direction:
                 thesis[pos.pair] = 0
-                extra_pending[pos.pair] = False
+                grace_until.pop(pos.pair, None)
                 monitor[pos.pair] = "thesis_intact"
             elif snapshot_signal == "NEUTRAL":
                 trend_decay, bb_decay = _thesis_decay_reasons(
@@ -270,14 +285,17 @@ def _monitor_stops(
                     monitor[pos.pair] = "thesis_decay"
                 else:
                     thesis[pos.pair] = 0
-                    extra_pending[pos.pair] = False
+                    grace_until.pop(pos.pair, None)
                     monitor[pos.pair] = "thesis_intact"
 
                 if decay_limit > 0 and thesis.get(pos.pair, 0) >= decay_limit:
-                    if pos.pnl < 0 and not extra_pending.get(pos.pair, False):
-                        extra_pending[pos.pair] = True
-                    else:
+                    if pos.pnl >= 0 or grace_ticks <= 0:
                         exit_reason = "thesis_decay"
+                    else:
+                        if pos.pair not in grace_until:
+                            grace_until[pos.pair] = tick.tick_number + grace_ticks
+                        if tick.tick_number >= grace_until[pos.pair]:
+                            exit_reason = "thesis_decay"
 
         if exit_reason:
             stops.append(
@@ -291,7 +309,7 @@ def _monitor_stops(
             monitor[pos.pair] = exit_reason
             thesis.pop(pos.pair, None)
             flips.pop(pos.pair, None)
-            extra_pending.pop(pos.pair, None)
+            grace_until.pop(pos.pair, None)
             entry_meta.pop(pos.pair, None)
             if exit_reason == "flip_confirm" and flip_cooldown_ticks > 0:
                 flip_cooldown[pos.pair] = tick.tick_number + flip_cooldown_ticks
@@ -300,7 +318,8 @@ def _monitor_stops(
         state,
         thesis_decay_by_pair=thesis,
         flip_streak_by_pair=flips,
-        thesis_decay_extra_pending_by_pair=extra_pending,
+        thesis_decay_extra_pending_by_pair={},
+        thesis_decay_grace_until_tick=grace_until,
         flip_cooldown_until_tick=flip_cooldown,
         entry_meta_by_pair=entry_meta,
         monitor_state_by_pair=monitor,
@@ -456,6 +475,7 @@ def decide(
             state.thesis_decay_by_pair.pop(pair, None)
             state.flip_streak_by_pair.pop(pair, None)
             state.thesis_decay_extra_pending_by_pair.pop(pair, None)
+            state.thesis_decay_grace_until_tick.pop(pair, None)
             state.monitor_state_by_pair.pop(pair, None)
 
     cooldown_pairs = {

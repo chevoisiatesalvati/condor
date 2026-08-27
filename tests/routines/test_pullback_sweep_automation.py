@@ -19,6 +19,8 @@ from routines.macdbb_pullback_hl_replay.sweep_automation import (
     PullbackSweepResult,
     consider_and_promote,
     default_telegram_chat_id,
+    latest_sweep_lead_number,
+    latest_sweep_lead_preset,
     promote_telegram_text,
     register_sweep_lead_preset,
     send_promote_telegram_sync,
@@ -354,6 +356,29 @@ def test_consider_and_promote_skips_existing_lead_numbers(tmp_path: Path):
     assert f"{PRESET_NAME_PREFIX}006" in bundle["dynamic_preset_overrides"]
     assert bundle["current_winner_preset"] == "pullback_decay_2h_60s"
     assert f"{PRESET_NAME_PREFIX}001" in bundle["dynamic_preset_overrides"]
+
+
+def test_latest_sweep_lead_is_highest_index(tmp_path: Path):
+    presets_path = tmp_path / "presets.yaml"
+    existing = {
+        f"{PRESET_NAME_PREFIX}{n:03d}": {"sl_pct": 3.0}
+        for n in (1, 8, 12)
+    }
+    presets_path.write_text(
+        yaml.safe_dump(
+            {
+                "agent_strategy_preset_names": list(existing),
+                "dynamic_preset_overrides": existing,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert latest_sweep_lead_number(presets_path) == 12
+    assert latest_sweep_lead_preset(presets_path) == f"{PRESET_NAME_PREFIX}012"
+    empty = tmp_path / "empty.yaml"
+    empty.write_text(yaml.safe_dump({"dynamic_preset_overrides": {}}), encoding="utf-8")
+    assert latest_sweep_lead_number(empty) is None
+    assert latest_sweep_lead_preset(empty) is None
 
 
 def test_yaml_lead_overlays_winner_strategy_params(tmp_path: Path):

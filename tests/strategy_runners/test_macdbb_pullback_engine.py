@@ -324,6 +324,7 @@ def test_thesis_decay_stop_when_enabled():
         "tp_pct": 6.0,
         "enable_thesis_decay_exit": True,
         "thesis_decay_exit_ticks": 2,
+        "thesis_decay_negative_grace_ticks": 1,
         "thesis_bb_drift_pts": 20.0,
     }
     state = MacdbbPullbackState(
@@ -398,6 +399,190 @@ def test_thesis_bb_drift_decay_when_enabled():
         decision = decide(tick, state if decision is None else decision.state)
     assert decision is not None
     assert any(s.reason == "thesis_decay" for s in decision.stops)
+
+
+def _decay_decide(tick_n, signal, pos, params, state, *, frequency_sec=60):
+    tick = PullbackTickInput(
+        tick_number=tick_n,
+        tradeable_count=5,
+        signals=[signal],
+        open_positions=[pos],
+        total_amount_quote=500.0,
+        strategy_params=params,
+        max_open_executors=3,
+        frequency_sec=frequency_sec,
+    )
+    return decide(tick, state)
+
+
+def test_minutes_to_ticks_preserves_wall_clock():
+    from condor.strategy_runners.macdbb_pullback.params import minutes_to_ticks
+
+    assert minutes_to_ticks(30.0, 60) == 30
+    assert minutes_to_ticks(30.0, 1800) == 1
+    assert minutes_to_ticks(0.0, 60) == 0
+    assert minutes_to_ticks(5.0, 1800) == 0
+
+
+def test_resolve_effective_params_converts_grace_as_minutes():
+    from condor.agents.strategy_configs.registry import resolve_effective_strategy_params
+
+    at_60 = resolve_effective_strategy_params(
+        "macdbb_pullback_hl",
+        {"thesis_decay_negative_grace_minutes": 30},
+        60,
+    )
+    assert at_60["thesis_decay_negative_grace_ticks"] == 30
+    at_1800 = resolve_effective_strategy_params(
+        "macdbb_pullback_hl",
+        {"thesis_decay_negative_grace_minutes": 30},
+        1800,
+    )
+    assert at_1800["thesis_decay_negative_grace_ticks"] == 1
+
+
+def test_decay_grace_waits_red_then_closes():
+    params = {
+        "sl_pct": 3.0,
+        "tp_pct": 6.0,
+        "enable_thesis_decay_exit": True,
+        "thesis_decay_exit_ticks": 1,
+        "thesis_decay_negative_grace_ticks": 2,
+        "thesis_bb_drift_pts": 20.0,
+    }
+    state = MacdbbPullbackState(
+        entry_meta_by_pair={
+            "BTC-USDT": EntryMeta(
+                entry_class="pullback", entry_bb_pos_pct=30.0, side="long"
+            )
+        }
+    )
+    sig = _neutral_bearish_signal()
+    pos = _open_long(entry_class="pullback", pnl=-1.5)
+    d1 = _decay_decide(1, sig, pos, params, state)
+    assert d1.stops == []
+    assert d1.state.thesis_decay_grace_until_tick["BTC-USDT"] == 3
+    d2 = _decay_decide(2, sig, pos, params, d1.state)
+    assert d2.stops == []
+    d3 = _decay_decide(3, sig, pos, params, d2.state)
+    assert any(s.reason == "thesis_decay" for s in d3.stops)
+    assert "BTC-USDT" not in d3.state.thesis_decay_grace_until_tick
+
+
+def test_decay_grace_closes_immediately_when_pnl_turns_green():
+    params = {
+        "sl_pct": 3.0,
+        "tp_pct": 6.0,
+        "enable_thesis_decay_exit": True,
+        "thesis_decay_exit_ticks": 1,
+        "thesis_decay_negative_grace_ticks": 30,
+        "thesis_bb_drift_pts": 20.0,
+    }
+    state = MacdbbPullbackState(
+        entry_meta_by_pair={
+            "BTC-USDT": EntryMeta(
+                entry_class="pullback", entry_bb_pos_pct=30.0, side="long"
+            )
+        }
+    )
+    sig = _neutral_bearish_signal()
+    d1 = _decay_decide(1, sig, _open_long(entry_class="pullback", pnl=-1.5), params, state)
+    assert d1.stops == []
+    d2 = _decay_decide(
+        2, sig, _open_long(entry_class="pullback", pnl=0.4), params, d1.state
+    )
+    assert any(s.reason == "thesis_decay" for s in d2.stops)
+
+
+def test_decay_grace_clears_when_thesis_returns():
+    params = {
+        "sl_pct": 3.0,
+        "tp_pct": 6.0,
+        "enable_thesis_decay_exit": True,
+        "thesis_decay_exit_ticks": 1,
+        "thesis_decay_negative_grace_ticks": 30,
+        "thesis_bb_drift_pts": 20.0,
+    }
+    state = MacdbbPullbackState(
+        entry_meta_by_pair={
+            "BTC-USDT": EntryMeta(
+                entry_class="immediate", entry_bb_pos_pct=30.0, side="long"
+            )
+        }
+    )
+    d1 = _decay_decide(
+        1, _neutral_bearish_signal(), _open_long(pnl=-1.5), params, state
+    )
+    assert d1.stops == []
+    assert "BTC-USDT" in d1.state.thesis_decay_grace_until_tick
+    long_sig = _signal(
+        bullish_cross=True,
+        bearish_cross=False,
+        macd=1.0,
+        signal_line=0.5,
+        histogram=0.5,
+        trend="bullish",
+        momentum="increasing",
+        impulse_long=False,
+        impulse_short=False,
+    )
+    d2 = _decay_decide(2, long_sig, _open_long(pnl=-1.5), params, d1.state)
+    assert d2.stops == []
+    assert "BTC-USDT" not in d2.state.thesis_decay_grace_until_tick
+    assert d2.state.thesis_decay_by_pair.get("BTC-USDT", 0) == 0
+
+
+def test_legacy_extra_pending_migrates_to_one_tick_grace():
+    params = {
+        "sl_pct": 3.0,
+        "tp_pct": 6.0,
+        "enable_thesis_decay_exit": True,
+        "thesis_decay_exit_ticks": 1,
+        "thesis_decay_negative_grace_ticks": 30,
+        "thesis_bb_drift_pts": 20.0,
+    }
+    state = MacdbbPullbackState(
+        entry_meta_by_pair={
+            "BTC-USDT": EntryMeta(
+                entry_class="pullback", entry_bb_pos_pct=30.0, side="long"
+            )
+        },
+        thesis_decay_extra_pending_by_pair={"BTC-USDT": True},
+    )
+    sig = _neutral_bearish_signal()
+    pos = _open_long(entry_class="pullback", pnl=-1.5)
+    d1 = _decay_decide(5, sig, pos, params, state)
+    assert d1.stops == []
+    assert d1.state.thesis_decay_grace_until_tick["BTC-USDT"] == 6
+    assert d1.state.thesis_decay_extra_pending_by_pair == {}
+    d2 = _decay_decide(6, sig, pos, params, d1.state)
+    assert any(s.reason == "thesis_decay" for s in d2.stops)
+
+
+def test_decay_grace_zero_ticks_closes_red_immediately():
+    params = {
+        "sl_pct": 3.0,
+        "tp_pct": 6.0,
+        "enable_thesis_decay_exit": True,
+        "thesis_decay_exit_ticks": 1,
+        "thesis_decay_negative_grace_ticks": 0,
+        "thesis_bb_drift_pts": 20.0,
+    }
+    state = MacdbbPullbackState(
+        entry_meta_by_pair={
+            "BTC-USDT": EntryMeta(
+                entry_class="pullback", entry_bb_pos_pct=30.0, side="long"
+            )
+        }
+    )
+    d1 = _decay_decide(
+        1,
+        _neutral_bearish_signal(),
+        _open_long(entry_class="pullback", pnl=-1.5),
+        params,
+        state,
+    )
+    assert any(s.reason == "thesis_decay" for s in d1.stops)
 
 
 def _create_tick(*, total_amount_quote: float = 100.0, **params) -> PullbackTickInput:

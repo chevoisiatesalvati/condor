@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from condor.strategy_runners.macdbb_pullback.params import minutes_to_ticks
+
 
 class PullbackReplayConfig(BaseModel):
     """Timeline backtest for macdbb_pullback_hl (thesis + staged pullback entries)."""
@@ -149,10 +151,12 @@ class PullbackReplayConfig(BaseModel):
     enable_thesis_decay_exit: bool = False
     thesis_decay_exit_hours: float = 28.0
     thesis_bb_drift_pts: float = 20.0
+    thesis_decay_negative_grace_minutes: float = 30.0
     pullback_timeout_ticks: int = 0
     sl_cooldown_ticks: int = 0
     thesis_decay_exit_ticks: int = 0
     flip_cooldown_ticks: int = 0
+    thesis_decay_negative_grace_ticks: int = 0
 
     @property
     def formal_notional_quote(self) -> float:
@@ -228,6 +232,7 @@ def strategy_params_from_config(config: PullbackReplayConfig) -> dict[str, Any]:
         "enable_thesis_decay_exit",
         "thesis_decay_exit_hours",
         "thesis_bb_drift_pts",
+        "thesis_decay_negative_grace_minutes",
     ):
         value = getattr(config, key, None)
         if value is not None:
@@ -252,4 +257,10 @@ def strategy_params_from_config(config: PullbackReplayConfig) -> dict[str, Any]:
             0,
             int(round(float(params.get("flip_cooldown_hours") or 0) * 3600 / freq)),
         )
+    grace_minutes = params.get("thesis_decay_negative_grace_minutes")
+    if grace_minutes is None:
+        grace_minutes = 30.0
+    params["thesis_decay_negative_grace_ticks"] = minutes_to_ticks(
+        float(grace_minutes), freq
+    )
     return params

@@ -14,7 +14,9 @@ from condor.strategy_runners.macdbb.params import (
 )
 from condor.strategy_runners.macdbb_pullback.params import (
     DURATION_EFFECTIVE_TICK_KEYS as PULLBACK_DURATION_KEYS,
+    MINUTES_EFFECTIVE_TICK_KEYS as PULLBACK_MINUTES_KEYS,
     MacdbbPullbackHlParams,
+    minutes_to_ticks,
 )
 
 STRATEGY_CONFIG_REGISTRY: dict[str, Type[BaseModel]] = {
@@ -25,6 +27,10 @@ STRATEGY_CONFIG_REGISTRY: dict[str, Type[BaseModel]] = {
 _DURATION_KEYS_BY_SLUG: dict[str, dict[str, str]] = {
     "macdbb_scanner_aggressive_hl": MACDBB_DURATION_KEYS,
     "macdbb_pullback_hl": PULLBACK_DURATION_KEYS,
+}
+
+_MINUTES_KEYS_BY_SLUG: dict[str, dict[str, str]] = {
+    "macdbb_pullback_hl": PULLBACK_MINUTES_KEYS,
 }
 
 
@@ -115,6 +121,10 @@ def resolve_effective_strategy_params(
         hours_value = resolved.get(hours_key)
         if hours_value is not None:
             resolved[tick_key] = duration_to_ticks(hours_value, freq)
+    for minutes_key, tick_key in _MINUTES_KEYS_BY_SLUG.get(slug, {}).items():
+        minutes_value = resolved.get(minutes_key)
+        if minutes_value is not None:
+            resolved[tick_key] = minutes_to_ticks(minutes_value, freq)
 
     resolved["frequency_sec"] = freq
     resolved["tick_interval_hours"] = round(freq / 3600, 4)

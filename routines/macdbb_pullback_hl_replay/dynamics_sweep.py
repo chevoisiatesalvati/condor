@@ -1,8 +1,9 @@
 """Random ~3k decay / flip / ATR-dynamics sweep for macdbb_pullback_hl.
 
-Holds the 2k-leader entry gates (pb 1.25, chase 80/30). Case 0 is the live
-winner; case 1 is the 2k leader. Remaining cases are unique random draws
-(seed 43) from a nested space several times larger than 3000.
+Holds the latest sweep-lead entry gates. Case 0 is that lead; the rest are
+unique random draws. The RNG seed and output directory advance with the
+highest ``pullback_sweep_lead_NNN`` so each new lead starts a fresh search
+instead of repeating the previous grid.
 """
 
 from __future__ import annotations
@@ -10,14 +11,11 @@ from __future__ import annotations
 import random
 from typing import Any, Iterator
 
-from routines.macdbb_pullback_hl_replay.entry_sltp_sweep import PULLBACK_WINNER_PRESET
-
-DYNAMICS_SWEEP_PRESET = PULLBACK_WINNER_PRESET
 DYNAMICS_SWEEP_CONFIG_COUNT = 3000
-DYNAMICS_SWEEP_SEED = 43
-
-LIVE_CASE_NAME = "imp1.25_pb0.35_sl3_tp6_cl70_cs30"
-LEADER_CASE_NAME = "imp1_pb1.25_sl3.8_tp9_cl80_cs30"
+# First dynamics sweep used seed 43 after the entry 2k run had already written
+# leads 001–007. Each later highest lead number increments the draw.
+_FIRST_DYNAMICS_SEED = 43
+_LEADS_BEFORE_FIRST_DYNAMICS = 7
 
 HELD_OVERRIDES: dict[str, Any] = {
     "bb_proximity_epsilon_pct": 0.22,
@@ -27,6 +25,7 @@ HELD_OVERRIDES: dict[str, Any] = {
     "sl_symbol_cooldown_hours": 5.0,
     "flip_confirm_ticks": 2,
     "flip_cooldown_hours": 1.5,
+    "thesis_decay_negative_grace_minutes": 30.0,
 }
 
 HELD_RANDOM_ENTRY: dict[str, Any] = {
@@ -58,53 +57,63 @@ DEFAULT_SIZING_BAND = SIZING_BANDS[0]
 DEFAULT_REF_VOL = 1.0
 DEFAULT_DRIFT = 20.0
 
-LIVE_SWEEP_VALUES: dict[str, Any] = {
-    "impulse_atr_mult": 1.25,
-    "pullback_epsilon_pct": 0.35,
-    "sl_pct": 3.0,
-    "tp_pct": 6.0,
-    "chase_long_bb_pos_max": 70.0,
-    "chase_short_bb_pos_min": 30.0,
-    "enable_thesis_decay_exit": True,
-    "thesis_decay_exit_hours": 2.0,
-    "enable_flip_exit": False,
-    "enable_dynamic_barriers": False,
-    "enable_dynamic_sizing": False,
-    "thesis_bb_drift_pts": DEFAULT_DRIFT,
-    "ref_volatility_pct": DEFAULT_REF_VOL,
-    "sl_vol_exponent": 1.0,
-    "tp_vol_exponent": 1.0,
-    "sl_min_pct": DEFAULT_CLAMP[0],
-    "sl_max_pct": DEFAULT_CLAMP[1],
-    "tp_min_pct": DEFAULT_CLAMP[2],
-    "tp_max_pct": DEFAULT_CLAMP[3],
-    "min_vol_mult": DEFAULT_SIZING_BAND[0],
-    "max_vol_mult": DEFAULT_SIZING_BAND[1],
-}
 
-LEADER_SWEEP_VALUES: dict[str, Any] = {
-    "impulse_atr_mult": 1.0,
-    "pullback_epsilon_pct": 1.25,
-    "sl_pct": 3.8,
-    "tp_pct": 9.0,
-    "chase_long_bb_pos_max": 80.0,
-    "chase_short_bb_pos_min": 30.0,
-    "enable_thesis_decay_exit": True,
-    "thesis_decay_exit_hours": 2.0,
-    "enable_flip_exit": False,
-    "enable_dynamic_barriers": False,
-    "enable_dynamic_sizing": False,
-    "thesis_bb_drift_pts": DEFAULT_DRIFT,
-    "ref_volatility_pct": DEFAULT_REF_VOL,
-    "sl_vol_exponent": 1.0,
-    "tp_vol_exponent": 1.0,
-    "sl_min_pct": DEFAULT_CLAMP[0],
-    "sl_max_pct": DEFAULT_CLAMP[1],
-    "tp_min_pct": DEFAULT_CLAMP[2],
-    "tp_max_pct": DEFAULT_CLAMP[3],
-    "min_vol_mult": DEFAULT_SIZING_BAND[0],
-    "max_vol_mult": DEFAULT_SIZING_BAND[1],
-}
+def dynamics_sweep_preset(*, presets_path: Any | None = None) -> str:
+    from condor.strategy_runners.macdbb_pullback.presets import DEFAULT_WINNER_PRESET
+    from routines.macdbb_pullback_hl_replay.sweep_automation import (
+        latest_sweep_lead_preset,
+    )
+
+    return latest_sweep_lead_preset(presets_path) or DEFAULT_WINNER_PRESET
+
+
+def dynamics_sweep_seed(*, presets_path: Any | None = None) -> int:
+    from routines.macdbb_pullback_hl_replay.sweep_automation import (
+        latest_sweep_lead_number,
+    )
+
+    lead_n = latest_sweep_lead_number(presets_path) or 0
+    return _FIRST_DYNAMICS_SEED + max(0, lead_n - _LEADS_BEFORE_FIRST_DYNAMICS)
+
+
+def dynamics_sweep_out_dir(*, presets_path: Any | None = None) -> str:
+    from routines.macdbb_pullback_hl_replay.sweep_automation import (
+        latest_sweep_lead_preset,
+    )
+
+    lead = latest_sweep_lead_preset(presets_path)
+    if not lead:
+        return "data/backtests/pullback_dynamics_sweep"
+    suffix = lead.removeprefix("pullback_sweep_")
+    return f"data/backtests/pullback_dynamics_sweep_{suffix}"
+
+
+def current_lead_sweep_values(*, presets_path: Any | None = None) -> dict[str, Any]:
+    from condor.strategy_runners.macdbb_pullback.presets import (
+        _preset_override_dict,
+        strategy_params_from_preset,
+    )
+    from routines.macdbb_pullback_hl_replay.sweep_automation import STRATEGY_PRESET_KEYS
+
+    preset = dynamics_sweep_preset(presets_path=presets_path)
+    merged = {
+        **_preset_override_dict(preset),
+        **strategy_params_from_preset(preset),
+    }
+    values: dict[str, Any] = {}
+    for key in STRATEGY_PRESET_KEYS:
+        if key == "frequency_sec":
+            continue
+        if key in merged and merged[key] is not None:
+            values[key] = merged[key]
+    return values
+
+
+def held_random_entry(*, presets_path: Any | None = None) -> dict[str, Any]:
+    lead = current_lead_sweep_values(presets_path=presets_path)
+    return {
+        key: lead[key] for key in HELD_RANDOM_ENTRY if key in lead
+    }
 
 
 def _barrier_off() -> dict[str, Any]:
@@ -203,24 +212,21 @@ def _finalize(
     *,
     name: str | None = None,
     include_random_entry: bool = True,
+    presets_path: Any | None = None,
 ) -> dict[str, Any]:
     merged = {**HELD_OVERRIDES}
     if include_random_entry:
-        merged.update(HELD_RANDOM_ENTRY)
+        merged.update(held_random_entry(presets_path=presets_path))
     merged.update(combo)
     merged["name"] = name if name is not None else _case_name(merged)
     return merged
 
 
-def live_baseline_case() -> dict[str, Any]:
-    return _finalize(dict(LIVE_SWEEP_VALUES), name=LIVE_CASE_NAME, include_random_entry=False)
-
-
-def leader_baseline_case() -> dict[str, Any]:
+def current_lead_baseline_case(*, presets_path: Any | None = None) -> dict[str, Any]:
     return _finalize(
-        dict(LEADER_SWEEP_VALUES),
-        name=LEADER_CASE_NAME,
+        current_lead_sweep_values(presets_path=presets_path),
         include_random_entry=False,
+        presets_path=presets_path,
     )
 
 
@@ -286,20 +292,18 @@ def dynamics_sweep_space_size() -> int:
     return sum(1 for _ in iter_dynamics_space())
 
 
-def gate_dry_run_cases() -> list[dict[str, Any]]:
-    """Decay-off vs decay-2h vs dynamic-on, all on the 2k-leader entry gates."""
-    leader = leader_baseline_case()
+def gate_dry_run_cases(*, presets_path: Any | None = None) -> list[dict[str, Any]]:
+    """Decay-off vs current lead vs dynamic-on, all on the latest-lead gates."""
+    values = current_lead_sweep_values(presets_path=presets_path)
+    lead = current_lead_baseline_case(presets_path=presets_path)
     decay_off = _finalize(
-        {
-            **LEADER_SWEEP_VALUES,
-            **_apply_decay(0.0),
-        },
-        name=f"{LEADER_CASE_NAME}_d0",
+        {**values, **_apply_decay(0.0)},
         include_random_entry=False,
+        presets_path=presets_path,
     )
     dynamic_on = _finalize(
         {
-            **LEADER_SWEEP_VALUES,
+            **values,
             "enable_dynamic_barriers": True,
             "enable_dynamic_sizing": True,
             "sl_vol_exponent": 1.0,
@@ -308,70 +312,78 @@ def gate_dry_run_cases() -> list[dict[str, Any]]:
             "max_vol_mult": 1.5,
             "ref_volatility_pct": 1.0,
         },
-        name=f"{LEADER_CASE_NAME}_dyn",
         include_random_entry=False,
+        presets_path=presets_path,
     )
-    return [decay_off, leader, dynamic_on]
+    return [decay_off, lead, dynamic_on]
 
 
 def iter_pullback_dynamics_cases(
     *,
     min_configs: int = DYNAMICS_SWEEP_CONFIG_COUNT,
-    seed: int = DYNAMICS_SWEEP_SEED,
+    seed: int | None = None,
+    presets_path: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Yield live baseline, 2k leader, then unique random draws."""
-    target = max(2, int(min_configs))
-    live = live_baseline_case()
-    leader = leader_baseline_case()
-    yield live
-    yield leader
-    emitted = 2
-    seen = {live["name"], leader["name"]}
+    """Yield the current sweep lead, then unique random draws."""
+    target = max(1, int(min_configs))
+    rng_seed = dynamics_sweep_seed(presets_path=presets_path) if seed is None else seed
+    current = current_lead_baseline_case(presets_path=presets_path)
+    yield current
+    emitted = 1
+    seen = {current["name"]}
     if emitted >= target:
         return
 
-    rng = random.Random(seed)
+    rng = random.Random(rng_seed)
     attempts = 0
     max_attempts = target * 80
     space = dynamics_sweep_space_size()
     while emitted < target and attempts < max_attempts:
         attempts += 1
-        case = _finalize(_random_combo(rng))
+        case = _finalize(_random_combo(rng), presets_path=presets_path)
         name = case["name"]
         if name in seen:
             continue
         seen.add(name)
         yield case
         emitted += 1
-        if len(seen) >= space + 2:
+        if len(seen) >= space + 1:
             break
 
 
 def pullback_dynamics_cases(
     *,
     min_configs: int = DYNAMICS_SWEEP_CONFIG_COUNT,
-    seed: int = DYNAMICS_SWEEP_SEED,
+    seed: int | None = None,
+    presets_path: Any | None = None,
 ) -> list[dict[str, Any]]:
-    cases = list(iter_pullback_dynamics_cases(min_configs=min_configs, seed=seed))
+    cases = list(
+        iter_pullback_dynamics_cases(
+            min_configs=min_configs,
+            seed=seed,
+            presets_path=presets_path,
+        )
+    )
     names = [case["name"] for case in cases]
     assert len(names) == len(set(names))
-    assert cases[0]["name"] == LIVE_CASE_NAME
-    assert cases[1]["name"] == LEADER_CASE_NAME
+    assert cases[0]["name"] == current_lead_baseline_case(
+        presets_path=presets_path
+    )["name"]
     return cases
 
 
 __all__ = [
     "DYNAMICS_SWEEP_CONFIG_COUNT",
-    "DYNAMICS_SWEEP_PRESET",
-    "DYNAMICS_SWEEP_SEED",
     "HELD_OVERRIDES",
     "HELD_RANDOM_ENTRY",
-    "LEADER_CASE_NAME",
-    "LIVE_CASE_NAME",
+    "current_lead_baseline_case",
+    "current_lead_sweep_values",
+    "dynamics_sweep_out_dir",
+    "dynamics_sweep_preset",
+    "dynamics_sweep_seed",
     "dynamics_sweep_space_size",
     "gate_dry_run_cases",
+    "held_random_entry",
     "iter_pullback_dynamics_cases",
-    "leader_baseline_case",
-    "live_baseline_case",
     "pullback_dynamics_cases",
 ]

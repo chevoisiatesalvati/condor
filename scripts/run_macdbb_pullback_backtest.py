@@ -43,6 +43,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--flip-confirm-ticks", type=int, default=0)
     parser.add_argument("--thesis-decay-exit-hours", type=float, default=0.0)
     parser.add_argument("--thesis-bb-drift-pts", type=float, default=0.0)
+    parser.add_argument(
+        "--thesis-decay-negative-grace-minutes",
+        type=float,
+        default=None,
+        help="Minutes of red-PnL grace after decay limit (default: preset/30)",
+    )
     return parser.parse_args()
 
 
@@ -87,6 +93,10 @@ async def _main() -> int:
         kwargs["thesis_decay_exit_hours"] = args.thesis_decay_exit_hours
     if args.thesis_bb_drift_pts > 0:
         kwargs["thesis_bb_drift_pts"] = args.thesis_bb_drift_pts
+    if args.thesis_decay_negative_grace_minutes is not None:
+        kwargs["thesis_decay_negative_grace_minutes"] = (
+            args.thesis_decay_negative_grace_minutes
+        )
     config = Config(**kwargs)
     result = await run(config, MagicMock())
     text = (result.text or "").strip()

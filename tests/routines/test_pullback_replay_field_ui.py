@@ -69,6 +69,7 @@ def test_pullback_replay_hides_internal_fields():
         "sl_cooldown_ticks",
         "thesis_decay_exit_ticks",
         "flip_cooldown_ticks",
+        "thesis_decay_negative_grace_ticks",
         "auto_update_snapshots",
         "write_csv",
         "hl_cache_dir",
@@ -90,6 +91,7 @@ def test_pullback_replay_reuses_strategy_param_labels():
     assert fields["sl_pct"]["group"] == "Barriers"
     assert fields["enable_dynamic_barriers"]["group"] == "Barriers"
     assert fields["enable_thesis_decay_exit"]["group"] == "Position monitor"
+    assert fields["thesis_decay_negative_grace_minutes"]["group"] == "Position monitor"
     assert fields["min_notional_quote"]["group"] == "Sizing"
     assert fields["enable_dynamic_sizing"]["group"] == "Sizing"
 
@@ -139,9 +141,13 @@ def test_resolve_pullback_config_keeps_winner_thesis_decay():
     assert resolved.enable_thesis_decay_exit is True
     assert resolved.thesis_decay_exit_hours == 2.0
     assert resolved.thesis_decay_exit_ticks == 120
+    assert resolved.thesis_decay_negative_grace_minutes == 30.0
+    assert resolved.thesis_decay_negative_grace_ticks == 30
     assert resolved.strategy_params["enable_thesis_decay_exit"] is True
     assert resolved.strategy_params["thesis_decay_exit_hours"] == 2.0
     assert resolved.strategy_params["thesis_decay_exit_ticks"] == 120
+    assert resolved.strategy_params["thesis_decay_negative_grace_minutes"] == 30.0
+    assert resolved.strategy_params["thesis_decay_negative_grace_ticks"] == 30
 
     overridden = resolve_pullback_config(
         PullbackReplayConfig(
@@ -154,6 +160,29 @@ def test_resolve_pullback_config_keeps_winner_thesis_decay():
     assert overridden.enable_thesis_decay_exit is False
     assert overridden.live_equivalent_queue is True
     assert overridden.total_amount_quote == 50.0
+
+
+def test_resolve_pullback_config_overlays_decay_grace_minutes():
+    from routines.macdbb_pullback_hl_replay.presets import resolve_pullback_config
+
+    resolved = resolve_pullback_config(
+        PullbackReplayConfig(
+            preset="pullback_decay_2h_60s",
+            thesis_decay_negative_grace_minutes=0.0,
+        )
+    )
+    assert resolved.thesis_decay_negative_grace_minutes == 0.0
+    assert resolved.thesis_decay_negative_grace_ticks == 0
+    assert resolved.strategy_params["thesis_decay_negative_grace_ticks"] == 0
+
+    at_1800 = resolve_pullback_config(
+        PullbackReplayConfig(
+            preset="pullback_timeline_v1",
+            frequency_sec=1800,
+            thesis_decay_negative_grace_minutes=30.0,
+        )
+    )
+    assert at_1800.thesis_decay_negative_grace_ticks == 1
 
 
 def test_resolve_keeps_sessions_and_snapshot_dir():

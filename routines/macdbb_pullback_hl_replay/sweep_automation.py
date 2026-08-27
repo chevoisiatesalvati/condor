@@ -102,6 +102,7 @@ STRATEGY_PRESET_KEYS: tuple[str, ...] = (
     "enable_thesis_decay_exit",
     "thesis_decay_exit_hours",
     "thesis_bb_drift_pts",
+    "thesis_decay_negative_grace_minutes",
     "flip_confirm_ticks",
     "flip_cooldown_hours",
 )
@@ -209,6 +210,20 @@ def next_sweep_lead_number(
     while lead_num in used:
         lead_num += 1
     return lead_num
+
+
+def latest_sweep_lead_number(presets_path: Any | None = None) -> int | None:
+    used = existing_sweep_lead_numbers(presets_path)
+    if not used:
+        return None
+    return max(used)
+
+
+def latest_sweep_lead_preset(presets_path: Any | None = None) -> str | None:
+    lead_num = latest_sweep_lead_number(presets_path)
+    if lead_num is None:
+        return None
+    return f"{PRESET_NAME_PREFIX}{lead_num:03d}"
 
 
 def _annualized_from_result(result: PullbackSweepResult) -> float | None:
@@ -833,6 +848,8 @@ __all__ = [
     "default_telegram_chat_id",
     "default_verify_range_start",
     "existing_sweep_lead_numbers",
+    "latest_sweep_lead_number",
+    "latest_sweep_lead_preset",
     "lead_preset_names",
     "lead_presets_missing_reports",
     "load_verify_result",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from condor.strategy_runners.macdbb_pullback.params import minutes_to_ticks
 from condor.strategy_runners.macdbb_pullback.presets import (
     DEFAULT_TIMELINE_60S_PRESET,
     PRESET_LABELS,
@@ -45,6 +46,7 @@ _STRATEGY_OVERRIDE_KEYS = (
     "enable_thesis_decay_exit",
     "thesis_decay_exit_hours",
     "thesis_bb_drift_pts",
+    "thesis_decay_negative_grace_minutes",
 )
 
 
@@ -177,11 +179,21 @@ def resolve_pullback_config(config: PullbackReplayConfig) -> PullbackReplayConfi
         0,
         int(round(float(params.get("flip_cooldown_hours") or 0) * 3600 / freq)),
     )
+    grace_minutes = params.get("thesis_decay_negative_grace_minutes")
+    if grace_minutes is None:
+        grace_minutes = 30.0
+    params["thesis_decay_negative_grace_ticks"] = minutes_to_ticks(
+        float(grace_minutes), freq
+    )
     merged["strategy_params"] = params
     merged["sl_cooldown_ticks"] = int(params.get("sl_symbol_cooldown_ticks") or 0)
     merged["pullback_timeout_ticks"] = int(params.get("pullback_timeout_ticks") or 0)
     merged["thesis_decay_exit_ticks"] = int(params.get("thesis_decay_exit_ticks") or 0)
     merged["flip_cooldown_ticks"] = int(params.get("flip_cooldown_ticks") or 0)
+    merged["thesis_decay_negative_grace_minutes"] = float(grace_minutes)
+    merged["thesis_decay_negative_grace_ticks"] = int(
+        params["thesis_decay_negative_grace_ticks"]
+    )
     return PullbackReplayConfig(**merged)
 
 

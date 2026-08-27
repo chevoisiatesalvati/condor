@@ -53,7 +53,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         default="",
-        help="Default: pullback_mega_sweep (entry) or pullback_dynamics_sweep (dynamics)",
+        help=(
+            "Default: pullback_mega_sweep (entry) or "
+            "pullback_dynamics_sweep_lead_NNN (dynamics, latest YAML lead)"
+        ),
     )
     parser.add_argument("--min-configs", type=int, default=0)
     parser.add_argument("--seed", type=int, default=-1)
@@ -103,11 +106,18 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _resolve_grid_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
+        dynamics_sweep_out_dir,
+        dynamics_sweep_seed,
+    )
+    from routines.macdbb_pullback_hl_replay.mega_sweep import MEGA_SWEEP_SEED
+
+    presets_path = args.presets_path or None
     grid = "dynamics" if args.gate_dry_run else args.grid
     args.grid = grid
     if not args.out_dir:
         args.out_dir = (
-            "data/backtests/pullback_dynamics_sweep"
+            dynamics_sweep_out_dir(presets_path=presets_path)
             if grid == "dynamics"
             else "data/backtests/pullback_mega_sweep"
         )
@@ -116,7 +126,11 @@ def _resolve_grid_defaults(args: argparse.Namespace) -> argparse.Namespace:
     if args.min_configs <= 0:
         args.min_configs = 3000 if grid == "dynamics" else 2000
     if args.seed < 0:
-        args.seed = 43 if grid == "dynamics" else 42
+        args.seed = (
+            dynamics_sweep_seed(presets_path=presets_path)
+            if grid == "dynamics"
+            else MEGA_SWEEP_SEED
+        )
     return args
 
 
@@ -295,7 +309,7 @@ def _emit_promote_job(job, *, chat_id: str | None) -> None:
 async def _main() -> int:
     from scripts.run_macdbb_pullback_entry_sltp_sweep import _load_shared_context
     from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
-        DYNAMICS_SWEEP_PRESET,
+        dynamics_sweep_preset,
         gate_dry_run_cases,
         pullback_dynamics_cases,
     )
@@ -329,14 +343,16 @@ async def _main() -> int:
         stream=sys.stdout,
         force=True,
     )
+    presets_path = Path(args.presets_path) if args.presets_path else None
     preset_default = (
-        DYNAMICS_SWEEP_PRESET if args.grid == "dynamics" else MEGA_SWEEP_PRESET
+        dynamics_sweep_preset(presets_path=presets_path)
+        if args.grid == "dynamics"
+        else MEGA_SWEEP_PRESET
     )
     if args.preset == "pullback_decay_2h_60s":
         args.preset = preset_default
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    presets_path = Path(args.presets_path) if args.presets_path else None
     state_path = Path(args.automation_state) if args.automation_state else (
         out_dir / "automation.json"
     )
@@ -374,9 +390,16 @@ async def _main() -> int:
         cases = gate_dry_run_cases()
         logging.info("Dynamics gate dry-run: %d cases", len(cases))
     elif args.grid == "dynamics":
-        cases = pullback_dynamics_cases(min_configs=args.min_configs, seed=args.seed)
+        cases = pullback_dynamics_cases(
+            min_configs=args.min_configs,
+            seed=args.seed,
+            presets_path=presets_path,
+        )
         logging.info(
-            "Dynamics-sweep grid: %d cases (seed=%d)", len(cases), args.seed
+            "Dynamics-sweep grid: %d cases (seed=%d, baseline=%s)",
+            len(cases),
+            args.seed,
+            args.preset,
         )
     else:
         cases = pullback_mega_cases(min_configs=args.min_configs, seed=args.seed)

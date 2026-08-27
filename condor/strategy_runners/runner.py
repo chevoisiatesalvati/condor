@@ -370,6 +370,7 @@ class DeterministicRunner:
                 "thesis_decay_by_pair",
                 "flip_streak_by_pair",
                 "thesis_decay_extra_pending_by_pair",
+                "thesis_decay_grace_until_tick",
                 "monitor_state_by_pair",
                 "armed_by_pair",
             ):

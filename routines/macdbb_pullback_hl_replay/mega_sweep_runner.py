@@ -148,6 +148,9 @@ def run_one_case(case: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]
             "enable_thesis_decay_exit": bool(config.enable_thesis_decay_exit),
             "thesis_decay_exit_hours": float(config.thesis_decay_exit_hours),
             "thesis_bb_drift_pts": float(config.thesis_bb_drift_pts),
+            "thesis_decay_negative_grace_minutes": float(
+                config.thesis_decay_negative_grace_minutes
+            ),
             "flip_confirm_ticks": int(config.flip_confirm_ticks),
             "flip_cooldown_hours": float(config.flip_cooldown_hours),
             "enable_dynamic_barriers": bool(config.enable_dynamic_barriers),

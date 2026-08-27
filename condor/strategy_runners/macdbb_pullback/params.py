@@ -15,6 +15,19 @@ DURATION_EFFECTIVE_TICK_KEYS: dict[str, str] = {
     "flip_cooldown_hours": "flip_cooldown_ticks",
 }
 
+# Minutes fields must not go through hours * 3600 conversion.
+MINUTES_EFFECTIVE_TICK_KEYS: dict[str, str] = {
+    "thesis_decay_negative_grace_minutes": "thesis_decay_negative_grace_ticks",
+}
+
+
+def minutes_to_ticks(minutes: float, frequency_sec: int) -> int:
+    """Convert wall-clock minutes to tick count. Zero minutes stays zero ticks."""
+    freq = max(1, int(frequency_sec or 60))
+    if float(minutes) <= 0:
+        return 0
+    return max(0, int(round(float(minutes) * 60.0 / freq)))
+
 
 def _schema_type_name(annotation: Any) -> str:
     """Map a field annotation to a simple UI type name."""
@@ -227,6 +240,19 @@ class MacdbbPullbackHlParams(BaseModel):
         description="BB% drift from entry that counts as thesis decay",
         json_schema_extra={"group": "Position monitor"},
     )
+    thesis_decay_negative_grace_minutes: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=1440.0,
+        description=(
+            "Minutes to wait after decay limit while unrealized PnL is negative; "
+            "close immediately if PnL is green"
+        ),
+        json_schema_extra={
+            "group": "Position monitor",
+            "effective_tick_key": "thesis_decay_negative_grace_ticks",
+        },
+    )
 
     min_notional_quote: float = Field(
         default=10.0,
@@ -277,12 +303,14 @@ class MacdbbPullbackHlParams(BaseModel):
                     entry["duration"] = True
                     if "effective_tick_key" in extra:
                         entry["effective_tick_key"] = extra["effective_tick_key"]
+                elif "effective_tick_key" in extra:
+                    entry["effective_tick_key"] = extra["effective_tick_key"]
             fields[name] = entry
         return fields
 
     @classmethod
     def get_computed_fields(cls) -> dict[str, str]:
-        return dict(DURATION_EFFECTIVE_TICK_KEYS)
+        return {**DURATION_EFFECTIVE_TICK_KEYS, **MINUTES_EFFECTIVE_TICK_KEYS}
 
     @classmethod
     def get_groups(cls) -> list[str]:

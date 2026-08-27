@@ -42,6 +42,7 @@ _HIDDEN_FIELDS = frozenset(
         "sl_cooldown_ticks",
         "thesis_decay_exit_ticks",
         "flip_cooldown_ticks",
+        "thesis_decay_negative_grace_ticks",
         "auto_update_snapshots",
         "max_auto_snapshot_days",
         "write_csv",

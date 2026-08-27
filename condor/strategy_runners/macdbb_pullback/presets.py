@@ -11,7 +11,10 @@ from condor.strategy_runners.macdbb.presets import (
     PRESET_CAPITAL_KEYS,
     strip_preset_capital_keys,
 )
-from condor.strategy_runners.macdbb_pullback.params import default_strategy_params
+from condor.strategy_runners.macdbb_pullback.params import (
+    default_strategy_params,
+    minutes_to_ticks,
+)
 
 AGENT_SLUG = "macdbb_pullback_hl"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -209,6 +212,12 @@ def strategy_params_from_preset(
     params["flip_cooldown_ticks"] = max(
         0,
         int(round(float(params.get("flip_cooldown_hours") or 0) * 3600 / freq)),
+    )
+    grace_minutes = params.get("thesis_decay_negative_grace_minutes")
+    if grace_minutes is None:
+        grace_minutes = 30.0
+    params["thesis_decay_negative_grace_ticks"] = minutes_to_ticks(
+        float(grace_minutes), freq
     )
     return params
 
