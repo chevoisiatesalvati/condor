@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 REPORTS_DIR = Path(os.environ.get("CONDOR_REPORTS_DIR", str(ROOT_DIR / "reports")))
+# Leftover root catalog. Live indexes are reports/<routine>/reports_index.json.
 REPORTS_INDEX_PATH = REPORTS_DIR / "reports_index.json"
 DEFAULT_SNAPSHOT_DIR = ROOT_DIR / "data" / "replay_snapshots"
 

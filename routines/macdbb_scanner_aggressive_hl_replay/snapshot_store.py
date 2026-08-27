@@ -590,3 +590,110 @@ def load_parsed_macdbb_snapshot(
     root = snapshot_dir_or_default(snapshot_dir)
     cache = _ensure_parsed_macdbb_cache(root)
     return cache.get(str(report_meta.report_id))
+
+
+def _concat_snapshot_parquet(
+    source_path: Path,
+    dest_path: Path,
+    *,
+    subset: tuple[str, ...],
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for path in (dest_path, source_path):
+        if path.is_file():
+            frames.append(pd.read_parquet(path))
+    if not frames:
+        return pd.DataFrame()
+    merged = pd.concat(frames, ignore_index=True)
+    present = [col for col in subset if col in merged.columns]
+    if present:
+        merged = merged.drop_duplicates(subset=present, keep="last")
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_parquet_atomic(dest_path, merged)
+    return merged
+
+
+def merge_snapshot_stores(source_dir: Path | str, dest_dir: Path | str) -> dict[str, Any]:
+    """Concat source parquets into dest, dedupe tick identity, merge manifests."""
+    source = Path(source_dir)
+    dest = Path(dest_dir)
+    if not source.is_dir():
+        raise FileNotFoundError(f"Source snapshot dir does not exist: {source}")
+    dest.mkdir(parents=True, exist_ok=True)
+
+    scanner = _concat_snapshot_parquet(
+        source / SCANNER_FILENAME,
+        dest / SCANNER_FILENAME,
+        subset=("tick_id", "pair", "interval", "bucket"),
+    )
+    macdbb = _concat_snapshot_parquet(
+        source / MACDBB_FILENAME,
+        dest / MACDBB_FILENAME,
+        subset=("tick_id", "pair", "interval"),
+    )
+    monitor = _concat_snapshot_parquet(
+        source / MONITOR_MACDBB_FILENAME,
+        dest / MONITOR_MACDBB_FILENAME,
+        subset=("tick_id", "pair", "interval"),
+    )
+
+    from routines.macdbb_scanner_aggressive_hl_replay.snapshot_build import merge_manifest
+
+    dest_manifest = load_manifest(snapshot_dir=dest) or {}
+    source_manifest = load_manifest(snapshot_dir=source) or {}
+    unique_ticks = (
+        int(scanner["tick_id"].nunique()) if not scanner.empty and "tick_id" in scanner.columns else 0
+    )
+    merged_manifest = merge_manifest(
+        dest_manifest or None,
+        built=0,
+        range_start_utc=source_manifest.get("range_start_utc"),
+        range_end_utc=source_manifest.get("range_end_utc"),
+        snapshot_dir=dest,
+        cache_dir=Path(
+            str(
+                source_manifest.get("cache_dir")
+                or dest_manifest.get("cache_dir")
+                or dest
+            )
+        ),
+        candle_source=str(
+            source_manifest.get("candle_source")
+            or dest_manifest.get("candle_source")
+            or "binance_perpetual"
+        ),
+        volume_source=str(
+            source_manifest.get("volume_source")
+            or dest_manifest.get("volume_source")
+            or "binance_perpetual"
+        ),
+        frequency_sec=int(
+            source_manifest.get("frequency_sec")
+            or dest_manifest.get("frequency_sec")
+            or 60
+        ),
+        intersection_manifest=None,
+        sessions=str(
+            source_manifest.get("sessions") or dest_manifest.get("sessions") or ""
+        ),
+    )
+    merged_manifest["tick_count"] = unique_ticks
+    prior_merged = list(dest_manifest.get("merged_from") or [])
+    source_label = str(source)
+    if source_label not in prior_merged:
+        prior_merged.append(source_label)
+    merged_manifest["merged_from"] = prior_merged
+    if not monitor.empty:
+        merged_manifest["monitor_macdbb_rows"] = int(len(monitor))
+    write_manifest(merged_manifest, snapshot_dir=dest)
+    configure_snapshot_dir(dest)
+    _invalidate_indexes()
+    logger.info(
+        "Merged %s into %s ticks=%d scanner_rows=%d macdbb_rows=%d",
+        source,
+        dest,
+        unique_ticks,
+        len(scanner),
+        len(macdbb),
+    )
+    return merged_manifest

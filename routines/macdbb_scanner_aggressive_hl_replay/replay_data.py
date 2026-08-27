@@ -42,7 +42,16 @@ def configure_replay_data_sources(config: ReplayConfigBase) -> None:
 
             configure_snapshot_dir(DEFAULT_SNAPSHOT_DIR)
         if config.data_source == "snapshots":
-            warm_snapshot_caches(snapshot_dir)
+            range_start = str(getattr(config, "range_start_utc", "") or "").strip() or None
+            range_end = str(getattr(config, "range_end_utc", "") or "").strip() or None
+            if range_start and range_end:
+                warm_snapshot_caches(
+                    snapshot_dir,
+                    range_start_utc=range_start,
+                    range_end_utc=range_end,
+                )
+            else:
+                warm_snapshot_caches(snapshot_dir)
     else:
         configure_snapshot_dir(None)
 

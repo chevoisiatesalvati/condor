@@ -1,5 +1,6 @@
 """Tests for report index retention policy."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -119,3 +120,42 @@ def test_source_dir_name_rejects_path_traversal():
     assert store.source_dir_name("") == "_unnamed"
     assert store.source_dir_name("reports_index.json") == "_unnamed"
     assert store.source_dir_name("a/b") == "a_b"
+
+
+def test_write_index_shards_by_source(charts_dir: Path):
+    store._write_index(
+        [
+            _entry("a1", "alpha/a1.html", 1, "alpha"),
+            _entry("b1", "beta/b1.html", 1, "beta"),
+        ]
+    )
+    assert not (charts_dir / "reports_index.json").exists()
+    alpha_index = charts_dir / "alpha" / "reports_index.json"
+    beta_index = charts_dir / "beta" / "reports_index.json"
+    assert alpha_index.is_file()
+    assert beta_index.is_file()
+    assert {entry["id"] for entry in json.loads(alpha_index.read_text())} == {"a1"}
+    assert {entry["id"] for entry in json.loads(beta_index.read_text())} == {"b1"}
+
+
+def test_legacy_root_index_splits_into_source_indexes(charts_dir: Path):
+    entries = [
+        _entry("a1", "old_a.html", 1, "alpha"),
+        _entry("b1", "old_b.html", 1, "beta"),
+    ]
+    (charts_dir / "reports_index.json").write_text(
+        json.dumps(entries), encoding="utf-8"
+    )
+    loaded = store._read_index()
+    assert {entry["id"] for entry in loaded} == {"a1", "b1"}
+    assert not (charts_dir / "reports_index.json").exists()
+    assert (charts_dir / "alpha" / "reports_index.json").is_file()
+    assert (charts_dir / "beta" / "reports_index.json").is_file()
+
+
+def test_missing_source_index_hides_tabs(charts_dir: Path):
+    store._write_index([_entry("gone", "alpha/gone.html", 1, "alpha")])
+    (charts_dir / "alpha" / "reports_index.json").unlink()
+    matched, total = store.list_reports(source_names=["alpha"])
+    assert total == 0
+    assert matched == []

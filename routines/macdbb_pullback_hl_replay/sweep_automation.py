@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ from condor.strategy_runners.macdbb_pullback.presets import (
 logger = logging.getLogger(__name__)
 
 PRESET_NAME_PREFIX = "pullback_sweep_lead_"
+VERIFY_DIR_NAME = "verify"
 
 
 def lead_preset_names() -> list[str]:
@@ -112,6 +114,7 @@ class PullbackSweepResult:
     trades: int
     overrides: dict[str, Any] = field(default_factory=dict)
     stats: dict[str, Any] = field(default_factory=dict)
+    annualized_cap_norm: float | None = None
 
 
 @dataclass
@@ -120,6 +123,10 @@ class SweepLeaderState:
     best_pnl: float = float("-inf")
     best_name: str = ""
     promote_count: int = 0
+    verify_anchor_established: bool = False
+    best_annual_cap_norm: float = float("-inf")
+    best_verified_name: str = ""
+    pending_verify_name: str = ""
 
     @classmethod
     def load(cls, path: Any) -> SweepLeaderState:
@@ -137,6 +144,12 @@ class SweepLeaderState:
                 best_pnl=float(raw.get("best_pnl", float("-inf"))),
                 best_name=str(raw.get("best_name") or ""),
                 promote_count=int(raw.get("promote_count") or 0),
+                verify_anchor_established=bool(raw.get("verify_anchor_established")),
+                best_annual_cap_norm=float(
+                    raw.get("best_annual_cap_norm", float("-inf"))
+                ),
+                best_verified_name=str(raw.get("best_verified_name") or ""),
+                pending_verify_name=str(raw.get("pending_verify_name") or ""),
             )
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
             logger.warning("Could not load pullback automation state from %s: %s", path, error)
@@ -198,8 +211,84 @@ def next_sweep_lead_number(
     return lead_num
 
 
+def _annualized_from_result(result: PullbackSweepResult) -> float | None:
+    if result.annualized_cap_norm is not None:
+        return float(result.annualized_cap_norm)
+    stats = result.stats or {}
+    raw = stats.get("annualized_cap_norm")
+    if raw is None:
+        return None
+    return float(raw)
+
+
+def verify_results_dir(out_dir: Any) -> Path:
+    return Path(out_dir) / VERIFY_DIR_NAME
+
+
+def verify_result_path(out_dir: Any, name: str) -> Path:
+    return verify_results_dir(out_dir) / f"{name}.json"
+
+
+def load_verify_result(out_dir: Any, name: str) -> dict[str, Any] | None:
+    path = verify_result_path(out_dir, name)
+    if not path.is_file():
+        return None
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Unreadable verify result %s", path)
+        return None
+    if not isinstance(loaded, dict) or "stats" not in loaded:
+        return None
+    return loaded
+
+
+def save_verify_result(out_dir: Any, result: dict[str, Any]) -> Path:
+    directory = verify_results_dir(out_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{result['name']}.json"
+    path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return path
+
+
+def default_verify_range_start(range_end_utc: str) -> str:
+    """One calendar year before ``range_end_utc`` (Feb 29 → Feb 28)."""
+    from routines.macdbb_scanner_aggressive_hl_replay.replay_range import iso_utc
+    from routines.macdbb_scanner_aggressive_hl_replay.tick_schedule import parse_iso_utc
+
+    end = parse_iso_utc(range_end_utc)
+    try:
+        start = end.replace(year=end.year - 1)
+    except ValueError:
+        start = end - dt.timedelta(days=365)
+    return iso_utc(start)
+
+
+def verify_range_coverage_gap(
+    snapshot_dir: str,
+    range_start_utc: str,
+    range_end_utc: str,
+) -> Any:
+    """Return a coverage gap if the verify window is not fully in the snapshot store."""
+    from routines.macdbb_scanner_aggressive_hl_replay.models import (
+        DynamicStrategyReplayConfig,
+    )
+    from routines.macdbb_scanner_aggressive_hl_replay.replay_range import (
+        requested_range_exceeds_coverage,
+    )
+
+    config = DynamicStrategyReplayConfig(
+        replay_mode="timeline_backtest",
+        data_source="snapshots",
+        snapshot_dir=snapshot_dir,
+        range_start_utc=range_start_utc,
+        range_end_utc=range_end_utc,
+    )
+    return requested_range_exceeds_coverage(config)
+
+
 class LeaderTracker:
-    """Track net-PnL leader; emit promote jobs after first positive anchor."""
+    """Track screen (30d) and verify (1y annualized) bars independently."""
 
     def __init__(self, state_path: Any, *, presets_path: Any | None = None) -> None:
         from pathlib import Path
@@ -216,7 +305,109 @@ class LeaderTracker:
     def _save(self) -> None:
         self._state.save(self._state_path)
 
+    def consider_screen(self, result: PullbackSweepResult) -> bool:
+        """Update the 30d screen bar. Return True if this config should be 1y-verified."""
+        pnl = float(result.pnl)
+        with self._lock:
+            if not self._state.anchor_established:
+                if pnl <= 0:
+                    if pnl > self._state.best_pnl:
+                        self._state.best_pnl = pnl
+                        self._state.best_name = result.name
+                        self._save()
+                    return False
+                self._state.anchor_established = True
+                self._state.best_pnl = pnl
+                self._state.best_name = result.name
+                self._state.pending_verify_name = result.name
+                self._save()
+                logger.info(
+                    "Pullback sweep screen anchor: %s cap_norm=%+.2f (verify, no promote yet)",
+                    result.name,
+                    pnl,
+                )
+                return True
+
+            if pnl <= self._state.best_pnl:
+                return False
+
+            self._state.best_pnl = pnl
+            self._state.best_name = result.name
+            self._state.pending_verify_name = result.name
+            self._save()
+            logger.info(
+                "Pullback sweep screen leader: %s cap_norm=%+.2f (queue 1y verify)",
+                result.name,
+                pnl,
+            )
+            return True
+
+    def consider_verified(self, result: PullbackSweepResult) -> PromoteJob | None:
+        """Rank a 1y verify run by annualized cap-norm. Promote only after the verify bar."""
+        annualized = _annualized_from_result(result)
+        with self._lock:
+            self._state.pending_verify_name = ""
+            if annualized is None:
+                logger.warning(
+                    "Verify consider skipped for %s: missing annualized_cap_norm",
+                    result.name,
+                )
+                self._save()
+                return None
+            if not self._state.verify_anchor_established:
+                self._state.verify_anchor_established = True
+                self._state.best_annual_cap_norm = annualized
+                self._state.best_verified_name = result.name
+                self._save()
+                logger.info(
+                    "Pullback verify anchor established: %s annualized=%+.2f (no promote yet)",
+                    result.name,
+                    annualized,
+                )
+                return None
+
+            if annualized <= self._state.best_annual_cap_norm or annualized <= 0:
+                logger.info(
+                    "Pullback verify did not promote %s annualized=%+.2f (bar=%+.2f)",
+                    result.name,
+                    annualized,
+                    self._state.best_annual_cap_norm,
+                )
+                self._save()
+                return None
+
+            self._state.promote_count += 1
+            self._state.best_annual_cap_norm = annualized
+            self._state.best_verified_name = result.name
+            lead_num = next_sweep_lead_number(
+                self._presets_path,
+                at_least=self._state.promote_count,
+            )
+            self._state.promote_count = lead_num
+            self._save()
+
+        preset_name = f"{PRESET_NAME_PREFIX}{lead_num:03d}"
+        output_tag = f"lead_{lead_num:03d}"
+        logger.info(
+            "New pullback verify leader #%d: %s annualized=%+.2f -> preset %s",
+            lead_num,
+            result.name,
+            annualized,
+            preset_name,
+        )
+        return PromoteJob(
+            result=result,
+            preset_name=preset_name,
+            output_tag=output_tag,
+        )
+
     def consider(self, result: PullbackSweepResult) -> PromoteJob | None:
+        """Track net-PnL leader; emit promote jobs after first positive screen anchor.
+
+        Used by ``--no-verify`` and existing tests. Verify-enabled sweeps must call
+        ``consider_screen`` then ``consider_verified`` instead, so 30d luck cannot
+        write a preset.
+        """
         pnl = float(result.pnl)
         with self._lock:
             if not self._state.anchor_established:
@@ -373,6 +564,13 @@ def promote_telegram_text(job: PromoteJob) -> str:
     cap_norm = stats.get("capital_normalized_pnl")
     if cap_norm is not None:
         lines.append(f"Cap-norm ($100): ${float(cap_norm):+.2f}")
+    annualized = result.annualized_cap_norm
+    if annualized is None:
+        annualized = stats.get("annualized_cap_norm")
+    if annualized is not None:
+        window = stats.get("window_days")
+        window_note = f" ({float(window):.1f}d window)" if window else ""
+        lines.append(f"Annualized cap-norm: ${float(annualized):+.2f}{window_note}")
     avg_notional = stats.get("avg_notional")
     if avg_notional is not None:
         lines.append(f"Avg notional: ${float(avg_notional):.2f}")
@@ -501,7 +699,11 @@ async def save_lead_reports_from_shared(
 
     Intended to run after sweep workers exit so it does not allocate a second tape.
     """
-    from routines.macdbb_pullback_hl_backtest import Config, save_pullback_backtest_report
+    from routines.macdbb_pullback_hl_backtest import (
+        Config,
+        pullback_session_table_row,
+        save_pullback_backtest_report,
+    )
     from routines.macdbb_pullback_hl_replay.presets import resolve_pullback_config
     from routines.macdbb_pullback_hl_replay.simulator import simulate_pullback_session
 
@@ -537,17 +739,11 @@ async def save_lead_reports_from_shared(
                 continue
             all_trades.extend(trades)
             session_rows.append(
-                {
-                    "Session": session_num,
-                    "Status": "ok",
-                    "Ticks": len(tick_meta_map),
-                    "Trades": summary.get("total_trades", 0),
-                    "Immediate": summary.get("immediate_trades", 0),
-                    "Pullback": summary.get("pullback_trades", 0),
-                    "Win Rate %": summary.get("win_rate_pct", 0),
-                    "SL rate": summary.get("sl_before_tp_rate", 0),
-                    "Sim PnL $": summary.get("net_pnl_quote", 0),
-                }
+                pullback_session_table_row(
+                    session_num,
+                    tick_count=len(tick_meta_map),
+                    trades=trades,
+                )
             )
         _text, report_id = await save_pullback_backtest_report(
             config,
@@ -632,11 +828,14 @@ __all__ = [
     "PromoteJob",
     "PullbackSweepResult",
     "SweepLeaderState",
+    "VERIFY_DIR_NAME",
     "consider_and_promote",
     "default_telegram_chat_id",
+    "default_verify_range_start",
     "existing_sweep_lead_numbers",
     "lead_preset_names",
     "lead_presets_missing_reports",
+    "load_verify_result",
     "next_sweep_lead_number",
     "preset_has_backtest_report",
     "promote_leader",
@@ -644,9 +843,13 @@ __all__ = [
     "register_sweep_lead_preset",
     "run_backtest_for_preset",
     "save_lead_reports_from_shared",
+    "save_verify_result",
     "send_promote_telegram",
     "send_promote_telegram_sync",
     "send_report_html_telegram",
     "start_lead_report_process",
     "strategy_overrides_from_result",
+    "verify_range_coverage_gap",
+    "verify_result_path",
+    "verify_results_dir",
 ]

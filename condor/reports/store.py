@@ -8,19 +8,22 @@ import json
 import os
 import re
 import tempfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
 # reports/ is a repository-root output directory, not this source package.
 CHARTS_DIR = Path(__file__).resolve().parents[2] / "reports"
-INDEX_FILE = CHARTS_DIR / "reports_index.json"
+SOURCE_INDEX_FILENAME = "reports_index.json"
+INDEX_FILE = CHARTS_DIR / SOURCE_INDEX_FILENAME
 MAX_REPORTS = int(os.environ.get("CONDOR_MAX_REPORTS", "100"))
 
 _UNNAMED_SOURCE_DIR = "_unnamed"
 _SOURCE_DIR_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
-_RESERVED_SOURCE_DIRS = frozenset({INDEX_FILE.name, _UNNAMED_SOURCE_DIR})
+_RESERVED_SOURCE_DIRS = frozenset({SOURCE_INDEX_FILENAME, _UNNAMED_SOURCE_DIR})
 
 _index_lock = asyncio.Lock()
+_fs_lock = threading.RLock()
 _last_report_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "last_report_id", default=None
 )
@@ -49,6 +52,11 @@ def source_dir_name(source_name: str | None) -> str:
     if not slug or slug in {".", ".."} or slug in _RESERVED_SOURCE_DIRS:
         return _UNNAMED_SOURCE_DIR
     return slug[:80]
+
+
+def source_index_path(source_name: str | None) -> Path:
+    """Return the per-routine index file for ``source_name``."""
+    return _charts_dir() / source_dir_name(source_name) / SOURCE_INDEX_FILENAME
 
 
 def reset_last_report_id() -> None:
@@ -93,26 +101,31 @@ def get_report_raw_html(report_id: str) -> tuple[str, str] | None:
     return path.read_text(encoding="utf-8"), entry["filename"]
 
 
-def _read_index() -> list[dict]:
-    index_file = _index_file()
-    if not index_file.exists():
+def _load_entries(path: Path) -> list[dict]:
+    if not path.is_file():
         return []
     try:
-        return json.loads(index_file.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return []
+    if not isinstance(payload, list):
+        return []
+    return [entry for entry in payload if isinstance(entry, dict)]
 
 
-def _write_index(entries: list[dict]) -> None:
-    charts_dir = _charts_dir()
-    charts_dir.mkdir(exist_ok=True)
+def _dump_entries(path: Path, entries: list[dict]) -> None:
+    if not entries:
+        if path.exists():
+            path.unlink()
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=str(charts_dir), suffix=".tmp", delete=False
+        mode="w", encoding="utf-8", dir=str(path.parent), suffix=".tmp", delete=False
     )
     try:
         json.dump(entries, tmp, indent=2, ensure_ascii=False)
         tmp.close()
-        os.replace(tmp.name, str(_index_file()))
+        os.replace(tmp.name, str(path))
     except Exception:
         tmp.close()
         try:
@@ -120,6 +133,112 @@ def _write_index(entries: list[dict]) -> None:
         except OSError:
             pass
         raise
+
+
+def _iter_source_index_paths() -> list[Path]:
+    charts_dir = _charts_dir()
+    if not charts_dir.is_dir():
+        return []
+    paths: list[Path] = []
+    for child in charts_dir.iterdir():
+        if not child.is_dir():
+            continue
+        index_path = child / SOURCE_INDEX_FILENAME
+        if index_path.is_file():
+            paths.append(index_path)
+    return paths
+
+
+def _iter_source_groups() -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = {}
+    for index_path in _iter_source_index_paths():
+        groups[index_path.parent.name] = _load_entries(index_path)
+    return groups
+
+
+def _split_legacy_index() -> None:
+    """Move a leftover root catalog into per-routine index files.
+
+    New reports live at ``reports/<routine>/reports_index.json``. A root
+    ``reports/reports_index.json`` is only read so existing catalogs keep
+    working until the next index access, which shards them in place.
+    """
+    legacy = _index_file()
+    if not legacy.is_file():
+        return
+    entries = _load_entries(legacy)
+    by_slug: dict[str, list[dict]] = {}
+    for entry in entries:
+        slug = source_dir_name(entry.get("source_name"))
+        by_slug.setdefault(slug, []).append(entry)
+    for slug, group in by_slug.items():
+        path = _charts_dir() / slug / SOURCE_INDEX_FILENAME
+        existing = _load_entries(path)
+        existing_ids = {item.get("id") for item in existing}
+        merged = existing + [item for item in group if item.get("id") not in existing_ids]
+        _dump_entries(path, merged)
+    try:
+        legacy.unlink()
+    except OSError:
+        pass
+
+
+def _read_index(source_names: list[str] | None = None) -> list[dict]:
+    with _fs_lock:
+        _split_legacy_index()
+        if source_names:
+            allowed = set(source_names)
+            slugs = {source_dir_name(name) for name in source_names}
+            entries: list[dict] = []
+            for slug in slugs:
+                path = _charts_dir() / slug / SOURCE_INDEX_FILENAME
+                for entry in _load_entries(path):
+                    if entry.get("source_name") in allowed:
+                        entries.append(entry)
+            return entries
+        entries = []
+        for group in _iter_source_groups().values():
+            entries.extend(group)
+        return entries
+
+
+def _write_index(entries: list[dict]) -> None:
+    """Replace the full catalog, sharded into per-routine index files."""
+    with _fs_lock:
+        by_slug: dict[str, list[dict]] = {}
+        for entry in entries:
+            slug = source_dir_name(entry.get("source_name"))
+            by_slug.setdefault(slug, []).append(entry)
+        existing_slugs = set(_iter_source_groups().keys())
+        charts_dir = _charts_dir()
+        charts_dir.mkdir(exist_ok=True)
+        for slug, group in by_slug.items():
+            _dump_entries(charts_dir / slug / SOURCE_INDEX_FILENAME, group)
+        for slug in existing_slugs - set(by_slug):
+            leftover = charts_dir / slug / SOURCE_INDEX_FILENAME
+            if leftover.exists():
+                leftover.unlink()
+        legacy = _index_file()
+        if legacy.exists():
+            legacy.unlink()
+
+
+def _upsert_entry(entry: dict) -> None:
+    """Insert or replace one report in its routine's index file."""
+    with _fs_lock:
+        _split_legacy_index()
+        path = source_index_path(entry.get("source_name"))
+        entries = _load_entries(path)
+        report_id = entry.get("id")
+        replaced = False
+        for index, item in enumerate(entries):
+            if item.get("id") == report_id:
+                entries[index] = entry
+                replaced = True
+                break
+        if not replaced:
+            entries.append(entry)
+        _dump_entries(path, entries)
 
 
 def _write_report_html(path: Path, content: str) -> None:
@@ -156,7 +275,8 @@ def list_reports(
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
-    entries = _read_index()
+    scoped_names = source_names or ([source_name] if source_name else None)
+    entries = _read_index(source_names=scoped_names)
     entries.sort(key=lambda entry: entry.get("created_at", ""), reverse=True)
 
     if source_type:
@@ -228,23 +348,39 @@ def get_report(report_id: str) -> dict | None:
 
 async def delete_report(report_id: str) -> bool:
     async with _index_lock:
-        entries = _read_index()
-        new_entries = []
-        deleted = False
-        for entry in entries:
-            if entry["id"] == report_id:
-                path = _charts_dir() / entry["filename"]
-                if path.exists():
-                    path.unlink()
-                deleted = True
-            else:
-                new_entries.append(entry)
-        if deleted:
-            _write_index(new_entries)
-    return deleted
+        with _fs_lock:
+            _split_legacy_index()
+            found: dict | None = None
+            found_slug: str | None = None
+            for slug, group in _iter_source_groups().items():
+                for entry in group:
+                    if entry.get("id") == report_id:
+                        found = entry
+                        found_slug = slug
+                        break
+                if found is not None:
+                    break
+            if found is None or found_slug is None:
+                return False
+            path = _charts_dir() / found["filename"]
+            if path.exists():
+                path.unlink()
+            remaining = [
+                entry
+                for entry in _load_entries(
+                    _charts_dir() / found_slug / SOURCE_INDEX_FILENAME
+                )
+                if entry.get("id") != report_id
+            ]
+            _dump_entries(
+                _charts_dir() / found_slug / SOURCE_INDEX_FILENAME, remaining
+            )
+            return True
 
 
-def _cleanup_locked(max_reports: int = MAX_REPORTS) -> None:
+def _cleanup_locked(
+    max_reports: int = MAX_REPORTS, source_name: str | None = None
+) -> None:
     """Prune oldest reports per source once that source exceeds ``max_reports``.
 
     ``CONDOR_MAX_REPORTS`` is a per-routine (per ``source_name``) cap, not a
@@ -253,29 +389,36 @@ def _cleanup_locked(max_reports: int = MAX_REPORTS) -> None:
     """
     if max_reports <= 0:
         return
-    entries = _read_index()
-    if not entries:
-        return
-    entries.sort(
-        key=lambda entry: entry.get("updated_at") or entry.get("created_at", "")
-    )
-    by_source: dict[str, list[dict]] = {}
-    for entry in entries:
-        by_source.setdefault(entry.get("source_name") or "", []).append(entry)
-
-    keep_ids: set[str] = set()
-    to_remove: list[dict] = []
-    for group in by_source.values():
-        if len(group) <= max_reports:
-            keep_ids.update(entry["id"] for entry in group)
-            continue
-        to_remove.extend(group[: len(group) - max_reports])
-        keep_ids.update(entry["id"] for entry in group[len(group) - max_reports :])
-    if not to_remove:
-        return
-    charts_dir = _charts_dir()
-    for entry in to_remove:
-        path = charts_dir / entry["filename"]
-        if path.exists():
-            path.unlink()
-    _write_index([entry for entry in entries if entry["id"] in keep_ids])
+    with _fs_lock:
+        _split_legacy_index()
+        if source_name is not None:
+            slug = source_dir_name(source_name)
+            groups = {slug: _load_entries(_charts_dir() / slug / SOURCE_INDEX_FILENAME)}
+        else:
+            groups = _iter_source_groups()
+        if not any(groups.values()):
+            return
+        charts_dir = _charts_dir()
+        for slug, group in groups.items():
+            by_source: dict[str, list[dict]] = {}
+            for entry in group:
+                by_source.setdefault(entry.get("source_name") or "", []).append(entry)
+            keep: list[dict] = []
+            removed = False
+            for named_group in by_source.values():
+                named_group.sort(
+                    key=lambda entry: entry.get("updated_at")
+                    or entry.get("created_at", "")
+                )
+                if len(named_group) <= max_reports:
+                    keep.extend(named_group)
+                    continue
+                removed = True
+                overflow = named_group[: len(named_group) - max_reports]
+                keep.extend(named_group[len(named_group) - max_reports :])
+                for entry in overflow:
+                    path = charts_dir / entry["filename"]
+                    if path.exists():
+                        path.unlink()
+            if removed:
+                _dump_entries(charts_dir / slug / SOURCE_INDEX_FILENAME, keep)

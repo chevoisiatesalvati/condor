@@ -140,3 +140,48 @@ def test_metrics_to_parsed_report_matches_compute_fields():
     assert parsed.interval == "4h"
     assert parsed.price == metrics["close"]
     assert parsed.bullish_cross == metrics["c_long_cross"]
+
+
+def test_merge_snapshot_stores_dedupes_and_extends_range(tmp_path):
+    from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import (
+        load_manifest,
+        merge_snapshot_stores,
+        write_manifest,
+    )
+
+    source = tmp_path / "backfill"
+    dest = tmp_path / "live"
+    dest_tick = dt.datetime(2026, 5, 6, 0, 0, tzinfo=dt.timezone.utc)
+    source_tick = dt.datetime(2025, 8, 17, 0, 0, tzinfo=dt.timezone.utc)
+    overlap_tick = dest_tick
+    append_states([_sample_state(dest_tick)], snapshot_dir=dest)
+    write_manifest(
+        {
+            "range_start_utc": "2026-05-06T00:00:00Z",
+            "range_end_utc": "2026-08-17T10:20:00Z",
+            "tick_count": 1,
+            "frequency_sec": 60,
+        },
+        snapshot_dir=dest,
+    )
+    append_states(
+        [_sample_state(source_tick), _sample_state(overlap_tick)],
+        snapshot_dir=source,
+    )
+    write_manifest(
+        {
+            "range_start_utc": "2025-08-17T00:00:00Z",
+            "range_end_utc": "2026-05-05T23:59:59Z",
+            "tick_count": 2,
+            "frequency_sec": 60,
+        },
+        snapshot_dir=source,
+    )
+    merged = merge_snapshot_stores(source, dest)
+    assert merged["range_start_utc"] == "2025-08-17T00:00:00Z"
+    assert merged["range_end_utc"] == "2026-08-17T10:20:00Z"
+    assert merged["tick_count"] == 2
+    assert str(source) in merged["merged_from"]
+    reloaded = load_manifest(snapshot_dir=dest)
+    assert reloaded is not None
+    assert reloaded["tick_count"] == 2

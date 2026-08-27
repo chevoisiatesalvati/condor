@@ -8,7 +8,11 @@ import multiprocessing as mp
 from pathlib import Path
 from typing import Any, Callable
 
-from condor.strategy_runners.macdbb_pullback.dynamic import capital_normalized_pnl
+from condor.strategy_runners.macdbb_pullback.dynamic import (
+    annualized_cap_norm,
+    capital_normalized_pnl,
+    window_days,
+)
 from routines.macdbb_scanner_aggressive_hl_replay.config_sweep import resolve_sweep_workers
 
 logger = logging.getLogger(__name__)
@@ -118,6 +122,14 @@ def run_one_case(case: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]
         all_trades.extend(trades)
 
     stats = trade_stats(all_trades)
+    base_kwargs = shared.get("base_kwargs") or {}
+    days = window_days(
+        str(base_kwargs.get("range_start_utc") or ""),
+        str(base_kwargs.get("range_end_utc") or ""),
+    )
+    cap_norm = float(stats["capital_normalized_pnl"])
+    stats["window_days"] = days
+    stats["annualized_cap_norm"] = annualized_cap_norm(cap_norm, window_days=days)
     return {
         "name": case["name"],
         "config": {

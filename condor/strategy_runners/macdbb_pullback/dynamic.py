@@ -6,10 +6,12 @@ Conviction-style scanner multipliers are intentionally not ported. Vol proxy is
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass
 from typing import Any
 
 FIXED_CAPITAL_BENCHMARK_AVG_NOTIONAL = 100.0
+ANNUALIZATION_DAYS = 365.25
 
 PULLBACK_DYNAMIC_PARAM_KEYS: tuple[str, ...] = (
     "enable_dynamic_barriers",
@@ -94,6 +96,44 @@ def capital_normalized_pnl(
     if avg_notional <= 0 or benchmark_avg_notional <= 0:
         return float(raw_pnl)
     return float(raw_pnl) * (benchmark_avg_notional / avg_notional)
+
+
+def _parse_range_utc(value: str) -> dt.datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def window_days(range_start_utc: str, range_end_utc: str) -> float:
+    """Inclusive UTC window length in days, or 0 if either bound is missing."""
+    start = _parse_range_utc(range_start_utc)
+    end = _parse_range_utc(range_end_utc)
+    if start is None or end is None:
+        return 0.0
+    seconds = (end - start).total_seconds()
+    if seconds <= 0:
+        return 0.0
+    return seconds / 86400.0
+
+
+def annualized_cap_norm(cap_norm: float, *, window_days: float) -> float:
+    """Scale capital-normalized PnL to a 365.25-day year.
+
+    Only compare annualized values from the same (or nearly same) window.
+    Do not rank a 30d annualized figure against a 1y run.
+    """
+    if window_days <= 0:
+        return float(cap_norm)
+    return float(cap_norm) * (ANNUALIZATION_DAYS / window_days)
 
 
 def resolve_pullback_entry_policy(

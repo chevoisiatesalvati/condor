@@ -5,6 +5,7 @@ from .store import (
     CHARTS_DIR,
     INDEX_FILE,
     MAX_REPORTS,
+    SOURCE_INDEX_FILENAME,
     attribute_to,
     delete_report,
     get_last_report_id,
@@ -14,6 +15,7 @@ from .store import (
     list_reports_grouped,
     reset_last_report_id,
     source_dir_name,
+    source_index_path,
 )
 
 __all__ = [
@@ -21,6 +23,7 @@ __all__ = [
     "LiveReport",
     "CHARTS_DIR",
     "INDEX_FILE",
+    "SOURCE_INDEX_FILENAME",
     "MAX_REPORTS",
     "attribute_to",
     "reset_last_report_id",
@@ -31,4 +34,5 @@ __all__ = [
     "get_report",
     "delete_report",
     "source_dir_name",
+    "source_index_path",
 ]

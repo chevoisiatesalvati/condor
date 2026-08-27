@@ -70,6 +70,21 @@ def _parse_args() -> argparse.Namespace:
         help="Do not write sweep-lead presets or send Telegram",
     )
     parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Promote from the sweep window only (legacy 30d cap-norm path)",
+    )
+    parser.add_argument(
+        "--verify-range-start",
+        default="",
+        help="UTC start for 1y consistency verify (default: 1y before --range-end)",
+    )
+    parser.add_argument(
+        "--verify-range-end",
+        default="",
+        help="UTC end for 1y consistency verify (default: same as --range-end)",
+    )
+    parser.add_argument(
         "--presets-path",
         default="",
         help="Override presets.yaml path (tests / dry-run)",
@@ -117,6 +132,7 @@ def _markdown_table(rows: list[dict[str, Any]]) -> str:
     headers = [
         "case",
         "cap_norm",
+        "ann_cap",
         "pnl",
         "avg_n",
         "trades",
@@ -136,6 +152,8 @@ def _markdown_table(rows: list[dict[str, Any]]) -> str:
         stats = row["stats"]
         raw_pnl = float(stats.get("net_pnl_quote") or 0)
         cap_norm = float(stats.get("capital_normalized_pnl", raw_pnl) or 0)
+        annualized = stats.get("annualized_cap_norm")
+        ann_cell = f"{float(annualized):+.2f}" if annualized is not None else "—"
         avg_n = stats.get("avg_notional")
         avg_n_cell = f"{float(avg_n):.1f}" if avg_n is not None else "—"
         lines.append(
@@ -144,6 +162,7 @@ def _markdown_table(rows: list[dict[str, Any]]) -> str:
                 [
                     row["name"],
                     f"{cap_norm:+.2f}",
+                    ann_cell,
                     f"{raw_pnl:+.2f}",
                     avg_n_cell,
                     str(stats["trades"]),
@@ -181,6 +200,9 @@ def _write_comparison(
         "seed": getattr(args, "seed", None),
         "tick_count": tick_count,
         "case_count": len(results),
+        "verify_range_start": getattr(args, "verify_range_start", "") or None,
+        "verify_range_end": getattr(args, "verify_range_end", "") or None,
+        "verify_enabled": not bool(getattr(args, "no_verify", False)),
         "cases": [
             {"name": row["name"], "config": row.get("config"), "stats": row.get("stats")}
             for row in results
@@ -207,7 +229,9 @@ def _write_comparison(
         f"Snapshot: `{args.snapshot_dir}`  \n"
         f"Budget: `{args.total_amount_quote}`  \n"
         f"Grid: `{getattr(args, 'grid', 'entry')}`  \n"
-        f"Cases: `{len(results)}`\n\n"
+        f"Cases: `{len(results)}`  \n"
+        f"Verify: `{getattr(args, 'verify_range_start', '') or 'off'}` → "
+        f"`{getattr(args, 'verify_range_end', '') or 'off'}`\n\n"
     )
     if leader:
         stats = leader["stats"]
@@ -223,20 +247,49 @@ def _write_comparison(
     (out_dir / "comparison.md").write_text(md, encoding="utf-8")
 
 
-def _result_to_sweep(row: dict[str, Any]):
+def _result_to_sweep(
+    row: dict[str, Any],
+    *,
+    overrides: dict[str, Any] | None = None,
+):
     from routines.macdbb_pullback_hl_replay.sweep_automation import PullbackSweepResult
 
     stats = row.get("stats") or {}
     raw_pnl = float(stats.get("net_pnl_quote") or 0)
     cap_norm = stats.get("capital_normalized_pnl")
     rank_pnl = float(cap_norm) if cap_norm is not None else raw_pnl
+    annualized = stats.get("annualized_cap_norm")
+    source_overrides = overrides if overrides is not None else row.get("config") or {}
     return PullbackSweepResult(
         name=str(row["name"]),
         pnl=rank_pnl,
         trades=int(stats.get("trades") or 0),
-        overrides=dict(row.get("config") or {}),
+        overrides=dict(source_overrides),
         stats=dict(stats),
+        annualized_cap_norm=float(annualized) if annualized is not None else None,
     )
+
+
+def _case_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    case = dict(row.get("config") or {})
+    case["name"] = row["name"]
+    return case
+
+
+def _emit_promote_job(job, *, chat_id: str | None) -> None:
+    if job is None:
+        return
+    if chat_id:
+        try:
+            from routines.macdbb_pullback_hl_replay.sweep_automation import (
+                send_promote_telegram_sync,
+            )
+
+            send_promote_telegram_sync(chat_id, job)
+        except Exception:
+            logging.exception("Telegram promote failed for %s", job.preset_name)
+    else:
+        logging.warning("Promoted %s but Telegram chat id is unset", job.preset_name)
 
 
 async def _main() -> int:
@@ -253,15 +306,20 @@ async def _main() -> int:
     from routines.macdbb_pullback_hl_replay.mega_sweep_runner import (
         load_completed_results,
         run_case_batch,
+        run_one_case,
     )
     from routines.macdbb_pullback_hl_replay.sweep_automation import (
         LeaderTracker,
         consider_and_promote,
         default_telegram_chat_id,
+        default_verify_range_start,
         lead_presets_missing_reports,
+        load_verify_result,
+        promote_leader,
         save_lead_reports_from_shared,
-        send_promote_telegram_sync,
+        save_verify_result,
         send_report_html_telegram,
+        verify_range_coverage_gap,
     )
 
     args = _resolve_grid_defaults(_parse_args())
@@ -296,6 +354,22 @@ async def _main() -> int:
                 "lead presets will still be written but Telegram will be skipped"
             )
 
+    if not args.verify_range_end:
+        args.verify_range_end = args.range_end
+    if not args.verify_range_start:
+        args.verify_range_start = default_verify_range_start(args.verify_range_end)
+    verify_enabled = not args.no_verify and not args.no_promote
+    if args.no_verify:
+        logging.info("1y verify disabled; promote uses sweep-window cap-norm")
+    elif args.no_promote:
+        logging.info("1y verify skipped because promote is disabled")
+    else:
+        logging.info(
+            "1y verify enabled | %s → %s",
+            args.verify_range_start,
+            args.verify_range_end,
+        )
+
     if args.gate_dry_run:
         cases = gate_dry_run_cases()
         logging.info("Dynamics gate dry-run: %d cases", len(cases))
@@ -317,23 +391,57 @@ async def _main() -> int:
         total_amount_quote=args.total_amount_quote,
     )
 
+    verify_shared: dict[str, Any] | None = None
+    if verify_enabled:
+        coverage_gap = verify_range_coverage_gap(
+            args.snapshot_dir,
+            args.verify_range_start,
+            args.verify_range_end,
+        )
+        if coverage_gap is not None:
+            logging.error(
+                "Refusing 1y verify/promote: snapshot coverage gap "
+                "%s → %s (%.1fd). Manifest covers %s → %s. "
+                "Finish the 60s year backfill before promoting.",
+                coverage_gap.gap_start_utc,
+                coverage_gap.gap_end_utc,
+                coverage_gap.gap_days,
+                coverage_gap.coverage_start_utc,
+                coverage_gap.coverage_end_utc,
+            )
+            verify_enabled = False
+        else:
+            logging.info("Hydrating 1y verify tape (parent only, not worker _SHARED)...")
+            verify_shared = await _load_shared_context(
+                preset=args.preset,
+                range_start=args.verify_range_start,
+                range_end=args.verify_range_end,
+                snapshot_dir=args.snapshot_dir,
+                candle_source=args.candle_source,
+                total_amount_quote=args.total_amount_quote,
+            )
+
     results, pending = load_completed_results(
         cases, out_dir, force=args.force
     )
     logging.info("Resume: %d done, %d pending", len(results), len(pending))
+
+    report_shared = verify_shared if verify_shared is not None else shared
 
     async def _write_missing_lead_reports(reason: str) -> None:
         missing = lead_presets_missing_reports()
         if not missing:
             logging.info("No missing pullback lead reports (%s)", reason)
             return
+        tape_label = "verify tape" if verify_shared is not None else "sweep tape"
         logging.info(
-            "Writing Condor reports for %d lead(s) on the sweep tape (%s)",
+            "Writing Condor reports for %d lead(s) on the %s (%s)",
             len(missing),
+            tape_label,
             reason,
         )
         saved = await save_lead_reports_from_shared(
-            shared,
+            report_shared,
             missing,
             total_amount_quote=args.total_amount_quote,
         )
@@ -346,8 +454,65 @@ async def _main() -> int:
                         "Telegram report send failed for %s", preset_name
                     )
 
+    def _verify_and_maybe_promote(screen_row: dict[str, Any]) -> None:
+        if verify_shared is None:
+            return
+        name = str(screen_row["name"])
+        verify_row = load_verify_result(out_dir, name)
+        if verify_row is None:
+            logging.info("Running 1y verify for %s", name)
+            verify_row = run_one_case(_case_from_row(screen_row), verify_shared)
+            save_verify_result(out_dir, verify_row)
+        else:
+            logging.info("Reusing persisted 1y verify for %s", name)
+        verify_stats = verify_row.get("stats") or {}
+        logging.info(
+            "Verify %s trades=%s cap_norm=%s annualized=%s",
+            name,
+            verify_stats.get("trades"),
+            verify_stats.get("capital_normalized_pnl"),
+            verify_stats.get("annualized_cap_norm"),
+        )
+        try:
+            job = tracker.consider_verified(
+                _result_to_sweep(
+                    verify_row,
+                    overrides=screen_row.get("config") or {},
+                )
+            )
+            if job is not None:
+                promote_leader(job, presets_path=presets_path)
+            _emit_promote_job(job, chat_id=chat_id)
+        except Exception:
+            logging.exception("Verify promote failed for %s", name)
+
+    def _legacy_promote(result: dict[str, Any]) -> None:
+        try:
+            job = consider_and_promote(
+                tracker,
+                _result_to_sweep(result),
+                presets_path=presets_path,
+            )
+        except Exception:
+            logging.exception("Promote failed for %s", result.get("name"))
+            job = None
+        _emit_promote_job(job, chat_id=chat_id)
+
     if not args.no_promote:
         await _write_missing_lead_reports("existing leads before workers")
+
+    if (
+        verify_shared is not None
+        and tracker.state.pending_verify_name
+    ):
+        pending_name = tracker.state.pending_verify_name
+        pending_row = next(
+            (row for row in results if row.get("name") == pending_name),
+            None,
+        )
+        if pending_row is not None:
+            logging.info("Resuming pending 1y verify for %s", pending_name)
+            _verify_and_maybe_promote(pending_row)
 
     def _on_result(done_in_batch: int, result: dict[str, Any]) -> None:
         result_path = out_dir / f"{result['name']}.json"
@@ -365,28 +530,19 @@ async def _main() -> int:
             stats.get("avg_notional"),
         )
         if not args.no_promote:
-            try:
-                job = consider_and_promote(
-                    tracker,
-                    _result_to_sweep(result),
-                    presets_path=presets_path,
+            if verify_shared is not None:
+                try:
+                    if tracker.consider_screen(_result_to_sweep(result)):
+                        _verify_and_maybe_promote(result)
+                except Exception:
+                    logging.exception("Screen/verify failed for %s", result.get("name"))
+            elif not args.no_verify:
+                logging.warning(
+                    "Skipping promote for %s: 1y verify tape was not hydrated",
+                    result.get("name"),
                 )
-            except Exception:
-                logging.exception("Promote failed for %s", result.get("name"))
-                job = None
-            if job is not None:
-                if chat_id:
-                    try:
-                        send_promote_telegram_sync(chat_id, job)
-                    except Exception:
-                        logging.exception(
-                            "Telegram promote failed for %s", job.preset_name
-                        )
-                else:
-                    logging.warning(
-                        "Promoted %s but Telegram chat id is unset",
-                        job.preset_name,
-                    )
+            else:
+                _legacy_promote(result)
         if (
             done_in_batch % max(1, args.checkpoint_every) == 0
             or len(results) == len(cases)

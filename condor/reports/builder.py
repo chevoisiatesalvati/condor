@@ -426,17 +426,14 @@ class ReportBuilder:
 
         async with store._index_lock:
             if report_id is not None:
-                entries = store._read_index()
-                entry = next(
-                    (item for item in entries if item["id"] == report_id), None
-                )
+                entry = store.get_report(report_id)
                 if entry is None:
                     raise ValueError(f"Report '{report_id}' not found in index")
                 store._write_report_html(charts_dir / entry["filename"], html_content)
                 entry["updated_at"] = now.isoformat()
                 entry["title"] = self._title
                 entry["tags"] = self._tags
-                store._write_index(entries)
+                store._upsert_entry(entry)
                 store._last_report_id.set(report_id)
                 logger.info(f"Report updated: {entry['filename']}")
                 return report_id
@@ -458,10 +455,8 @@ class ReportBuilder:
                 "tags": self._tags,
                 "agent": store._report_agent.get() or "condor",
             }
-            entries = store._read_index()
-            entries.append(entry)
-            store._write_index(entries)
-            store._cleanup_locked()
+            store._upsert_entry(entry)
+            store._cleanup_locked(source_name=self._source_name)
 
         store._last_report_id.set(new_id)
         logger.info(f"Report saved: {filename}")

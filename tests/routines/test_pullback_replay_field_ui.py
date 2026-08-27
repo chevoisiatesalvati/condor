@@ -241,3 +241,18 @@ def test_tick_universe_stats_empty_when_no_pairs():
     with_pairs, universe = _tick_universe_stats({0: ticks})
     assert with_pairs == 0
     assert universe == []
+
+
+def test_get_preset_overrides_includes_yaml_sweep_leads():
+    from routines.macdbb_pullback_hl_backtest import get_preset_overrides
+
+    overrides = get_preset_overrides()
+    assert "pullback_sweep_lead_008" in overrides
+    lead = overrides["pullback_sweep_lead_008"]
+    assert lead["impulse_atr_mult"] == 0.75
+    assert lead["pullback_epsilon_pct"] == 1.25
+    assert lead["sl_pct"] == 3.8
+    assert lead["tp_pct"] == 9.0
+    assert lead["enable_dynamic_barriers"] is True
+    assert lead["ref_volatility_pct"] == 0.75
+    assert lead["live_equivalent_queue"] is True

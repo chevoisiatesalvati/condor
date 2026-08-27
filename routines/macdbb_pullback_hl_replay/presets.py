@@ -54,6 +54,84 @@ def resolve_pullback_config(config: PullbackReplayConfig) -> PullbackReplayConfi
     # and wipe pullback_decay_2h_60s.
     incoming = config.model_dump(exclude_unset=True)
     merged = resolve_config_dict(config.preset, overrides=incoming)
+    # #region agent log
+    try:
+        import json as _json
+        import time as _time
+
+        from condor.strategy_runners.macdbb_pullback.presets import (
+            get_dynamic_preset_overrides,
+        )
+
+        yaml_over = get_dynamic_preset_overrides().get(str(config.preset)) or {}
+        with open(
+            "/home/saul/projects/Hummingbot/.cursor/debug-f59e1a.log",
+            "a",
+            encoding="utf-8",
+        ) as _dbg:
+            _dbg.write(
+                _json.dumps(
+                    {
+                        "sessionId": "f59e1a",
+                        "hypothesisId": "H1",
+                        "location": "presets.py:resolve_pullback_config",
+                        "message": "incoming vs yaml vs merged strategy params",
+                        "data": {
+                            "preset": config.preset,
+                            "incoming": {
+                                "impulse_atr_mult": incoming.get("impulse_atr_mult"),
+                                "pullback_epsilon_pct": incoming.get(
+                                    "pullback_epsilon_pct"
+                                ),
+                                "sl_pct": incoming.get("sl_pct"),
+                                "tp_pct": incoming.get("tp_pct"),
+                                "enable_dynamic_barriers": incoming.get(
+                                    "enable_dynamic_barriers"
+                                ),
+                            },
+                            "yaml": {
+                                "impulse_atr_mult": yaml_over.get("impulse_atr_mult"),
+                                "pullback_epsilon_pct": yaml_over.get(
+                                    "pullback_epsilon_pct"
+                                ),
+                                "sl_pct": yaml_over.get("sl_pct"),
+                                "tp_pct": yaml_over.get("tp_pct"),
+                                "enable_dynamic_barriers": yaml_over.get(
+                                    "enable_dynamic_barriers"
+                                ),
+                            },
+                            "merged_after_dict": {
+                                "impulse_atr_mult": merged.get("impulse_atr_mult"),
+                                "pullback_epsilon_pct": merged.get(
+                                    "pullback_epsilon_pct"
+                                ),
+                                "sl_pct": merged.get("sl_pct"),
+                                "tp_pct": merged.get("tp_pct"),
+                                "enable_dynamic_barriers": merged.get(
+                                    "enable_dynamic_barriers"
+                                ),
+                            },
+                            "incoming_has_impulse": "impulse_atr_mult" in incoming,
+                            "incoming_has_epsilon": "pullback_epsilon_pct" in incoming,
+                            "incoming_has_sl": "sl_pct" in incoming,
+                            "incoming_has_dyn_barriers": (
+                                "enable_dynamic_barriers" in incoming
+                            ),
+                            "incoming_live_eq": incoming.get(
+                                "live_equivalent_queue"
+                            ),
+                            "incoming_has_live_eq": (
+                                "live_equivalent_queue" in incoming
+                            ),
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
     for key in (
         "range_start_utc",
         "range_end_utc",

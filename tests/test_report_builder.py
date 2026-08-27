@@ -182,6 +182,11 @@ def test_new_report_lands_in_source_folder(reports_dir):
     assert entry["filename"].startswith("macd_bb_analysis/")
     assert entry["filename"].endswith(".html")
     assert (reports_dir / entry["filename"]).is_file()
+    source_index = reports_dir / "macd_bb_analysis" / "reports_index.json"
+    assert source_index.is_file()
+    assert not (reports_dir / "reports_index.json").exists()
+    indexed = json.loads(source_index.read_text(encoding="utf-8"))
+    assert indexed[0]["id"] == report_id
 
 
 def test_footprint_filters_invalid_rows_and_keeps_zero_visible():

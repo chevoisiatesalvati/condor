@@ -44,7 +44,7 @@ from routines.macdbb_scanner_aggressive_hl_replay.tick_market_state import (
     quote_volume_window,
     scanner_interval_for_tick,
 )
-from routines.macdbb_scanner_aggressive_hl_replay.paths import REPORTS_DIR, REPORTS_INDEX_PATH, strategy_sessions_dir
+from routines.macdbb_scanner_aggressive_hl_replay.paths import REPORTS_DIR, strategy_sessions_dir
 from routines.macdbb_scanner_aggressive_hl_replay.models import DynamicStrategyReplayConfig
 from routines.macdbb_scanner_aggressive_hl_replay.reports import (
     ParsedScannerReport,
@@ -59,7 +59,6 @@ from routines.market_scanner import analyze_pair, classify_markets, format_volum
 
 logger = logging.getLogger(__name__)
 
-_INDEX_FILE = REPORTS_DIR / "reports_index.json"
 _HTML_TEMPLATE = None  # loaded lazily from condor.reports
 
 
@@ -77,27 +76,30 @@ def _slugify(text: str) -> str:
     return re.sub(r"[\s-]+", "_", s).strip("_")[:40]
 
 
-def _read_index() -> list[dict[str, Any]]:
-    if not _INDEX_FILE.exists():
+def _read_index(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
         return []
     try:
-        return json.loads(_INDEX_FILE.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return []
+    if not isinstance(payload, list):
+        return []
+    return [entry for entry in payload if isinstance(entry, dict)]
 
 
-def _write_index(entries: list[dict[str, Any]]) -> None:
-    REPORTS_DIR.mkdir(exist_ok=True)
+def _write_index(path: Path, entries: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = tempfile.NamedTemporaryFile(
         mode="w",
-        dir=str(REPORTS_DIR),
+        dir=str(path.parent),
         suffix=".tmp",
         delete=False,
     )
     try:
         json.dump(entries, tmp, indent=2)
         tmp.close()
-        os.replace(tmp.name, str(_INDEX_FILE))
+        os.replace(tmp.name, str(path))
     except Exception:
         tmp.close()
         os.unlink(tmp.name)
@@ -146,9 +148,10 @@ def save_report_at(
         "source_name": builder._source_name,
         "tags": list(builder._tags),
     }
-    entries = _read_index()
+    index_path = report_dir / "reports_index.json"
+    entries = _read_index(index_path)
     entries.append(entry)
-    _write_index(entries)
+    _write_index(index_path, entries)
     return new_id
 
 

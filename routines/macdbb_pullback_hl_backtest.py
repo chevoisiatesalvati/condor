@@ -48,9 +48,59 @@ Config = PullbackReplayConfig
 
 
 def get_preset_overrides() -> dict[str, dict[str, Any]]:
-    from routines.macdbb_pullback_hl_replay.presets import PRESET_OVERRIDES
+    from condor.strategy_runners.macdbb_pullback.presets import (
+        PRESET_OVERRIDES as HARDCODED_PRESET_OVERRIDES,
+        _preset_override_dict,
+        get_dynamic_preset_overrides,
+    )
 
-    return dict(PRESET_OVERRIDES)
+    overrides = {
+        **HARDCODED_PRESET_OVERRIDES,
+        **{
+            name: _preset_override_dict(name)
+            for name in get_dynamic_preset_overrides()
+            if name not in HARDCODED_PRESET_OVERRIDES
+        },
+    }
+    # Sweep / live Strategies queue. Named presets must send this or the UI
+    # checkbox submits false and hydrate re-queues with a 5-pair NATR floor.
+    for name, payload in list(overrides.items()):
+        merged = dict(payload)
+        merged.setdefault("live_equivalent_queue", True)
+        overrides[name] = merged
+    # #region agent log
+    try:
+        import time as _time
+
+        with open(
+            "/home/saul/projects/Hummingbot/.cursor/debug-f59e1a.log",
+            "a",
+            encoding="utf-8",
+        ) as _dbg:
+            _dbg.write(
+                json.dumps(
+                    {
+                        "sessionId": "f59e1a",
+                        "hypothesisId": "H1",
+                        "location": "macdbb_pullback_hl_backtest.py:get_preset_overrides",
+                        "message": "UI preset_overrides keys",
+                        "data": {
+                            "key_count": len(overrides),
+                            "has_lead_008": "pullback_sweep_lead_008" in overrides,
+                            "lead_008_live_eq": (
+                                overrides.get("pullback_sweep_lead_008") or {}
+                            ).get("live_equivalent_queue"),
+                            "keys": sorted(overrides),
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
+    return overrides
 
 
 PRESET_OVERRIDES = get_preset_overrides()
@@ -175,6 +225,10 @@ def summarize_pullback_trades(all_trades: list[Any]) -> dict[str, Any]:
     sl_n = sum(1 for t in all_trades if "stop_loss" in _trade_exit_reason(t))
     tp_n = sum(1 for t in all_trades if "take_profit" in _trade_exit_reason(t))
     decay_n = sum(1 for t in all_trades if _trade_exit_reason(t) == "thesis_decay")
+    session_end_n = sum(
+        1 for t in all_trades if _trade_exit_reason(t) == "session_end"
+    )
+    flip_n = sum(1 for t in all_trades if _trade_exit_reason(t) == "flip_confirm")
     avg_notional = (
         sum(float(t.notional_quote) for t in all_trades) / total_trades
         if total_trades
@@ -194,6 +248,8 @@ def summarize_pullback_trades(all_trades: list[Any]) -> dict[str, Any]:
         "sl_n": sl_n,
         "tp_n": tp_n,
         "decay_n": decay_n,
+        "session_end_n": session_end_n,
+        "flip_n": flip_n,
         "total_pnl": total_pnl,
         "avg_notional": avg_notional,
         "cap_norm": cap_norm,
@@ -209,6 +265,36 @@ def summarize_pullback_trades(all_trades: list[Any]) -> dict[str, Any]:
             if total_trades
             else 0.0
         ),
+    }
+
+
+def pullback_session_table_row(
+    session_num: int,
+    *,
+    tick_count: int,
+    trades: list[Any],
+) -> dict[str, Any]:
+    """One Sessions-table row from the trades closed in that session."""
+    stats = summarize_pullback_trades(trades)
+    return {
+        "Session": session_num,
+        "Status": "ok",
+        "Ticks": tick_count,
+        "Trades": stats["total_trades"],
+        "Immediate": stats["immediate_n"],
+        "Pullback": stats["pullback_n"],
+        "Win Rate %": stats["win_rate_pct"],
+        "SL": stats["sl_n"],
+        "TP": stats["tp_n"],
+        "Decay": stats["decay_n"],
+        "Session end": stats["session_end_n"],
+        "Flip": stats["flip_n"],
+        "SL rate": stats["sl_rate"],
+        "Avg notional": round(stats["avg_notional"], 2),
+        "Avg SL/TP": (
+            f"{stats['avg_sl_pct']:.2f}% / {stats['avg_tp_pct']:.2f}%"
+        ),
+        "Sim PnL $": stats["total_pnl"],
     }
 
 
@@ -234,7 +320,13 @@ async def save_pullback_backtest_report(
         f"Win rate: {stats['win_rate_pct']:.1f}%",
         (
             f"SL hits: {stats['sl_n']} | TP hits: {stats['tp_n']} | "
-            f"Decay: {stats['decay_n']} | SL rate: {stats['sl_rate']:.3f}"
+            f"Decay: {stats['decay_n']} | Session end: {stats['session_end_n']}"
+            + (
+                f" | Flip: {stats['flip_n']}"
+                if stats["flip_n"]
+                else ""
+            )
+            + f" | SL rate: {stats['sl_rate']:.3f}"
         ),
         f"Sim PnL: ${stats['total_pnl']:.2f} | Capital-norm PnL: ${stats['cap_norm']:.2f}",
         (
@@ -259,9 +351,21 @@ async def save_pullback_backtest_report(
         builder.kpi("Sim Trades", str(stats["total_trades"]))
         builder.kpi("Immediate", str(stats["immediate_n"]))
         builder.kpi("Pullback", str(stats["pullback_n"]))
+        builder.kpi("Win rate", f"{stats['win_rate_pct']:.1f}%")
+        builder.kpi("SL hits", str(stats["sl_n"]))
+        builder.kpi("TP hits", str(stats["tp_n"]))
+        builder.kpi("Decay", str(stats["decay_n"]))
+        builder.kpi("Session end", str(stats["session_end_n"]))
+        if stats["flip_n"]:
+            builder.kpi("Flip", str(stats["flip_n"]))
         builder.kpi("Sim PnL", f"${stats['total_pnl']:+.2f}")
         builder.kpi("Capital-norm PnL", f"${stats['cap_norm']:+.2f}")
         builder.kpi("SL rate", f"{stats['sl_rate']:.3f}")
+        builder.kpi("Avg notional", f"${stats['avg_notional']:.2f}")
+        builder.kpi(
+            "Avg SL/TP",
+            f"{stats['avg_sl_pct']:.2f}% / {stats['avg_tp_pct']:.2f}%",
+        )
         builder.markdown(
             "## Config\n"
             f"- **Preset:** {config.preset}\n"
@@ -277,6 +381,8 @@ async def save_pullback_backtest_report(
             f"- **Flip exit:** {config.enable_flip_exit}\n"
             f"- **Dynamic barriers:** {config.enable_dynamic_barriers}\n"
             f"- **Dynamic sizing:** {config.enable_dynamic_sizing}\n"
+            f"- **Live-equivalent queue:** {config.live_equivalent_queue}\n"
+            f"- **Candle source:** {config.candle_source}\n"
         )
         if session_rows:
             builder.markdown("## Sessions")
@@ -376,6 +482,46 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResu
 
     tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
     ticks_with_pairs, universe_pairs = _tick_universe_stats(parsed_sessions)
+    # #region agent log
+    try:
+        import time as _time
+
+        with open(
+            "/home/saul/projects/Hummingbot/.cursor/debug-f59e1a.log",
+            "a",
+            encoding="utf-8",
+        ) as _dbg:
+            _dbg.write(
+                json.dumps(
+                    {
+                        "sessionId": "f59e1a",
+                        "hypothesisId": "H5",
+                        "location": "macdbb_pullback_hl_backtest.py:run:hydrate",
+                        "message": "resolved config and tick hydrate",
+                        "data": {
+                            "preset": config.preset,
+                            "range_start_utc": config.range_start_utc,
+                            "range_end_utc": config.range_end_utc,
+                            "impulse_atr_mult": config.impulse_atr_mult,
+                            "pullback_epsilon_pct": config.pullback_epsilon_pct,
+                            "sl_pct": config.sl_pct,
+                            "tp_pct": config.tp_pct,
+                            "enable_dynamic_barriers": config.enable_dynamic_barriers,
+                            "live_equivalent_queue": config.live_equivalent_queue,
+                            "price_source": config.price_source,
+                            "candle_source": config.candle_source,
+                            "tick_count": tick_count,
+                            "ticks_with_pairs": ticks_with_pairs,
+                            "universe_pairs": len(universe_pairs),
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
     logger.info(
         "Pullback backtest: preset=%s ticks=%d ticks_with_pairs=%d pairs=%d "
         "snapshot=%s candle_source=%s range %s → %s",
@@ -486,17 +632,11 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResu
                 continue
             all_trades.extend(trades)
             session_rows.append(
-                {
-                    "Session": session_num,
-                    "Status": "ok",
-                    "Ticks": len(tick_meta_map),
-                    "Trades": summary.get("total_trades", 0),
-                    "Immediate": summary.get("immediate_trades", 0),
-                    "Pullback": summary.get("pullback_trades", 0),
-                    "Win Rate %": summary.get("win_rate_pct", 0),
-                    "SL rate": summary.get("sl_before_tp_rate", 0),
-                    "Sim PnL $": summary.get("net_pnl_quote", 0),
-                }
+                pullback_session_table_row(
+                    session_num,
+                    tick_count=len(tick_meta_map),
+                    trades=trades,
+                )
             )
 
         text, _report_id = await save_pullback_backtest_report(
@@ -505,6 +645,47 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResu
             session_rows=session_rows,
         )
         stats = summarize_pullback_trades(all_trades)
+        # #region agent log
+        try:
+            import time as _time
+
+            with open(
+                "/home/saul/projects/Hummingbot/.cursor/debug-f59e1a.log",
+                "a",
+                encoding="utf-8",
+            ) as _dbg:
+                _dbg.write(
+                    json.dumps(
+                        {
+                            "sessionId": "f59e1a",
+                            "hypothesisId": "H3",
+                            "location": "macdbb_pullback_hl_backtest.py:run:summary",
+                            "message": "simulated trade summary",
+                            "data": {
+                                "preset": config.preset,
+                                "total_trades": stats["total_trades"],
+                                "immediate_trades": stats["immediate_n"],
+                                "pullback_trades": stats["pullback_n"],
+                                "sl_hits": stats["sl_n"],
+                                "tp_hits": stats["tp_n"],
+                                "net_pnl_quote": stats["total_pnl"],
+                                "impulse_atr_mult": config.impulse_atr_mult,
+                                "enable_dynamic_barriers": (
+                                    config.enable_dynamic_barriers
+                                ),
+                                "live_equivalent_queue": (
+                                    config.live_equivalent_queue
+                                ),
+                                "decay_hits": stats.get("decay_n"),
+                            },
+                            "timestamp": int(_time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # #endregion
 
         out_dir = __import__("pathlib").Path("data/backtests/macdbb_pullback_hl")
         out_dir.mkdir(parents=True, exist_ok=True)

@@ -1,4 +1,4 @@
-"""Reports stay in one flat store but are stamped with their producer (agent)."""
+"""Reports are stored per routine and stamped with their producer (agent)."""
 
 import asyncio
 

@@ -65,7 +65,7 @@ def test_format_close_notification_includes_pnl():
         close_type="EARLY_STOP",
         side="long",
         pnl=-12.5,
-        net_pnl_pct=-1.25,
+        net_pnl_pct=-0.0125,
         executor_id="abc",
         session_num=3,
     )
@@ -73,6 +73,25 @@ def test_format_close_notification_includes_pnl():
     assert "PnL $-12.50" in text
     assert "-1.25%" in text
     assert "session_3" in text
+
+
+def test_format_close_notification_scales_hummingbot_fraction_pct():
+    """Executor net_pnl_pct is a fraction (pnl/notional), not percent points."""
+    text = format_close_notification(
+        pair="BNB-USD",
+        reason="thesis_decay",
+        close_type="EARLY_STOP",
+        side="sell",
+        pnl=-1.85,
+        net_pnl_pct=-0.0185,
+        executor_id="5Hkp7cjMiiJ93KBUMCd9WpofQqL6zNx3VvWUwgNAX7xx",
+        session_num=4,
+        volume=100,
+    )
+    assert "PnL $-1.85" in text
+    assert "-1.85%" in text
+    assert "-0.02%" not in text
+    assert "vol $100" in text
 
 
 def test_format_open_notification_includes_context():
@@ -135,7 +154,7 @@ async def test_apply_emits_barrier_closes_alongside_stops():
                             "pair": "ETH-USD",
                             "side": "long",
                             "pnl": -4.5,
-                            "net_pnl_pct": -0.9,
+                            "net_pnl_pct": -0.009,
                             "volume": 100,
                         }
                     ]

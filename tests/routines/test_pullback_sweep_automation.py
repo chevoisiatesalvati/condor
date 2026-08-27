@@ -72,7 +72,14 @@ def _install_named_preset(tmp_path: Path, name: str) -> None:
     invalidate_preset_cache()
 
 
-def _result(name: str, pnl: float, trades: int = 5, **overrides) -> PullbackSweepResult:
+def _result(
+    name: str,
+    pnl: float,
+    trades: int = 5,
+    *,
+    annualized_cap_norm: float | None = None,
+    **overrides,
+) -> PullbackSweepResult:
     config = {
         "impulse_atr_mult": 1.25,
         "pullback_epsilon_pct": 0.75,
@@ -85,12 +92,18 @@ def _result(name: str, pnl: float, trades: int = 5, **overrides) -> PullbackSwee
         "snapshot_dir": "data/replay_snapshots_binance_60s",
         **overrides,
     }
+    stats = {"net_pnl_quote": pnl, "trades": trades, "immediate": 1, "pullback": 2}
+    if annualized_cap_norm is not None:
+        stats["annualized_cap_norm"] = annualized_cap_norm
+        stats["window_days"] = 365.25
+        stats["capital_normalized_pnl"] = pnl
     return PullbackSweepResult(
         name=name,
         pnl=pnl,
         trades=trades,
         overrides=config,
-        stats={"net_pnl_quote": pnl, "trades": trades, "immediate": 1, "pullback": 2},
+        stats=stats,
+        annualized_cap_norm=annualized_cap_norm,
     )
 
 
@@ -130,6 +143,113 @@ def test_leader_state_persists_across_reload(tmp_path: Path):
     assert reloaded.state.anchor_established is True
     assert reloaded.state.best_pnl == 9.0
     assert reloaded.state.promote_count == 1
+
+
+def test_consider_screen_queues_anchor_and_improvements(tmp_path: Path):
+    tracker = LeaderTracker(tmp_path / "automation.json")
+    assert tracker.consider_screen(_result("neg", -3.0)) is False
+    assert tracker.consider_screen(_result("anchor", 8.0)) is True
+    assert tracker.state.anchor_established is True
+    assert tracker.state.pending_verify_name == "anchor"
+    assert tracker.state.promote_count == 0
+    assert tracker.consider_screen(_result("worse", 4.0)) is False
+    assert tracker.consider_screen(_result("better", 12.0)) is True
+    assert tracker.state.best_pnl == 12.0
+    assert tracker.state.pending_verify_name == "better"
+    assert tracker.state.promote_count == 0
+
+
+def test_consider_verified_promotes_only_after_positive_1y_improvement(tmp_path: Path):
+    tracker = LeaderTracker(tmp_path / "automation.json")
+    tracker.consider_screen(_result("anchor", 8.0))
+    assert tracker.consider_verified(
+        _result("anchor", 8.0, annualized_cap_norm=20.0)
+    ) is None
+    assert tracker.state.verify_anchor_established is True
+    assert tracker.state.best_annual_cap_norm == 20.0
+    assert tracker.state.pending_verify_name == ""
+    assert tracker.consider_verified(
+        _result("lucky_month", 40.0, annualized_cap_norm=15.0)
+    ) is None
+    assert tracker.state.best_annual_cap_norm == 20.0
+    assert tracker.consider_verified(
+        _result("still_red", 50.0, annualized_cap_norm=-1.0)
+    ) is None
+    job = tracker.consider_verified(
+        _result("consistent", 14.0, annualized_cap_norm=45.0, pullback_epsilon_pct=1.25)
+    )
+    assert job is not None
+    assert job.preset_name == f"{PRESET_NAME_PREFIX}001"
+    assert job.result.overrides["frequency_sec"] == 60
+    assert job.result.annualized_cap_norm == 45.0
+    assert "range_start_utc" not in strategy_overrides_from_result(job.result)
+    assert strategy_overrides_from_result(job.result)["frequency_sec"] == 60
+
+
+def test_verify_json_roundtrip_skips_rerun(tmp_path: Path):
+    from routines.macdbb_pullback_hl_replay.sweep_automation import (
+        load_verify_result,
+        save_verify_result,
+    )
+
+    payload = {
+        "name": "cfg_a",
+        "config": {"sl_pct": 3.8, "frequency_sec": 60},
+        "stats": {"annualized_cap_norm": 33.0, "window_days": 365.0},
+    }
+    saved = save_verify_result(tmp_path, payload)
+    assert saved.is_file()
+    loaded = load_verify_result(tmp_path, "cfg_a")
+    assert loaded is not None
+    assert loaded["stats"]["annualized_cap_norm"] == 33.0
+    assert load_verify_result(tmp_path, "missing") is None
+
+
+def test_default_verify_range_start_is_one_calendar_year():
+    from routines.macdbb_pullback_hl_replay.sweep_automation import (
+        default_verify_range_start,
+    )
+
+    assert default_verify_range_start("2026-08-17T10:20:00Z") == "2025-08-17T10:20:00Z"
+
+
+def test_verify_range_coverage_gap_detects_short_store(tmp_path: Path):
+    from routines.macdbb_pullback_hl_replay.sweep_automation import (
+        verify_range_coverage_gap,
+    )
+    from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import write_manifest
+
+    write_manifest(
+        {
+            "range_start_utc": "2026-05-06T00:00:00Z",
+            "range_end_utc": "2026-08-17T10:20:00Z",
+            "tick_count": 134209,
+            "frequency_sec": 60,
+        },
+        snapshot_dir=tmp_path,
+    )
+    gap = verify_range_coverage_gap(
+        str(tmp_path),
+        "2025-08-17T00:00:00Z",
+        "2026-08-17T10:20:00Z",
+    )
+    assert gap is not None
+    assert gap.gap_start_utc.startswith("2025-08-17")
+
+
+def test_promote_telegram_includes_annualized():
+    job = PromoteJob(
+        result=_result(
+            "cfg_y",
+            12.0,
+            annualized_cap_norm=146.1,
+        ),
+        preset_name=f"{PRESET_NAME_PREFIX}002",
+        output_tag="lead_002",
+    )
+    text = promote_telegram_text(job)
+    assert "Annualized cap-norm: $+146.10 (365.2d window)" in text
+    assert "cfg_y" in text
 
 
 def test_register_sweep_lead_does_not_flip_winner(tmp_path: Path):
@@ -503,6 +623,158 @@ def test_save_pullback_backtest_report_sets_routine_source(tmp_path: Path, monke
     assert "Preset: pullback_sweep_lead_001" in text
 
 
+def _report_trade(**overrides):
+    from types import SimpleNamespace
+
+    payload = {
+        "pair": "BTC-USDT",
+        "side": "long",
+        "entry_class": "pullback",
+        "notional_quote": 100.0,
+        "sl_pct_used": 3.8,
+        "tp_pct_used": 9.0,
+        "entry_time_utc": None,
+        "exit_time_utc": None,
+        "exit_reason": "thesis_decay",
+        "return_pct": 0.01,
+        "pnl_quote": 1.0,
+    }
+    payload.update(overrides)
+    return SimpleNamespace(**payload)
+
+
+def test_summarize_pullback_trades_counts_exit_mix():
+    from routines.macdbb_pullback_hl_backtest import summarize_pullback_trades
+
+    stats = summarize_pullback_trades(
+        [
+            _report_trade(
+                exit_reason="stop_loss_close_proxy",
+                pnl_quote=-3.8,
+                entry_class="immediate",
+            ),
+            _report_trade(exit_reason="take_profit_close_proxy", pnl_quote=9.0),
+            _report_trade(exit_reason="thesis_decay", pnl_quote=0.4),
+            _report_trade(exit_reason="session_end", pnl_quote=1.5),
+            _report_trade(exit_reason="flip_confirm", pnl_quote=-0.2),
+        ]
+    )
+    assert stats["total_trades"] == 5
+    assert stats["immediate_n"] == 1
+    assert stats["pullback_n"] == 4
+    assert stats["sl_n"] == 1
+    assert stats["tp_n"] == 1
+    assert stats["decay_n"] == 1
+    assert stats["session_end_n"] == 1
+    assert stats["flip_n"] == 1
+    assert stats["wins"] == 3
+    assert stats["avg_sl_pct"] == pytest.approx(3.8)
+    assert stats["avg_tp_pct"] == pytest.approx(9.0)
+    assert stats["avg_notional"] == pytest.approx(100.0)
+
+
+def test_pullback_session_table_row_includes_exit_counts():
+    from routines.macdbb_pullback_hl_backtest import pullback_session_table_row
+
+    row = pullback_session_table_row(
+        0,
+        tick_count=100,
+        trades=[
+            _report_trade(exit_reason="stop_loss_close_proxy", pnl_quote=-1.0),
+            _report_trade(exit_reason="take_profit_close_proxy", pnl_quote=2.0),
+            _report_trade(exit_reason="thesis_decay"),
+            _report_trade(exit_reason="session_end"),
+        ],
+    )
+    assert row["Ticks"] == 100
+    assert row["Trades"] == 4
+    assert row["SL"] == 1
+    assert row["TP"] == 1
+    assert row["Decay"] == 1
+    assert row["Session end"] == 1
+    assert row["Flip"] == 0
+    assert row["Avg SL/TP"] == "3.80% / 9.00%"
+    assert row["Avg notional"] == 100.0
+
+
+def test_save_pullback_backtest_report_includes_telegram_kpis(
+    tmp_path: Path, monkeypatch
+):
+    captured: dict[str, object] = {"kpis": []}
+
+    class _FakeBuilder:
+        def __init__(self, title):
+            captured["title"] = title
+
+        def source(self, source_type, source_name):
+            return self
+
+        def tags(self, tags):
+            return self
+
+        def manual_order(self):
+            return self
+
+        def kpi(self, label, value, *args, **kwargs):
+            captured["kpis"].append((label, value))
+            return self
+
+        def markdown(self, *args, **kwargs):
+            return self
+
+        def table(self, *args, **kwargs):
+            return self
+
+        async def save(self):
+            return "rep1"
+
+    monkeypatch.setattr("condor.reports.ReportBuilder", _FakeBuilder)
+    monkeypatch.setattr("condor.reports.get_last_report_id", lambda: "rep1")
+    monkeypatch.setattr("condor.reports.reset_last_report_id", lambda: None)
+
+    import asyncio
+
+    from routines.macdbb_pullback_hl_backtest import Config, save_pullback_backtest_report
+
+    _install_named_preset(tmp_path, "pullback_sweep_lead_001")
+
+    text, report_id = asyncio.run(
+        save_pullback_backtest_report(
+            Config(preset="pullback_sweep_lead_001"),
+            all_trades=[
+                _report_trade(
+                    exit_reason="stop_loss_close_proxy",
+                    pnl_quote=-3.8,
+                    entry_class="immediate",
+                ),
+                _report_trade(exit_reason="take_profit_close_proxy", pnl_quote=9.0),
+                _report_trade(exit_reason="thesis_decay", pnl_quote=0.5),
+                _report_trade(exit_reason="session_end", pnl_quote=1.2),
+            ],
+            session_rows=[],
+        )
+    )
+    kpi_map = dict(captured["kpis"])
+    assert report_id == "rep1"
+    assert kpi_map["Sim Trades"] == "4"
+    assert kpi_map["Immediate"] == "1"
+    assert kpi_map["Pullback"] == "3"
+    assert kpi_map["Win rate"] == "75.0%"
+    assert kpi_map["SL hits"] == "1"
+    assert kpi_map["TP hits"] == "1"
+    assert kpi_map["Decay"] == "1"
+    assert kpi_map["Session end"] == "1"
+    assert "Flip" not in kpi_map
+    assert kpi_map["SL rate"] == "0.250"
+    assert kpi_map["Avg notional"] == "$100.00"
+    assert kpi_map["Avg SL/TP"] == "3.80% / 9.00%"
+    assert "SL hits: 1" in text
+    assert "TP hits: 1" in text
+    assert "Decay: 1" in text
+    assert "Session end: 1" in text
+    assert "Avg SL/TP: 3.80% / 9.00%" in text
+
+
 def test_send_promote_telegram_sync_posts_message(monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.setenv("TELEGRAM_TOKEN", "123:abc")
@@ -515,6 +787,7 @@ def test_send_promote_telegram_sync_posts_message(monkeypatch):
     assert "imp1_pb1.25_sl3.8_tp9_cl80_cs30" in text
     assert "$+37.54" in text
     assert f"{PRESET_NAME_PREFIX}005" in text
+    assert "Annualized cap-norm" not in text
 
     posted: dict[str, object] = {}
 

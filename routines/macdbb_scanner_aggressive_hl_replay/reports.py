@@ -289,18 +289,48 @@ def parse_report_html(report_html: str) -> ParsedReport | None:
     )
 
 
+def _raw_index_entries_for_source(source_name: str) -> list[dict]:
+    """Load index rows for one routine, preferring its folder catalog.
+
+    A leftover root ``reports_index.json`` is still read so unmigrated
+    catalogs keep working; per-routine entries win on id collision.
+    """
+    from condor.reports import SOURCE_INDEX_FILENAME, source_dir_name
+
+    by_id: dict[str, dict] = {}
+    if REPORTS_INDEX_PATH.is_file():
+        try:
+            legacy_entries = json.loads(REPORTS_INDEX_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            legacy_entries = []
+        for entry in legacy_entries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("source_name") != source_name or "id" not in entry:
+                continue
+            by_id[entry["id"]] = entry
+    source_index = REPORTS_DIR / source_dir_name(source_name) / SOURCE_INDEX_FILENAME
+    if source_index.is_file():
+        try:
+            source_entries = json.loads(source_index.read_text(encoding="utf-8"))
+        except Exception:
+            source_entries = []
+        for entry in source_entries:
+            if not isinstance(entry, dict) or "id" not in entry:
+                continue
+            if entry.get("source_name", source_name) != source_name:
+                continue
+            by_id[entry["id"]] = entry
+    return list(by_id.values())
+
+
 def load_reports_index() -> list[ReportMeta]:
     from routines.macdbb_scanner_aggressive_hl_replay import snapshot_store
 
     if snapshot_store.is_snapshot_store_active():
         return snapshot_store.load_macdbb_index()
-    if not REPORTS_INDEX_PATH.exists():
-        return []
-    raw_entries = json.loads(REPORTS_INDEX_PATH.read_text(encoding="utf-8"))
     reports: list[ReportMeta] = []
-    for entry in raw_entries:
-        if entry.get("source_name") != "macd_bb_analysis":
-            continue
+    for entry in _raw_index_entries_for_source("macd_bb_analysis"):
         title_match = _PAIR_TITLE_RE.search(entry.get("title", ""))
         if not title_match:
             continue
@@ -390,13 +420,8 @@ def load_scanner_reports_index() -> list[ScannerReportMeta]:
 
     if snapshot_store.is_snapshot_store_active():
         return snapshot_store.load_scanner_index()
-    if not REPORTS_INDEX_PATH.exists():
-        return []
-    raw_entries = json.loads(REPORTS_INDEX_PATH.read_text(encoding="utf-8"))
     reports: list[ScannerReportMeta] = []
-    for entry in raw_entries:
-        if entry.get("source_name") != "hyperliquid_market_scanner":
-            continue
+    for entry in _raw_index_entries_for_source("hyperliquid_market_scanner"):
         title = entry.get("title", "")
         lookback: int | None = None
         title_match = _SCANNER_TITLE_RE.search(title)

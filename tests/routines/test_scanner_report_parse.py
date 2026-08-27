@@ -36,3 +36,34 @@ def test_parse_scanner_report_html_fixture():
     assert len(parsed.degen) == 1
     assert parsed.mature[0].pair == "BTC-USD"
     assert parsed.degen[0].natr_mean == 1.25
+
+
+def test_raw_index_entries_read_per_source_catalog(tmp_path, monkeypatch):
+    import json
+
+    from routines.macdbb_scanner_aggressive_hl_replay import reports as replay_reports
+
+    monkeypatch.setattr(replay_reports, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        replay_reports, "REPORTS_INDEX_PATH", tmp_path / "reports_index.json"
+    )
+    source_dir = tmp_path / "hyperliquid_market_scanner"
+    source_dir.mkdir()
+    (source_dir / "reports_index.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "abc123",
+                    "title": "Hyperliquid Market Scanner (6h)",
+                    "filename": "hyperliquid_market_scanner/x.html",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "source_name": "hyperliquid_market_scanner",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    loaded = replay_reports._raw_index_entries_for_source(
+        "hyperliquid_market_scanner"
+    )
+    assert [entry["id"] for entry in loaded] == ["abc123"]

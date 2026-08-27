@@ -1,6 +1,11 @@
 """Decay / flip / ATR-dynamics pullback sweep grid."""
 
-from condor.strategy_runners.macdbb_pullback.dynamic import capital_normalized_pnl
+from condor.strategy_runners.macdbb_pullback.dynamic import (
+    ANNUALIZATION_DAYS,
+    annualized_cap_norm,
+    capital_normalized_pnl,
+    window_days,
+)
 from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
     DYNAMICS_SWEEP_CONFIG_COUNT,
     DYNAMICS_SWEEP_SEED,
@@ -104,6 +109,14 @@ def test_capital_normalized_pnl_scales_to_100_budget():
     assert capital_normalized_pnl(40.0, 100.0) == 40.0
     assert capital_normalized_pnl(40.0, 50.0) == 80.0
     assert capital_normalized_pnl(10.0, 0.0) == 10.0
+
+
+def test_annualized_cap_norm_scales_by_window_days():
+    assert window_days("2026-07-18T00:00:00Z", "2026-08-17T00:00:00Z") == 30.0
+    assert annualized_cap_norm(10.0, window_days=30.0) == 10.0 * (ANNUALIZATION_DAYS / 30.0)
+    assert annualized_cap_norm(10.0, window_days=ANNUALIZATION_DAYS) == 10.0
+    assert annualized_cap_norm(10.0, window_days=0.0) == 10.0
+    assert window_days("", "2026-08-17T00:00:00Z") == 0.0
 
 
 def test_trade_stats_include_avg_notional_and_cap_norm():
