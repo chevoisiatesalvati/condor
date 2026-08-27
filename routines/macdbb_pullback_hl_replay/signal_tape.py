@@ -1,8 +1,9 @@
 """Precompute per-tick MACD/BB/impulse raw values for pullback replay.
 
-Param-independent work (1h as-of series, MACD/BB, ATR%, signed bodies) is done
-once per tape. Sweep knobs (impulse_atr_mult, bb epsilon, pullback epsilon,
-SL/TP) are applied later in ``materialize_signals`` / ``decide()``.
+Param-independent work (1h as-of series, MACD/BB, ATR% windows, signed bodies)
+is done once per tape. Sweep knobs (impulse_atr_mult, lookback, ATR period,
+bb epsilon, pullback epsilon, SL/TP) are applied later in
+``materialize_signals`` / ``decide()``.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -20,7 +21,8 @@ from condor.strategy_runners.macdbb.market_data import signal_from_closes
 from condor.strategy_runners.macdbb_pullback.entry_quality import (
     DEFAULT_ATR_PERIOD,
     DEFAULT_IMPULSE_LOOKBACK_BARS,
-    compute_impulse_metrics,
+    atr_pct_from_candles,
+    signed_body_pct,
 )
 from condor.strategy_runners.macdbb_pullback.metrics import compute_thesis_metrics
 from condor.strategy_runners.macdbb_pullback.types import SignalSnapshot
@@ -37,6 +39,9 @@ from routines.macdbb_pullback_hl_replay.impulse_candles import (
 from routines.macdbb_scanner_aggressive_hl_replay.models import TickMeta
 
 logger = logging.getLogger(__name__)
+
+TAPE_ATR_PERIODS: tuple[int, ...] = (7, 14, 21)
+TAPE_LOOKBACK_BARS: tuple[int, ...] = (1, 2, 4)
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,9 @@ class RawTickSignal:
     atr_pct: float
     signed_body_sum_long: float
     signed_body_sum_short: float
+    atr_pct_by_period: dict[int, float] = field(default_factory=dict)
+    signed_body_sum_long_by_lookback: dict[int, float] = field(default_factory=dict)
+    signed_body_sum_short_by_lookback: dict[int, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -74,12 +82,17 @@ class PullbackSignalTape:
     ) -> dict[str, SignalSnapshot]:
         params = dict(strategy_params or {})
         impulse_atr_mult = float(params.get("impulse_atr_mult") or 1.25)
+        lookback = int(params.get("impulse_lookback_bars") or DEFAULT_IMPULSE_LOOKBACK_BARS)
+        atr_period = int(params.get("atr_period") or DEFAULT_ATR_PERIOD)
         raw_by_pair = self.by_tick.get(int(tick)) or {}
         out: dict[str, SignalSnapshot] = {}
         for pair in pairs:
             raw = raw_by_pair.get(pair)
             if raw is None:
                 continue
+            atr_pct = _select_atr_pct(raw, atr_period)
+            signed_long = _select_signed_body(raw, "long", lookback)
+            signed_short = _select_signed_body(raw, "short", lookback)
             signal = SignalSnapshot(
                 pair=pair,
                 price=raw.price,
@@ -93,19 +106,16 @@ class PullbackSignalTape:
                 momentum=raw.momentum,
                 bullish_cross=raw.bullish_cross,
                 bearish_cross=raw.bearish_cross,
-                atr_pct=raw.atr_pct,
-                impulse_signed_body_sum_pct=max(
-                    raw.signed_body_sum_long,
-                    raw.signed_body_sum_short,
-                ),
+                atr_pct=atr_pct,
+                impulse_signed_body_sum_pct=max(signed_long, signed_short),
                 impulse_long=_impulse_flag(
-                    raw.atr_pct,
-                    raw.signed_body_sum_long,
+                    atr_pct,
+                    signed_long,
                     impulse_atr_mult,
                 ),
                 impulse_short=_impulse_flag(
-                    raw.atr_pct,
-                    raw.signed_body_sum_short,
+                    atr_pct,
+                    signed_short,
                     impulse_atr_mult,
                 ),
             )
@@ -118,6 +128,30 @@ def _impulse_flag(atr_pct: float, signed_body_sum_pct: float, impulse_atr_mult: 
     if atr_pct <= 0:
         return False
     return signed_body_sum_pct >= (float(impulse_atr_mult) * atr_pct)
+
+
+def _select_atr_pct(raw: RawTickSignal, atr_period: int) -> float:
+    by_period = raw.atr_pct_by_period
+    if by_period and int(atr_period) in by_period:
+        return float(by_period[int(atr_period)])
+    return float(raw.atr_pct)
+
+
+def _select_signed_body(
+    raw: RawTickSignal,
+    side: str,
+    lookback_bars: int,
+) -> float:
+    mapping = (
+        raw.signed_body_sum_long_by_lookback
+        if side == "long"
+        else raw.signed_body_sum_short_by_lookback
+    )
+    if mapping and int(lookback_bars) in mapping:
+        return float(mapping[int(lookback_bars)])
+    if side == "long":
+        return float(raw.signed_body_sum_long)
+    return float(raw.signed_body_sum_short)
 
 
 def universe_pairs_from_ticks(
@@ -176,6 +210,28 @@ def _load_pair_arrays(
     return OhlcvArrays.from_candles(candles_1h), OhlcvArrays.from_candles(candles_1m)
 
 
+def _signed_body_sums_by_lookback(
+    candles_1h: Sequence[Any],
+) -> tuple[dict[int, float], dict[int, float]]:
+    completed = list(candles_1h)
+    max_lookback = max(TAPE_LOOKBACK_BARS)
+    recent = completed[-max_lookback:] if completed else []
+    long_prefix = 0.0
+    short_prefix = 0.0
+    long_by_lookback: dict[int, float] = {}
+    short_by_lookback: dict[int, float] = {}
+    for offset, candle in enumerate(reversed(recent), start=1):
+        long_prefix += signed_body_pct(candle, "long")
+        short_prefix += signed_body_pct(candle, "short")
+        if offset in TAPE_LOOKBACK_BARS:
+            long_by_lookback[offset] = long_prefix
+            short_by_lookback[offset] = short_prefix
+    for lookback in TAPE_LOOKBACK_BARS:
+        long_by_lookback.setdefault(lookback, long_prefix)
+        short_by_lookback.setdefault(lookback, short_prefix)
+    return long_by_lookback, short_by_lookback
+
+
 def _raw_from_as_of_candles(
     pair: str,
     candles_1h: list[dict[str, float]],
@@ -189,20 +245,31 @@ def _raw_from_as_of_candles(
     base = signal_from_closes(pair, closes)
     if base is None:
         return None
-    long_m = compute_impulse_metrics(
-        candles_1h,
-        "long",
-        lookback_bars=impulse_lookback_bars,
-        atr_period=atr_period,
-        impulse_atr_mult=1.0,
+    atr_pct_by_period = {
+        period: float(atr_pct_from_candles(candles_1h, period=period))
+        for period in TAPE_ATR_PERIODS
+    }
+    default_period = int(atr_period)
+    if default_period not in atr_pct_by_period:
+        atr_pct_by_period[default_period] = float(
+            atr_pct_from_candles(candles_1h, period=default_period)
+        )
+    long_by_lookback, short_by_lookback = _signed_body_sums_by_lookback(candles_1h)
+    default_lookback = max(1, int(impulse_lookback_bars))
+    atr_pct = float(
+        atr_pct_by_period.get(
+            default_period,
+            atr_pct_from_candles(candles_1h, period=default_period),
+        )
     )
-    short_m = compute_impulse_metrics(
-        candles_1h,
-        "short",
-        lookback_bars=impulse_lookback_bars,
-        atr_period=atr_period,
-        impulse_atr_mult=1.0,
-    )
+    signed_long = float(long_by_lookback.get(default_lookback, 0.0))
+    signed_short = float(short_by_lookback.get(default_lookback, 0.0))
+    if default_lookback not in long_by_lookback:
+        recent = candles_1h[-default_lookback:]
+        signed_long = float(sum(signed_body_pct(candle, "long") for candle in recent))
+        signed_short = float(sum(signed_body_pct(candle, "short") for candle in recent))
+        long_by_lookback[default_lookback] = signed_long
+        short_by_lookback[default_lookback] = signed_short
     return RawTickSignal(
         price=float(base.price),
         bb_pos_pct=float(base.bb_pos_pct),
@@ -215,9 +282,12 @@ def _raw_from_as_of_candles(
         momentum=str(base.momentum),
         bullish_cross=bool(base.bullish_cross),
         bearish_cross=bool(base.bearish_cross),
-        atr_pct=float(long_m.atr_pct),
-        signed_body_sum_long=float(long_m.signed_body_sum_pct),
-        signed_body_sum_short=float(short_m.signed_body_sum_pct),
+        atr_pct=atr_pct,
+        signed_body_sum_long=signed_long,
+        signed_body_sum_short=signed_short,
+        atr_pct_by_period=atr_pct_by_period,
+        signed_body_sum_long_by_lookback=long_by_lookback,
+        signed_body_sum_short_by_lookback=short_by_lookback,
     )
 
 
@@ -327,6 +397,8 @@ def build_pullback_signal_tapes(
 __all__ = [
     "PullbackSignalTape",
     "RawTickSignal",
+    "TAPE_ATR_PERIODS",
+    "TAPE_LOOKBACK_BARS",
     "build_pullback_signal_tape",
     "build_pullback_signal_tapes",
     "universe_pairs_from_ticks",

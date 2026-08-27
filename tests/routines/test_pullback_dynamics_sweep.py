@@ -14,8 +14,16 @@ from condor.strategy_runners.macdbb_pullback.dynamic import (
 )
 from condor.strategy_runners.macdbb_pullback.presets import invalidate_preset_cache
 from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
+    CHASE_PAIRS,
+    DECAY_HOURS_VALUES,
     DYNAMICS_SWEEP_CONFIG_COUNT,
+    EPSILON_VALUES,
+    GRACE_VALUES,
     HELD_OVERRIDES,
+    HELD_RANDOM_ENTRY,
+    PROBE_ATR_PERIODS,
+    PROBE_LOOKBACK_BARS,
+    TP_VALUES,
     current_lead_baseline_case,
     current_lead_sweep_values,
     dynamics_sweep_out_dir,
@@ -24,6 +32,9 @@ from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
     dynamics_sweep_space_size,
     gate_dry_run_cases,
     held_random_entry,
+    lookback_atr_probe_cases,
+    lookback_atr_probe_out_dir,
+    lookback_atr_probe_space_size,
     pullback_dynamics_cases,
 )
 from routines.macdbb_pullback_hl_replay.mega_sweep_runner import trade_stats
@@ -99,8 +110,9 @@ def test_latest_lead_drives_preset_seed_out_dir_and_baseline(tmp_path, monkeypat
     assert case["impulse_atr_mult"] == 1.75
     assert case["name"] == current_lead_baseline_case(presets_path=presets_path)["name"]
     held = held_random_entry(presets_path=presets_path)
-    assert held["pullback_epsilon_pct"] == 0.9
+    assert held["impulse_atr_mult"] == 1.75
     assert held["sl_pct"] == 4.4
+    assert "pullback_epsilon_pct" not in held
     cases = pullback_dynamics_cases(
         min_configs=8,
         presets_path=presets_path,
@@ -108,8 +120,11 @@ def test_latest_lead_drives_preset_seed_out_dir_and_baseline(tmp_path, monkeypat
     assert cases[0]["impulse_atr_mult"] == 1.75
     assert cases[0]["name"] == case["name"]
     for row in cases[1:]:
-        assert row["pullback_epsilon_pct"] == 0.9
+        assert row["impulse_atr_mult"] == 1.75
         assert row["sl_pct"] == 4.4
+        assert row["enable_flip_exit"] is False
+        assert row["enable_dynamic_sizing"] is False
+        assert row["pullback_epsilon_pct"] in EPSILON_VALUES
 
 
 def test_dynamics_cli_defaults_follow_latest_lead(monkeypatch):
@@ -124,6 +139,21 @@ def test_dynamics_cli_defaults_follow_latest_lead(monkeypatch):
     args = _resolve_grid_defaults(_parse_args())
     assert args.seed == dynamics_sweep_seed()
     assert args.out_dir == dynamics_sweep_out_dir()
+
+
+def test_probe_cli_defaults_follow_latest_lead(monkeypatch):
+    import sys
+
+    from scripts.run_macdbb_pullback_mega_sweep import (
+        _parse_args,
+        _resolve_grid_defaults,
+    )
+
+    monkeypatch.setattr(sys, "argv", ["prog", "--grid", "probe"])
+    args = _resolve_grid_defaults(_parse_args())
+    assert args.seed == dynamics_sweep_seed()
+    assert args.out_dir == lookback_atr_probe_out_dir()
+    assert args.min_configs == lookback_atr_probe_space_size()
 
 
 def test_current_lead_baseline_uses_generated_case_name():
@@ -146,20 +176,30 @@ def test_three_thousand_unique_names_start_from_current_lead():
             assert cases[0][key] == value
 
 
-def test_random_cases_hold_current_lead_entry_gates():
+def test_random_cases_hold_lead_impulse_and_v2_axes():
     cases = pullback_dynamics_cases(min_configs=12)
     held = held_random_entry()
+    assert set(held) <= set(HELD_RANDOM_ENTRY)
     for case in cases[1:]:
         for key, value in HELD_OVERRIDES.items():
             assert case[key] == value
         for key, value in held.items():
             assert case[key] == value
-        assert case["impulse_atr_mult"] in (0.75, 1.0, 1.25)
-        assert case["thesis_decay_exit_hours"] in (0.0, 1.0, 2.0, 4.0, 8.0)
+        assert case["enable_flip_exit"] is False
+        assert case["enable_dynamic_sizing"] is False
+        assert case["pullback_epsilon_pct"] in EPSILON_VALUES
+        assert case["tp_pct"] in TP_VALUES
+        assert (
+            case["chase_long_bb_pos_max"],
+            case["chase_short_bb_pos_min"],
+        ) in CHASE_PAIRS
+        assert case["thesis_decay_exit_hours"] in DECAY_HOURS_VALUES
         if case["thesis_decay_exit_hours"] == 0.0:
             assert case["enable_thesis_decay_exit"] is False
+            assert case["thesis_decay_negative_grace_minutes"] == 30.0
         else:
             assert case["enable_thesis_decay_exit"] is True
+            assert case["thesis_decay_negative_grace_minutes"] in GRACE_VALUES
 
 
 def test_default_seed_is_deterministic_and_avoids_prior_draws():
@@ -191,12 +231,37 @@ def test_gate_dry_run_is_decay_off_vs_current_lead_vs_dynamic_on():
     assert current["name"] == lead["name"]
     assert current["enable_thesis_decay_exit"] == lead["enable_thesis_decay_exit"]
     assert dynamic_on["enable_dynamic_barriers"] is True
-    assert dynamic_on["enable_dynamic_sizing"] is True
+    assert dynamic_on["enable_dynamic_sizing"] is False
     assert {case["name"] for case in cases} == {
         decay_off["name"],
         lead["name"],
         dynamic_on["name"],
     }
+
+
+def test_lookback_atr_probe_is_nine_cells_on_current_lead():
+    cases = lookback_atr_probe_cases()
+    lead = current_lead_baseline_case()
+    assert len(cases) == lookback_atr_probe_space_size()
+    assert cases[0]["name"] == lead["name"]
+    assert cases[0]["impulse_lookback_bars"] == 2
+    assert cases[0]["atr_period"] == 14
+    expected_other = {
+        f"lb{lookback}_atr{atr_period}"
+        for lookback in PROBE_LOOKBACK_BARS
+        for atr_period in PROBE_ATR_PERIODS
+        if not (lookback == 2 and atr_period == 14)
+    }
+    others = cases[1:]
+    assert {case["name"] for case in others} == expected_other
+    skip_keys = {"name", "impulse_lookback_bars", "atr_period"}
+    for case in others:
+        assert case["impulse_lookback_bars"] in PROBE_LOOKBACK_BARS
+        assert case["atr_period"] in PROBE_ATR_PERIODS
+        for key, value in lead.items():
+            if key in skip_keys:
+                continue
+            assert case[key] == value
 
 
 def test_capital_normalized_pnl_scales_to_100_budget():

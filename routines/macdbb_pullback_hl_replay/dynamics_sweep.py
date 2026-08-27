@@ -1,9 +1,8 @@
-"""Random ~3k decay / flip / ATR-dynamics sweep for macdbb_pullback_hl.
+"""Random ~3k decay / ATR-dynamics sweep for macdbb_pullback_hl (v2).
 
-Holds the latest sweep-lead entry gates. Case 0 is that lead; the rest are
-unique random draws. The RNG seed and output directory advance with the
-highest ``pullback_sweep_lead_NNN`` so each new lead starts a fresh search
-instead of repeating the previous grid.
+Case 0 is the latest sweep lead. Remaining cases are unique random draws.
+Impulse, flip, and sizing stay on the lead / off. The RNG seed and output
+directory advance with the highest ``pullback_sweep_lead_NNN``.
 """
 
 from __future__ import annotations
@@ -25,37 +24,45 @@ HELD_OVERRIDES: dict[str, Any] = {
     "sl_symbol_cooldown_hours": 5.0,
     "flip_confirm_ticks": 2,
     "flip_cooldown_hours": 1.5,
-    "thesis_decay_negative_grace_minutes": 30.0,
+    "enable_flip_exit": False,
+    "enable_dynamic_sizing": False,
+    "thesis_bb_drift_pts": 20.0,
 }
 
 HELD_RANDOM_ENTRY: dict[str, Any] = {
-    "pullback_epsilon_pct": 1.25,
-    "chase_long_bb_pos_max": 80.0,
-    "chase_short_bb_pos_min": 30.0,
+    "impulse_atr_mult": 0.75,
     "sl_pct": 3.8,
-    "tp_pct": 9.0,
 }
 
-IMPULSE_VALUES: tuple[float, ...] = (0.75, 1.0, 1.25)
-DECAY_HOURS_VALUES: tuple[float, ...] = (0.0, 1.0, 2.0, 4.0, 8.0)
-FLIP_VALUES: tuple[bool, ...] = (False, True)
-REF_VOL_VALUES: tuple[float, ...] = (0.75, 1.0, 1.5)
-DRIFT_VALUES: tuple[float, ...] = (15.0, 20.0, 30.0)
-SL_VOL_EXPONENTS: tuple[float, ...] = (0.5, 1.0)
-TP_VOL_EXPONENTS: tuple[float, ...] = (0.5, 1.0)
+DECAY_HOURS_VALUES: tuple[float, ...] = (0.0, 1.0, 2.0, 8.0)
+EPSILON_VALUES: tuple[float, ...] = (1.25, 1.5, 2.0)
+TP_VALUES: tuple[float, ...] = (9.0, 11.0, 13.0)
+REF_VOL_VALUES: tuple[float, ...] = (0.5, 0.6, 0.75, 1.0)
+GRACE_VALUES: tuple[float, ...] = (0.0, 30.0, 60.0)
+CHASE_PAIRS: tuple[tuple[float, float], ...] = (
+    (70.0, 30.0),
+    (70.0, 40.0),
+    (80.0, 30.0),
+    (80.0, 40.0),
+)
+EXPONENT_PAIRS: tuple[tuple[float, float], ...] = (
+    (0.5, 0.5),
+    (0.5, 1.0),
+    (1.0, 0.5),
+)
 CLAMP_PAIRS: tuple[tuple[float, float, float, float], ...] = (
-    (2.0, 6.0, 4.0, 12.0),
-    (2.0, 5.0, 4.0, 10.0),
-    (2.5, 6.0, 6.0, 12.0),
+    (2.0, 6.0, 4.0, 16.0),
+    (2.5, 6.0, 6.0, 16.0),
 )
-SIZING_BANDS: tuple[tuple[float, float], ...] = (
-    (0.5, 1.5),
-    (0.35, 2.0),
-)
+PROBE_LOOKBACK_BARS: tuple[int, ...] = (1, 2, 4)
+PROBE_ATR_PERIODS: tuple[int, ...] = (7, 14, 21)
 DEFAULT_CLAMP = CLAMP_PAIRS[0]
-DEFAULT_SIZING_BAND = SIZING_BANDS[0]
+DEFAULT_SIZING_BAND = (0.5, 1.5)
 DEFAULT_REF_VOL = 1.0
 DEFAULT_DRIFT = 20.0
+DEFAULT_GRACE = 30.0
+DEFAULT_PROBE_LOOKBACK = 2
+DEFAULT_PROBE_ATR_PERIOD = 14
 
 
 def dynamics_sweep_preset(*, presets_path: Any | None = None) -> str:
@@ -76,16 +83,29 @@ def dynamics_sweep_seed(*, presets_path: Any | None = None) -> int:
     return _FIRST_DYNAMICS_SEED + max(0, lead_n - _LEADS_BEFORE_FIRST_DYNAMICS)
 
 
-def dynamics_sweep_out_dir(*, presets_path: Any | None = None) -> str:
+def _lead_dir_suffix(*, presets_path: Any | None = None) -> str | None:
     from routines.macdbb_pullback_hl_replay.sweep_automation import (
         latest_sweep_lead_preset,
     )
 
     lead = latest_sweep_lead_preset(presets_path)
     if not lead:
+        return None
+    return lead.removeprefix("pullback_sweep_")
+
+
+def dynamics_sweep_out_dir(*, presets_path: Any | None = None) -> str:
+    suffix = _lead_dir_suffix(presets_path=presets_path)
+    if not suffix:
         return "data/backtests/pullback_dynamics_sweep"
-    suffix = lead.removeprefix("pullback_sweep_")
     return f"data/backtests/pullback_dynamics_sweep_{suffix}"
+
+
+def lookback_atr_probe_out_dir(*, presets_path: Any | None = None) -> str:
+    suffix = _lead_dir_suffix(presets_path=presets_path)
+    if not suffix:
+        return "data/backtests/pullback_lookback_atr_probe"
+    return f"data/backtests/pullback_lookback_atr_probe_{suffix}"
 
 
 def current_lead_sweep_values(*, presets_path: Any | None = None) -> dict[str, Any]:
@@ -152,31 +172,20 @@ def _sizing_off() -> dict[str, Any]:
     }
 
 
-def _sizing_on(band: tuple[float, float]) -> dict[str, Any]:
-    return {
-        "enable_dynamic_sizing": True,
-        "min_vol_mult": band[0],
-        "max_vol_mult": band[1],
-    }
-
-
 def _iter_barrier_specs() -> Iterator[dict[str, Any]]:
     yield _barrier_off()
-    for sl_exp in SL_VOL_EXPONENTS:
-        for tp_exp in TP_VOL_EXPONENTS:
-            for clamp in CLAMP_PAIRS:
-                yield _barrier_on(sl_exp, tp_exp, clamp)
-
-
-def _iter_sizing_specs() -> Iterator[dict[str, Any]]:
-    yield _sizing_off()
-    for band in SIZING_BANDS:
-        yield _sizing_on(band)
+    for sl_exp, tp_exp in EXPONENT_PAIRS:
+        for clamp in CLAMP_PAIRS:
+            yield _barrier_on(sl_exp, tp_exp, clamp)
 
 
 def _case_name(overrides: dict[str, Any]) -> str:
     parts = [
         f"imp{overrides['impulse_atr_mult']:g}",
+        f"pb{overrides['pullback_epsilon_pct']:g}",
+        f"tp{overrides['tp_pct']:g}",
+        f"cl{int(overrides['chase_long_bb_pos_max'])}",
+        f"cs{int(overrides['chase_short_bb_pos_min'])}",
         f"d{float(overrides['thesis_decay_exit_hours']):g}",
         f"f{int(bool(overrides['enable_flip_exit']))}",
     ]
@@ -196,6 +205,7 @@ def _case_name(overrides: dict[str, Any]) -> str:
         parts.append(f"r{overrides['ref_volatility_pct']:g}")
     if float(overrides.get("thesis_decay_exit_hours") or 0) > 0:
         parts.append(f"dr{overrides['thesis_bb_drift_pts']:g}")
+        parts.append(f"g{float(overrides.get('thesis_decay_negative_grace_minutes') or 0):g}")
     return "_".join(parts)
 
 
@@ -204,6 +214,15 @@ def _apply_decay(hours: float) -> dict[str, Any]:
     return {
         "enable_thesis_decay_exit": hours_value > 0,
         "thesis_decay_exit_hours": hours_value,
+    }
+
+
+def _apply_grace(hours: float, grace: float) -> dict[str, Any]:
+    hours_value = float(hours)
+    return {
+        "thesis_decay_negative_grace_minutes": (
+            float(grace) if hours_value > 0 else DEFAULT_GRACE
+        )
     }
 
 
@@ -218,6 +237,8 @@ def _finalize(
     if include_random_entry:
         merged.update(held_random_entry(presets_path=presets_path))
     merged.update(combo)
+    if "thesis_decay_negative_grace_minutes" not in merged:
+        merged["thesis_decay_negative_grace_minutes"] = DEFAULT_GRACE
     merged["name"] = name if name is not None else _case_name(merged)
     return merged
 
@@ -233,57 +254,58 @@ def current_lead_baseline_case(*, presets_path: Any | None = None) -> dict[str, 
 def _random_combo(rng: random.Random) -> dict[str, Any]:
     decay_hours = rng.choice(DECAY_HOURS_VALUES)
     barriers_on = rng.choice((False, True))
-    sizing_on = rng.choice((False, True))
+    chase_long, chase_short = rng.choice(CHASE_PAIRS)
     combo: dict[str, Any] = {
-        "impulse_atr_mult": rng.choice(IMPULSE_VALUES),
-        "enable_flip_exit": rng.choice(FLIP_VALUES),
+        "pullback_epsilon_pct": rng.choice(EPSILON_VALUES),
+        "tp_pct": rng.choice(TP_VALUES),
+        "chase_long_bb_pos_max": chase_long,
+        "chase_short_bb_pos_min": chase_short,
+        "enable_flip_exit": False,
         **_apply_decay(decay_hours),
-        "thesis_bb_drift_pts": (
-            rng.choice(DRIFT_VALUES) if decay_hours > 0 else DEFAULT_DRIFT
+        "thesis_bb_drift_pts": DEFAULT_DRIFT,
+        **_apply_grace(
+            decay_hours,
+            rng.choice(GRACE_VALUES) if decay_hours > 0 else DEFAULT_GRACE,
         ),
+        **_sizing_off(),
     }
     if barriers_on:
-        combo.update(
-            _barrier_on(
-                rng.choice(SL_VOL_EXPONENTS),
-                rng.choice(TP_VOL_EXPONENTS),
-                rng.choice(CLAMP_PAIRS),
-            )
-        )
+        sl_exp, tp_exp = rng.choice(EXPONENT_PAIRS)
+        combo.update(_barrier_on(sl_exp, tp_exp, rng.choice(CLAMP_PAIRS)))
     else:
         combo.update(_barrier_off())
-    if sizing_on:
-        combo.update(_sizing_on(rng.choice(SIZING_BANDS)))
-    else:
-        combo.update(_sizing_off())
     combo["ref_volatility_pct"] = (
-        rng.choice(REF_VOL_VALUES) if (barriers_on or sizing_on) else DEFAULT_REF_VOL
+        rng.choice(REF_VOL_VALUES) if barriers_on else DEFAULT_REF_VOL
     )
     return combo
 
 
 def iter_dynamics_space() -> Iterator[dict[str, Any]]:
     """Enumerate the nested unique-behavior space (no unused-knob duplicates)."""
-    for impulse in IMPULSE_VALUES:
-        for decay_hours in DECAY_HOURS_VALUES:
-            drifts = DRIFT_VALUES if decay_hours > 0 else (DEFAULT_DRIFT,)
-            for drift in drifts:
-                for flip in FLIP_VALUES:
-                    for barrier in _iter_barrier_specs():
-                        for sizing in _iter_sizing_specs():
-                            dyn_on = bool(
-                                barrier["enable_dynamic_barriers"]
-                                or sizing["enable_dynamic_sizing"]
+    for decay_hours in DECAY_HOURS_VALUES:
+        graces = GRACE_VALUES if decay_hours > 0 else (DEFAULT_GRACE,)
+        for grace in graces:
+            for epsilon in EPSILON_VALUES:
+                for tp_pct in TP_VALUES:
+                    for chase_long, chase_short in CHASE_PAIRS:
+                        for barrier in _iter_barrier_specs():
+                            refs = (
+                                REF_VOL_VALUES
+                                if barrier["enable_dynamic_barriers"]
+                                else (DEFAULT_REF_VOL,)
                             )
-                            refs = REF_VOL_VALUES if dyn_on else (DEFAULT_REF_VOL,)
                             for ref_vol in refs:
                                 yield {
-                                    "impulse_atr_mult": impulse,
-                                    "enable_flip_exit": flip,
+                                    "pullback_epsilon_pct": epsilon,
+                                    "tp_pct": tp_pct,
+                                    "chase_long_bb_pos_max": chase_long,
+                                    "chase_short_bb_pos_min": chase_short,
+                                    "enable_flip_exit": False,
                                     **_apply_decay(decay_hours),
-                                    "thesis_bb_drift_pts": drift,
+                                    "thesis_bb_drift_pts": DEFAULT_DRIFT,
+                                    **_apply_grace(decay_hours, grace),
                                     **barrier,
-                                    **sizing,
+                                    **_sizing_off(),
                                     "ref_volatility_pct": ref_vol,
                                 }
 
@@ -293,11 +315,11 @@ def dynamics_sweep_space_size() -> int:
 
 
 def gate_dry_run_cases(*, presets_path: Any | None = None) -> list[dict[str, Any]]:
-    """Decay-off vs current lead vs dynamic-on, all on the latest-lead gates."""
+    """Decay-off vs current lead vs barriers-on (sizing off), latest-lead gates."""
     values = current_lead_sweep_values(presets_path=presets_path)
     lead = current_lead_baseline_case(presets_path=presets_path)
     decay_off = _finalize(
-        {**values, **_apply_decay(0.0)},
+        {**values, **_apply_decay(0.0), **_apply_grace(0.0, DEFAULT_GRACE)},
         include_random_entry=False,
         presets_path=presets_path,
     )
@@ -305,11 +327,11 @@ def gate_dry_run_cases(*, presets_path: Any | None = None) -> list[dict[str, Any
         {
             **values,
             "enable_dynamic_barriers": True,
-            "enable_dynamic_sizing": True,
+            "enable_dynamic_sizing": False,
             "sl_vol_exponent": 1.0,
             "tp_vol_exponent": 1.0,
-            "min_vol_mult": 0.5,
-            "max_vol_mult": 1.5,
+            "min_vol_mult": DEFAULT_SIZING_BAND[0],
+            "max_vol_mult": DEFAULT_SIZING_BAND[1],
             "ref_volatility_pct": 1.0,
         },
         include_random_entry=False,
@@ -372,10 +394,67 @@ def pullback_dynamics_cases(
     return cases
 
 
+def _probe_case_name(lookback: int, atr_period: int) -> str:
+    return f"lb{lookback}_atr{atr_period}"
+
+
+def iter_lookback_atr_probe_cases(
+    *,
+    presets_path: Any | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield the current lead, then the other lookback × ATR cells."""
+    lead = current_lead_baseline_case(presets_path=presets_path)
+    yield lead
+    lead_lookback = int(lead.get("impulse_lookback_bars") or DEFAULT_PROBE_LOOKBACK)
+    lead_atr = int(lead.get("atr_period") or DEFAULT_PROBE_ATR_PERIOD)
+    values = current_lead_sweep_values(presets_path=presets_path)
+    for lookback in PROBE_LOOKBACK_BARS:
+        for atr_period in PROBE_ATR_PERIODS:
+            if lookback == lead_lookback and atr_period == lead_atr:
+                continue
+            yield _finalize(
+                {
+                    **values,
+                    "impulse_lookback_bars": lookback,
+                    "atr_period": atr_period,
+                },
+                name=_probe_case_name(lookback, atr_period),
+                include_random_entry=False,
+                presets_path=presets_path,
+            )
+
+
+def lookback_atr_probe_cases(
+    *,
+    presets_path: Any | None = None,
+) -> list[dict[str, Any]]:
+    cases = list(iter_lookback_atr_probe_cases(presets_path=presets_path))
+    names = [case["name"] for case in cases]
+    assert len(names) == len(set(names))
+    lead = current_lead_baseline_case(presets_path=presets_path)
+    assert cases[0]["name"] == lead["name"]
+    expected = len(PROBE_LOOKBACK_BARS) * len(PROBE_ATR_PERIODS)
+    assert len(cases) == expected
+    return cases
+
+
+def lookback_atr_probe_space_size() -> int:
+    return len(PROBE_LOOKBACK_BARS) * len(PROBE_ATR_PERIODS)
+
+
 __all__ = [
+    "CHASE_PAIRS",
+    "CLAMP_PAIRS",
+    "DECAY_HOURS_VALUES",
     "DYNAMICS_SWEEP_CONFIG_COUNT",
+    "EPSILON_VALUES",
+    "GRACE_VALUES",
     "HELD_OVERRIDES",
     "HELD_RANDOM_ENTRY",
+    "PROBE_ATR_PERIODS",
+    "PROBE_LOOKBACK_BARS",
+    "REF_VOL_VALUES",
+    "TP_VALUES",
     "current_lead_baseline_case",
     "current_lead_sweep_values",
     "dynamics_sweep_out_dir",
@@ -384,6 +463,10 @@ __all__ = [
     "dynamics_sweep_space_size",
     "gate_dry_run_cases",
     "held_random_entry",
+    "iter_lookback_atr_probe_cases",
     "iter_pullback_dynamics_cases",
+    "lookback_atr_probe_cases",
+    "lookback_atr_probe_out_dir",
+    "lookback_atr_probe_space_size",
     "pullback_dynamics_cases",
 ]

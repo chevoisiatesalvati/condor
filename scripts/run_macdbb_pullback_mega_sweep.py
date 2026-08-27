@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tape-once pullback sweep: entry-gate 2k or decay/dynamics 3k.
+"""Tape-once pullback sweep: entry-gate 2k, dynamics 3k, or lookback/ATR probe.
 
 Hydrates ticks/candles/signal tape once. Checkpoints every N cases. Promotes
 capital-normalized PnL improvements after a positive anchor into
@@ -29,12 +29,17 @@ CHECKPOINT_EVERY = 10
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Pullback mega-sweep (random 2k / dynamics 3k)")
+    parser = argparse.ArgumentParser(
+        description="Pullback mega-sweep (random 2k / dynamics 3k / lookback-ATR probe)"
+    )
     parser.add_argument(
         "--grid",
-        choices=("entry", "dynamics"),
+        choices=("entry", "dynamics", "probe"),
         default="entry",
-        help="entry = 2k entry/SL/TP grid; dynamics = decay/flip/ATR-vol grid",
+        help=(
+            "entry = 2k entry/SL/TP grid; dynamics = decay/ATR/epsilon/TP grid; "
+            "probe = 9-cell lookback × ATR on the current lead"
+        ),
     )
     parser.add_argument(
         "--gate-dry-run",
@@ -54,8 +59,9 @@ def _parse_args() -> argparse.Namespace:
         "--out-dir",
         default="",
         help=(
-            "Default: pullback_mega_sweep (entry) or "
-            "pullback_dynamics_sweep_lead_NNN (dynamics, latest YAML lead)"
+            "Default: pullback_mega_sweep (entry), "
+            "pullback_dynamics_sweep_lead_NNN (dynamics), or "
+            "pullback_lookback_atr_probe_lead_NNN (probe)"
         ),
     )
     parser.add_argument("--min-configs", type=int, default=0)
@@ -109,6 +115,8 @@ def _resolve_grid_defaults(args: argparse.Namespace) -> argparse.Namespace:
     from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
         dynamics_sweep_out_dir,
         dynamics_sweep_seed,
+        lookback_atr_probe_out_dir,
+        lookback_atr_probe_space_size,
     )
     from routines.macdbb_pullback_hl_replay.mega_sweep import MEGA_SWEEP_SEED
 
@@ -116,19 +124,25 @@ def _resolve_grid_defaults(args: argparse.Namespace) -> argparse.Namespace:
     grid = "dynamics" if args.gate_dry_run else args.grid
     args.grid = grid
     if not args.out_dir:
-        args.out_dir = (
-            dynamics_sweep_out_dir(presets_path=presets_path)
-            if grid == "dynamics"
-            else "data/backtests/pullback_mega_sweep"
-        )
+        if grid == "dynamics":
+            args.out_dir = dynamics_sweep_out_dir(presets_path=presets_path)
+        elif grid == "probe":
+            args.out_dir = lookback_atr_probe_out_dir(presets_path=presets_path)
+        else:
+            args.out_dir = "data/backtests/pullback_mega_sweep"
         if args.gate_dry_run:
             args.out_dir = "data/backtests/pullback_dynamics_gate"
     if args.min_configs <= 0:
-        args.min_configs = 3000 if grid == "dynamics" else 2000
+        if grid == "dynamics":
+            args.min_configs = 3000
+        elif grid == "probe":
+            args.min_configs = lookback_atr_probe_space_size()
+        else:
+            args.min_configs = 2000
     if args.seed < 0:
         args.seed = (
             dynamics_sweep_seed(presets_path=presets_path)
-            if grid == "dynamics"
+            if grid in ("dynamics", "probe")
             else MEGA_SWEEP_SEED
         )
     return args
@@ -311,6 +325,7 @@ async def _main() -> int:
     from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
         dynamics_sweep_preset,
         gate_dry_run_cases,
+        lookback_atr_probe_cases,
         pullback_dynamics_cases,
     )
     from routines.macdbb_pullback_hl_replay.mega_sweep import (
@@ -346,7 +361,7 @@ async def _main() -> int:
     presets_path = Path(args.presets_path) if args.presets_path else None
     preset_default = (
         dynamics_sweep_preset(presets_path=presets_path)
-        if args.grid == "dynamics"
+        if args.grid in ("dynamics", "probe")
         else MEGA_SWEEP_PRESET
     )
     if args.preset == "pullback_decay_2h_60s":
@@ -387,7 +402,7 @@ async def _main() -> int:
         )
 
     if args.gate_dry_run:
-        cases = gate_dry_run_cases()
+        cases = gate_dry_run_cases(presets_path=presets_path)
         logging.info("Dynamics gate dry-run: %d cases", len(cases))
     elif args.grid == "dynamics":
         cases = pullback_dynamics_cases(
@@ -399,6 +414,13 @@ async def _main() -> int:
             "Dynamics-sweep grid: %d cases (seed=%d, baseline=%s)",
             len(cases),
             args.seed,
+            args.preset,
+        )
+    elif args.grid == "probe":
+        cases = lookback_atr_probe_cases(presets_path=presets_path)
+        logging.info(
+            "Lookback/ATR probe: %d cases (baseline=%s)",
+            len(cases),
             args.preset,
         )
     else:
