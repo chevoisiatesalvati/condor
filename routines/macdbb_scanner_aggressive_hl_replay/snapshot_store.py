@@ -37,12 +37,13 @@ _scanner_frame: pd.DataFrame | None = None
 _macdbb_frame: pd.DataFrame | None = None
 _parsed_scanner_by_tick: dict[str, ParsedScannerReport] | None = None
 _parsed_macdbb_by_id: dict[str, ParsedReport] | None = None
+_parsed_cache_range: tuple[int | None, int | None] | None = None
 
 
 def configure_snapshot_dir(snapshot_dir: Path | str | None) -> None:
     """Set active snapshot directory and clear cached indexes."""
     global _active_snapshot_dir, _scanner_index, _macdbb_index, _scanner_frame, _macdbb_frame
-    global _parsed_scanner_by_tick, _parsed_macdbb_by_id
+    global _parsed_scanner_by_tick, _parsed_macdbb_by_id, _parsed_cache_range
     new_dir = None if snapshot_dir is None else Path(snapshot_dir).resolve()
     old_dir = _active_snapshot_dir.resolve() if _active_snapshot_dir is not None else None
     if new_dir == old_dir:
@@ -54,6 +55,7 @@ def configure_snapshot_dir(snapshot_dir: Path | str | None) -> None:
     _macdbb_frame = None
     _parsed_scanner_by_tick = None
     _parsed_macdbb_by_id = None
+    _parsed_cache_range = None
 
 
 def _activate_snapshot_dir(root: Path) -> None:
@@ -85,6 +87,27 @@ def snapshot_dir_or_default(snapshot_dir: Path | str | None = None) -> Path:
     return DEFAULT_SNAPSHOT_DIR.resolve()
 
 
+def _tick_range_ms(
+    range_start_utc: str | None,
+    range_end_utc: str | None,
+) -> tuple[int | None, int | None]:
+    if range_start_utc and range_end_utc:
+        start_ms = int(parse_iso_utc(range_start_utc).timestamp() * 1000)
+        end_ms = int(parse_iso_utc(range_end_utc).timestamp() * 1000)
+        return (start_ms, end_ms)
+    return (None, None)
+
+
+def parsed_snapshot_cache_range() -> tuple[int | None, int | None] | None:
+    """Tick ms range the parsed Python caches were built for, or None if empty."""
+    return _parsed_cache_range
+
+
+def _set_parsed_cache_range(tick_start_ms: int | None, tick_end_ms: int | None) -> None:
+    global _parsed_cache_range
+    _parsed_cache_range = (tick_start_ms, tick_end_ms)
+
+
 def warm_snapshot_caches(
     snapshot_dir: Path | str | None = None,
     *,
@@ -93,22 +116,47 @@ def warm_snapshot_caches(
 ) -> None:
     """Eagerly load scanner + macdbb parsed caches and indexes (single pass each)."""
     root = snapshot_dir_or_default(snapshot_dir)
-    start_ms = end_ms = None
-    if range_start_utc and range_end_utc:
-        start_ms = int(parse_iso_utc(range_start_utc).timestamp() * 1000)
-        end_ms = int(parse_iso_utc(range_end_utc).timestamp() * 1000)
+    start_ms, end_ms = _tick_range_ms(range_start_utc, range_end_utc)
     _ensure_parsed_scanner_cache(root, tick_start_ms=start_ms, tick_end_ms=end_ms)
     _ensure_parsed_macdbb_cache(root, tick_start_ms=start_ms, tick_end_ms=end_ms)
+    _set_parsed_cache_range(start_ms, end_ms)
 
 
-def reload_snapshot_caches(snapshot_dir: Path | str | None = None) -> None:
-    """Drop in-memory snapshot indexes and reload parquet from disk."""
+def reload_snapshot_caches(
+    snapshot_dir: Path | str | None = None,
+    *,
+    range_start_utc: str | None = None,
+    range_end_utc: str | None = None,
+) -> None:
+    """Drop in-memory snapshot indexes and reload parquet from disk.
+
+    When ``range_start_utc`` / ``range_end_utc`` match an already-warmed parsed
+    cache for this directory, skip the reload so a 30d hydrate does not rebuild
+    the full-year Python object cache.
+    """
     global _active_snapshot_dir
     root = snapshot_dir_or_default(snapshot_dir).resolve()
+    requested = _tick_range_ms(range_start_utc, range_end_utc)
+    if (
+        _parsed_scanner_by_tick is not None
+        and _parsed_macdbb_by_id is not None
+        and get_snapshot_dir() == root
+        and _parsed_cache_range == requested
+    ):
+        return
     _active_snapshot_dir = root
     _invalidate_indexes()
-    _ensure_parsed_scanner_cache(root)
-    _ensure_parsed_macdbb_cache(root)
+    _ensure_parsed_scanner_cache(
+        root,
+        tick_start_ms=requested[0],
+        tick_end_ms=requested[1],
+    )
+    _ensure_parsed_macdbb_cache(
+        root,
+        tick_start_ms=requested[0],
+        tick_end_ms=requested[1],
+    )
+    _set_parsed_cache_range(requested[0], requested[1])
 
 
 def _tick_id(tick_time: dt.datetime) -> str:
@@ -281,13 +329,14 @@ def append_states(
 
 def _invalidate_indexes() -> None:
     global _scanner_index, _macdbb_index, _scanner_frame, _macdbb_frame
-    global _parsed_scanner_by_tick, _parsed_macdbb_by_id
+    global _parsed_scanner_by_tick, _parsed_macdbb_by_id, _parsed_cache_range
     _scanner_index = None
     _macdbb_index = None
     _scanner_frame = None
     _macdbb_frame = None
     _parsed_scanner_by_tick = None
     _parsed_macdbb_by_id = None
+    _parsed_cache_range = None
 
 
 def invalidate_macdbb_indexes() -> None:
@@ -350,11 +399,14 @@ def _ensure_parsed_scanner_cache(
 ) -> dict[str, ParsedScannerReport]:
     global _parsed_scanner_by_tick, _scanner_index, _scanner_frame
     resolved = root.resolve()
+    requested = (tick_start_ms, tick_end_ms)
     if (
         _parsed_scanner_by_tick is not None
         and get_snapshot_dir() == resolved
-        and tick_start_ms is None
-        and tick_end_ms is None
+        and (
+            _parsed_cache_range == requested
+            or (tick_start_ms is None and tick_end_ms is None)
+        )
     ):
         return _parsed_scanner_by_tick
 
@@ -422,11 +474,14 @@ def _ensure_parsed_macdbb_cache(
 ) -> dict[str, ParsedReport]:
     global _parsed_macdbb_by_id, _macdbb_index, _macdbb_frame
     resolved = root.resolve()
+    requested = (tick_start_ms, tick_end_ms)
     if (
         _parsed_macdbb_by_id is not None
         and get_snapshot_dir() == resolved
-        and tick_start_ms is None
-        and tick_end_ms is None
+        and (
+            _parsed_cache_range == requested
+            or (tick_start_ms is None and tick_end_ms is None)
+        )
     ):
         return _parsed_macdbb_by_id
 

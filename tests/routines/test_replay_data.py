@@ -52,3 +52,30 @@ def test_configure_replay_data_sources_passes_timeline_range(tmp_path, monkeypat
     assert posted["start"] == "2026-07-18T00:00:00Z"
     assert posted["end"] == "2026-08-17T10:20:00Z"
     configure_snapshot_dir(None)
+
+
+def test_refresh_snapshot_caches_passes_timeline_range(tmp_path, monkeypatch):
+    posted: dict[str, object] = {}
+
+    def _reload(snapshot_dir, *, range_start_utc=None, range_end_utc=None):
+        posted["dir"] = snapshot_dir
+        posted["start"] = range_start_utc
+        posted["end"] = range_end_utc
+
+    monkeypatch.setattr(
+        "routines.macdbb_scanner_aggressive_hl_replay.replay_data.reload_snapshot_caches",
+        _reload,
+    )
+    config = DynamicStrategyReplayConfig(
+        data_source="snapshots",
+        snapshot_dir=str(tmp_path),
+        range_start_utc="2026-07-18T00:00:00Z",
+        range_end_utc="2026-08-17T10:20:00Z",
+    )
+    from routines.macdbb_scanner_aggressive_hl_replay.replay_data import (
+        refresh_snapshot_caches,
+    )
+
+    refresh_snapshot_caches(config)
+    assert posted["start"] == "2026-07-18T00:00:00Z"
+    assert posted["end"] == "2026-08-17T10:20:00Z"

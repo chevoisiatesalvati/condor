@@ -95,9 +95,21 @@ def test_raw_from_as_of_matches_impulse_metrics_numerics():
     assert raw.atr_pct == long_m.atr_pct
     assert raw.signed_body_sum_long == long_m.signed_body_sum_pct
     assert raw.signed_body_sum_short == short_m.signed_body_sum_pct
-    assert raw.atr_pct_by_period[14] == long_m.atr_pct
-    assert raw.signed_body_sum_long_by_lookback[2] == long_m.signed_body_sum_pct
-    assert raw.signed_body_sum_short_by_lookback[2] == short_m.signed_body_sum_pct
+    assert not raw.atr_pct_by_period
+    assert not raw.signed_body_sum_long_by_lookback
+    assert not raw.signed_body_sum_short_by_lookback
+
+    probed = _raw_from_as_of_candles(
+        "ETH-USD",
+        candles,
+        impulse_lookback_bars=2,
+        atr_period=14,
+        include_probe_windows=True,
+    )
+    assert probed is not None
+    assert probed.atr_pct_by_period[14] == long_m.atr_pct
+    assert probed.signed_body_sum_long_by_lookback[2] == long_m.signed_body_sum_pct
+    assert probed.signed_body_sum_short_by_lookback[2] == short_m.signed_body_sum_pct
 
 
 def test_materialize_selects_lookback_and_atr_period_windows():
@@ -137,3 +149,30 @@ def test_materialize_selects_lookback_and_atr_period_windows():
     assert lookback_four["ETH-USD"].atr_pct == 0.4
     assert lookback_four["ETH-USD"].impulse_signed_body_sum_pct == 2.5
     assert lookback_four["ETH-USD"].impulse_long is True
+
+
+def test_materialize_falls_back_to_scalars_without_probe_windows():
+    raw = RawTickSignal(
+        price=100.0,
+        bb_pos_pct=40.0,
+        bb_mid=99.0,
+        bb_upper=110.0,
+        macd=0.5,
+        signal_line=0.2,
+        histogram=0.3,
+        trend="bullish",
+        momentum="increasing",
+        bullish_cross=True,
+        bearish_cross=False,
+        atr_pct=1.0,
+        signed_body_sum_long=1.3,
+        signed_body_sum_short=0.0,
+    )
+    tape = PullbackSignalTape(by_tick={10: {"ETH-USD": raw}}, pairs=("ETH-USD",), tick_count=1)
+    selected = tape.materialize_signals(
+        10,
+        ["ETH-USD"],
+        {"impulse_atr_mult": 1.0, "impulse_lookback_bars": 4, "atr_period": 21},
+    )
+    assert selected["ETH-USD"].atr_pct == 1.0
+    assert selected["ETH-USD"].impulse_signed_body_sum_pct == 1.3

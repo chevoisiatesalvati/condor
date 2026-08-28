@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -21,8 +21,7 @@ from condor.strategy_runners.macdbb.market_data import signal_from_closes
 from condor.strategy_runners.macdbb_pullback.entry_quality import (
     DEFAULT_ATR_PERIOD,
     DEFAULT_IMPULSE_LOOKBACK_BARS,
-    atr_pct_from_candles,
-    signed_body_pct,
+    true_range,
 )
 from condor.strategy_runners.macdbb_pullback.metrics import compute_thesis_metrics
 from condor.strategy_runners.macdbb_pullback.types import SignalSnapshot
@@ -30,7 +29,7 @@ from routines.lib.as_of_1h_candles import (
     HOUR_MS,
     LIVE_MACD_MAX_RECORDS,
     OhlcvArrays,
-    as_of_1h_from_arrays,
+    as_of_1h_from_arrays_view,
 )
 from routines.macdbb_pullback_hl_replay.impulse_candles import (
     CandleSource,
@@ -44,7 +43,7 @@ TAPE_ATR_PERIODS: tuple[int, ...] = (7, 14, 21)
 TAPE_LOOKBACK_BARS: tuple[int, ...] = (1, 2, 4)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RawTickSignal:
     """MACD/BB plus impulse numerics; impulse flag is applied per config."""
 
@@ -62,9 +61,9 @@ class RawTickSignal:
     atr_pct: float
     signed_body_sum_long: float
     signed_body_sum_short: float
-    atr_pct_by_period: dict[int, float] = field(default_factory=dict)
-    signed_body_sum_long_by_lookback: dict[int, float] = field(default_factory=dict)
-    signed_body_sum_short_by_lookback: dict[int, float] = field(default_factory=dict)
+    atr_pct_by_period: dict[int, float] | None = None
+    signed_body_sum_long_by_lookback: dict[int, float] | None = None
+    signed_body_sum_short_by_lookback: dict[int, float] | None = None
 
 
 @dataclass
@@ -210,66 +209,162 @@ def _load_pair_arrays(
     return OhlcvArrays.from_candles(candles_1h), OhlcvArrays.from_candles(candles_1m)
 
 
-def _signed_body_sums_by_lookback(
-    candles_1h: Sequence[Any],
+def _atr_pct_from_ohlcv(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    period: int,
+) -> float:
+    count = int(close.shape[0])
+    if count < period + 1:
+        return 0.0
+    start = count - (period + 1)
+    trs: list[float] = []
+    for index in range(start + 1, count):
+        trs.append(
+            true_range(
+                float(high[index]),
+                float(low[index]),
+                float(close[index - 1]),
+            )
+        )
+    if not trs:
+        return 0.0
+    atr = sum(trs[-period:]) / float(period)
+    last_close = float(close[-1])
+    if last_close <= 0:
+        return 0.0
+    return (atr / last_close) * 100.0
+
+
+def _signed_body_sum_from_ohlcv(
+    open_px: np.ndarray,
+    close: np.ndarray,
+    lookback: int,
+    side: str,
+) -> float:
+    bars = max(1, int(lookback))
+    count = int(close.shape[0])
+    if count <= 0:
+        return 0.0
+    recent_open = open_px[-bars:]
+    recent_close = close[-bars:]
+    total = 0.0
+    for index in range(int(recent_close.shape[0])):
+        candle_open = float(recent_open[index])
+        if candle_open <= 0:
+            continue
+        body = ((float(recent_close[index]) - candle_open) / candle_open) * 100.0
+        if side == "long":
+            if body > 0:
+                total += body
+        elif body < 0:
+            total += -body
+    return total
+
+
+def _signed_body_sums_from_arrays(
+    arrays: OhlcvArrays,
 ) -> tuple[dict[int, float], dict[int, float]]:
-    completed = list(candles_1h)
-    max_lookback = max(TAPE_LOOKBACK_BARS)
-    recent = completed[-max_lookback:] if completed else []
-    long_prefix = 0.0
-    short_prefix = 0.0
     long_by_lookback: dict[int, float] = {}
     short_by_lookback: dict[int, float] = {}
-    for offset, candle in enumerate(reversed(recent), start=1):
-        long_prefix += signed_body_pct(candle, "long")
-        short_prefix += signed_body_pct(candle, "short")
-        if offset in TAPE_LOOKBACK_BARS:
-            long_by_lookback[offset] = long_prefix
-            short_by_lookback[offset] = short_prefix
     for lookback in TAPE_LOOKBACK_BARS:
-        long_by_lookback.setdefault(lookback, long_prefix)
-        short_by_lookback.setdefault(lookback, short_prefix)
+        long_by_lookback[lookback] = _signed_body_sum_from_ohlcv(
+            arrays.open,
+            arrays.close,
+            lookback,
+            "long",
+        )
+        short_by_lookback[lookback] = _signed_body_sum_from_ohlcv(
+            arrays.open,
+            arrays.close,
+            lookback,
+            "short",
+        )
     return long_by_lookback, short_by_lookback
 
 
-def _raw_from_as_of_candles(
+def _raw_from_as_of_arrays(
     pair: str,
-    candles_1h: list[dict[str, float]],
+    candles_1h: OhlcvArrays,
     *,
     impulse_lookback_bars: int,
     atr_period: int,
+    include_probe_windows: bool = False,
 ) -> RawTickSignal | None:
-    if not candles_1h:
+    if len(candles_1h) == 0:
         return None
-    closes = np.array([float(candle["close"]) for candle in candles_1h], dtype=float)
-    base = signal_from_closes(pair, closes)
+    base = signal_from_closes(pair, np.asarray(candles_1h.close, dtype=float))
     if base is None:
         return None
-    atr_pct_by_period = {
-        period: float(atr_pct_from_candles(candles_1h, period=period))
-        for period in TAPE_ATR_PERIODS
-    }
     default_period = int(atr_period)
-    if default_period not in atr_pct_by_period:
-        atr_pct_by_period[default_period] = float(
-            atr_pct_from_candles(candles_1h, period=default_period)
-        )
-    long_by_lookback, short_by_lookback = _signed_body_sums_by_lookback(candles_1h)
     default_lookback = max(1, int(impulse_lookback_bars))
-    atr_pct = float(
-        atr_pct_by_period.get(
-            default_period,
-            atr_pct_from_candles(candles_1h, period=default_period),
+    atr_pct_by_period: dict[int, float] | None = None
+    long_by_lookback: dict[int, float] | None = None
+    short_by_lookback: dict[int, float] | None = None
+    if include_probe_windows:
+        atr_pct_by_period = {
+            period: _atr_pct_from_ohlcv(
+                candles_1h.high,
+                candles_1h.low,
+                candles_1h.close,
+                period,
+            )
+            for period in TAPE_ATR_PERIODS
+        }
+        if default_period not in atr_pct_by_period:
+            atr_pct_by_period[default_period] = _atr_pct_from_ohlcv(
+                candles_1h.high,
+                candles_1h.low,
+                candles_1h.close,
+                default_period,
+            )
+        long_by_lookback, short_by_lookback = _signed_body_sums_from_arrays(candles_1h)
+        if default_lookback not in long_by_lookback:
+            long_by_lookback[default_lookback] = _signed_body_sum_from_ohlcv(
+                candles_1h.open,
+                candles_1h.close,
+                default_lookback,
+                "long",
+            )
+            short_by_lookback[default_lookback] = _signed_body_sum_from_ohlcv(
+                candles_1h.open,
+                candles_1h.close,
+                default_lookback,
+                "short",
+            )
+        atr_pct = float(
+            atr_pct_by_period.get(
+                default_period,
+                _atr_pct_from_ohlcv(
+                    candles_1h.high,
+                    candles_1h.low,
+                    candles_1h.close,
+                    default_period,
+                ),
+            )
         )
-    )
-    signed_long = float(long_by_lookback.get(default_lookback, 0.0))
-    signed_short = float(short_by_lookback.get(default_lookback, 0.0))
-    if default_lookback not in long_by_lookback:
-        recent = candles_1h[-default_lookback:]
-        signed_long = float(sum(signed_body_pct(candle, "long") for candle in recent))
-        signed_short = float(sum(signed_body_pct(candle, "short") for candle in recent))
-        long_by_lookback[default_lookback] = signed_long
-        short_by_lookback[default_lookback] = signed_short
+        signed_long = float(long_by_lookback.get(default_lookback, 0.0))
+        signed_short = float(short_by_lookback.get(default_lookback, 0.0))
+    else:
+        atr_pct = _atr_pct_from_ohlcv(
+            candles_1h.high,
+            candles_1h.low,
+            candles_1h.close,
+            default_period,
+        )
+        signed_long = _signed_body_sum_from_ohlcv(
+            candles_1h.open,
+            candles_1h.close,
+            default_lookback,
+            "long",
+        )
+        signed_short = _signed_body_sum_from_ohlcv(
+            candles_1h.open,
+            candles_1h.close,
+            default_lookback,
+            "short",
+        )
     return RawTickSignal(
         price=float(base.price),
         bb_pos_pct=float(base.bb_pos_pct),
@@ -291,6 +386,25 @@ def _raw_from_as_of_candles(
     )
 
 
+def _raw_from_as_of_candles(
+    pair: str,
+    candles_1h: list[dict[str, float]],
+    *,
+    impulse_lookback_bars: int,
+    atr_period: int,
+    include_probe_windows: bool = False,
+) -> RawTickSignal | None:
+    if not candles_1h:
+        return None
+    return _raw_from_as_of_arrays(
+        pair,
+        OhlcvArrays.from_candles(candles_1h),
+        impulse_lookback_bars=impulse_lookback_bars,
+        atr_period=atr_period,
+        include_probe_windows=include_probe_windows,
+    )
+
+
 def build_pullback_signal_tape(
     tick_meta_map: Mapping[int, TickMeta],
     *,
@@ -300,6 +414,7 @@ def build_pullback_signal_tape(
     lookback_hours: int = LIVE_MACD_MAX_RECORDS,
     impulse_lookback_bars: int = DEFAULT_IMPULSE_LOOKBACK_BARS,
     atr_period: int = DEFAULT_ATR_PERIOD,
+    include_probe_windows: bool = False,
 ) -> PullbackSignalTape:
     """Load each pair's 1h/1m series once, then emit per-tick raw signals."""
     started = time.monotonic()
@@ -318,10 +433,11 @@ def build_pullback_signal_tape(
     start_1m_ms = (first_ms // HOUR_MS) * HOUR_MS
 
     logger.info(
-        "Building pullback signal tape: %d pairs × %d ticks (source=%s)",
+        "Building pullback signal tape: %d pairs × %d ticks (source=%s probe_windows=%s)",
         len(universe),
         len(sorted_ticks),
         candle_source,
+        include_probe_windows,
     )
     arrays_by_pair: dict[str, tuple[OhlcvArrays, OhlcvArrays]] = {}
     for pair in universe:
@@ -341,17 +457,18 @@ def build_pullback_signal_tape(
         tick_signals: dict[str, RawTickSignal] = {}
         for pair in universe:
             candles_1h_arr, candles_1m_arr = arrays_by_pair[pair]
-            as_of = as_of_1h_from_arrays(
+            as_of = as_of_1h_from_arrays_view(
                 candles_1h_arr,
                 candles_1m_arr,
                 as_of_ms,
                 max_records=lookback,
             )
-            raw = _raw_from_as_of_candles(
+            raw = _raw_from_as_of_arrays(
                 pair,
                 as_of,
                 impulse_lookback_bars=impulse_lookback_bars,
                 atr_period=atr_period,
+                include_probe_windows=include_probe_windows,
             )
             if raw is not None:
                 tick_signals[pair] = raw
@@ -380,6 +497,7 @@ def build_pullback_signal_tapes(
     lookback_hours: int = LIVE_MACD_MAX_RECORDS,
     impulse_lookback_bars: int = DEFAULT_IMPULSE_LOOKBACK_BARS,
     atr_period: int = DEFAULT_ATR_PERIOD,
+    include_probe_windows: bool = False,
 ) -> dict[int, PullbackSignalTape]:
     tapes: dict[int, PullbackSignalTape] = {}
     for session_num, tick_meta_map in parsed_sessions.items():
@@ -390,6 +508,7 @@ def build_pullback_signal_tapes(
             lookback_hours=lookback_hours,
             impulse_lookback_bars=impulse_lookback_bars,
             atr_period=atr_period,
+            include_probe_windows=include_probe_windows,
         )
     return tapes
 

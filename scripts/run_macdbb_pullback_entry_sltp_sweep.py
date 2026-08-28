@@ -121,6 +121,9 @@ async def _load_shared_context(
     candle_source: str,
     total_amount_quote: float,
     pack_candles: bool = True,
+    include_probe_windows: bool = False,
+    impulse_lookback_bars: int | None = None,
+    atr_period: int | None = None,
 ) -> dict[str, Any]:
     from routines.macdbb_pullback_hl_backtest import Config, _loader_config
     from routines.macdbb_pullback_hl_replay.presets import resolve_pullback_config
@@ -213,10 +216,18 @@ async def _load_shared_context(
 
     cache_dir = Path(loader.hl_cache_dir or "data/hl_candles")
     logging.info("Building pullback signal tape (once, reused for every case)...")
+    tape_kwargs: dict[str, Any] = {
+        "include_probe_windows": include_probe_windows,
+    }
+    if impulse_lookback_bars is not None:
+        tape_kwargs["impulse_lookback_bars"] = int(impulse_lookback_bars)
+    if atr_period is not None:
+        tape_kwargs["atr_period"] = int(atr_period)
     signal_tapes = build_pullback_signal_tapes(
         parsed_sessions,
         cache_dir=cache_dir,
         candle_source=loader.candle_source,
+        **tape_kwargs,
     )
 
     return {

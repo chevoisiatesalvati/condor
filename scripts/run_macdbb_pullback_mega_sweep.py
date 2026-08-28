@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Tape-once pullback sweep: entry-gate 2k, dynamics 3k, or lookback/ATR probe.
 
-Hydrates ticks/candles/signal tape once. Checkpoints every N cases. Promotes
-capital-normalized PnL improvements after a positive anchor into
-pullback_sweep_lead_NNN without changing the live winner default. Winner
-Condor reports are written after the worker pool exits, reusing that tape.
+Hydrates the 30d ticks/candles/signal tape once. 1y verify hydrates lazily on
+the first screen leader and is kept for later verifies. Checkpoints every N
+cases. Promotes capital-normalized PnL improvements after a positive 1y
+verify into pullback_sweep_lead_NNN without changing the live winner default.
 """
 
 from __future__ import annotations
@@ -26,6 +26,61 @@ if str(_ROOT) not in sys.path:
 load_dotenv(_ROOT / ".env")
 
 CHECKPOINT_EVERY = 10
+
+
+def include_probe_windows_for_grid(grid: str) -> bool:
+    return str(grid) == "probe"
+
+
+def log_process_rss(label: str) -> None:
+    try:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            fields: dict[str, str] = {}
+            for line in handle:
+                if line.startswith("VmRSS:") or line.startswith("RssAnon:"):
+                    key, value = line.split(":", 1)
+                    fields[key] = value.strip()
+        logging.info(
+            "RAM %s | %s",
+            label,
+            " ".join(f"{key}={value}" for key, value in fields.items()),
+        )
+    except OSError:
+        logging.info("RAM %s | unavailable", label)
+
+
+def run_coro_blocking(coro_factory: Any) -> Any:
+    """Run an async factory from a sync callback while the main loop is blocked."""
+    import threading
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_factory())
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def _worker() -> None:
+        try:
+            result["value"] = asyncio.run(coro_factory())
+        except BaseException as exc:
+            error["exc"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join()
+    if "exc" in error:
+        raise error["exc"]
+    return result.get("value")
+
+
+def verify_tape_policy(*, verify_enabled: bool, coverage_ok: bool) -> str:
+    if not verify_enabled:
+        return "disabled"
+    if not coverage_ok:
+        return "refuse"
+    return "lazy"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -434,9 +489,12 @@ async def _main() -> int:
         snapshot_dir=args.snapshot_dir,
         candle_source=args.candle_source,
         total_amount_quote=args.total_amount_quote,
+        include_probe_windows=include_probe_windows_for_grid(args.grid),
     )
+    log_process_rss("after 30d sweep hydrate")
 
     verify_shared: dict[str, Any] | None = None
+    coverage_ok = True
     if verify_enabled:
         coverage_gap = verify_range_coverage_gap(
             args.snapshot_dir,
@@ -455,15 +513,15 @@ async def _main() -> int:
                 coverage_gap.coverage_end_utc,
             )
             verify_enabled = False
+            coverage_ok = False
         else:
-            logging.info("Hydrating 1y verify tape (parent only, not worker _SHARED)...")
-            verify_shared = await _load_shared_context(
-                preset=args.preset,
-                range_start=args.verify_range_start,
-                range_end=args.verify_range_end,
-                snapshot_dir=args.snapshot_dir,
-                candle_source=args.candle_source,
-                total_amount_quote=args.total_amount_quote,
+            logging.info(
+                "1y verify deferred until a screen leader "
+                "(policy=%s)",
+                verify_tape_policy(
+                    verify_enabled=True,
+                    coverage_ok=coverage_ok,
+                ),
             )
 
     results, pending = load_completed_results(
@@ -471,13 +529,51 @@ async def _main() -> int:
     )
     logging.info("Resume: %d done, %d pending", len(results), len(pending))
 
-    report_shared = verify_shared if verify_shared is not None else shared
+    async def _hydrate_verify_shared(
+        case_row: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        nonlocal verify_shared
+        if not verify_enabled:
+            return None
+        if verify_shared is not None:
+            return verify_shared
+        config = (case_row or {}).get("config") or {}
+        logging.info("Hydrating 1y verify tape (lazy, parent only, not worker _SHARED)...")
+        verify_shared = await _load_shared_context(
+            preset=args.preset,
+            range_start=args.verify_range_start,
+            range_end=args.verify_range_end,
+            snapshot_dir=args.snapshot_dir,
+            candle_source=args.candle_source,
+            total_amount_quote=args.total_amount_quote,
+            include_probe_windows=False,
+            impulse_lookback_bars=config.get("impulse_lookback_bars"),
+            atr_period=config.get("atr_period"),
+        )
+        log_process_rss("after 1y verify hydrate")
+        return verify_shared
+
+    def _ensure_verify_shared_blocking(
+        case_row: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if not verify_enabled:
+            return None
+        if verify_shared is not None:
+            return verify_shared
+        return run_coro_blocking(lambda: _hydrate_verify_shared(case_row))
 
     async def _write_missing_lead_reports(reason: str) -> None:
         missing = lead_presets_missing_reports()
         if not missing:
             logging.info("No missing pullback lead reports (%s)", reason)
             return
+        if verify_enabled and verify_shared is None:
+            logging.info(
+                "Deferring 1y lead reports until verify tape is hydrated (%s)",
+                reason,
+            )
+            return
+        report_shared = verify_shared if verify_shared is not None else shared
         tape_label = "verify tape" if verify_shared is not None else "sweep tape"
         logging.info(
             "Writing Condor reports for %d lead(s) on the %s (%s)",
@@ -543,11 +639,8 @@ async def _main() -> int:
             job = None
         _emit_promote_job(job, chat_id=chat_id)
 
-    if not args.no_promote:
-        await _write_missing_lead_reports("existing leads before workers")
-
     if (
-        verify_shared is not None
+        verify_enabled
         and tracker.state.pending_verify_name
     ):
         pending_name = tracker.state.pending_verify_name
@@ -557,7 +650,11 @@ async def _main() -> int:
         )
         if pending_row is not None:
             logging.info("Resuming pending 1y verify for %s", pending_name)
+            await _hydrate_verify_shared(pending_row)
             _verify_and_maybe_promote(pending_row)
+
+    if not args.no_promote:
+        await _write_missing_lead_reports("existing leads before workers")
 
     def _on_result(done_in_batch: int, result: dict[str, Any]) -> None:
         result_path = out_dir / f"{result['name']}.json"
@@ -575,9 +672,10 @@ async def _main() -> int:
             stats.get("avg_notional"),
         )
         if not args.no_promote:
-            if verify_shared is not None:
+            if verify_enabled:
                 try:
                     if tracker.consider_screen(_result_to_sweep(result)):
+                        _ensure_verify_shared_blocking(result)
                         _verify_and_maybe_promote(result)
                 except Exception:
                     logging.exception("Screen/verify failed for %s", result.get("name"))
@@ -599,6 +697,7 @@ async def _main() -> int:
                 results=results,
             )
 
+    log_process_rss("before workers")
     if pending:
         run_case_batch(
             pending,

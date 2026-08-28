@@ -68,3 +68,17 @@ def test_load_completed_results_resumes_from_json(tmp_path):
     done_forced, pending_forced = load_completed_results(cases, tmp_path, force=True)
     assert done_forced == []
     assert [case["name"] for case in pending_forced] == ["a", "b", "c"]
+
+
+def test_verify_tape_is_lazy_until_screen_leader():
+    from scripts.run_macdbb_pullback_mega_sweep import (
+        include_probe_windows_for_grid,
+        verify_tape_policy,
+    )
+
+    assert verify_tape_policy(verify_enabled=True, coverage_ok=True) == "lazy"
+    assert verify_tape_policy(verify_enabled=False, coverage_ok=True) == "disabled"
+    assert verify_tape_policy(verify_enabled=True, coverage_ok=False) == "refuse"
+    assert include_probe_windows_for_grid("probe") is True
+    assert include_probe_windows_for_grid("dynamics") is False
+    assert include_probe_windows_for_grid("entry") is False

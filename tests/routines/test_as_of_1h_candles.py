@@ -5,6 +5,7 @@ from routines.lib.as_of_1h_candles import (
     OhlcvArrays,
     as_of_1h_candles,
     as_of_1h_from_arrays,
+    as_of_1h_from_arrays_view,
     completed_1h_bars,
     forming_1h_from_1m,
     forming_1h_from_1m_arrays,
@@ -85,3 +86,24 @@ def test_as_of_from_arrays_matches_list_path():
         assert array_forming["high"] == list_forming["high"]
         assert array_forming["low"] == list_forming["low"]
         assert array_forming["volume"] == list_forming["volume"]
+
+
+def test_as_of_from_arrays_view_matches_dict_path():
+    hour = (1_700_000_000_000 // HOUR_MS) * HOUR_MS
+    h1 = [_bar(hour - i * HOUR_MS, 100.0 + i) for i in range(8, 0, -1)]
+    h1.append(_bar(hour, 999.0))
+    m1 = [
+        _bar(hour + minute * 60_000, 200.0 + minute, high=210.0 + minute, low=190.0)
+        for minute in range(0, 50, 5)
+    ]
+    as_of = hour + 12 * 60_000
+    h1_arr = OhlcvArrays.from_candles(h1)
+    m1_arr = OhlcvArrays.from_candles(m1)
+    dict_series = as_of_1h_from_arrays(h1_arr, m1_arr, as_of, max_records=4)
+    view = as_of_1h_from_arrays_view(h1_arr, m1_arr, as_of, max_records=4)
+    assert [round(float(close), 10) for close in view.close] == [
+        round(c["close"], 10) for c in dict_series
+    ]
+    assert [int(ts) for ts in view.timestamp_ms] == [
+        int(c["timestamp_ms"]) for c in dict_series
+    ]

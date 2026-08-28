@@ -183,6 +183,17 @@ def forming_1h_from_1m_arrays(
     as_of_ms: int,
 ) -> dict[str, float] | None:
     """Same forming bar as ``forming_1h_from_1m``, via searchsorted."""
+    view = forming_1h_from_1m_arrays_view(candles_1m, as_of_ms)
+    if view is None or len(view) == 0:
+        return None
+    return view.to_candles()[0]
+
+
+def forming_1h_from_1m_arrays_view(
+    candles_1m: OhlcvArrays,
+    as_of_ms: int,
+) -> OhlcvArrays | None:
+    """Forming 1h bar as a 1-row ``OhlcvArrays`` (no Python candle dict)."""
     if len(candles_1m) == 0:
         return None
     hour_open_ms = (as_of_ms // HOUR_MS) * HOUR_MS
@@ -190,14 +201,29 @@ def forming_1h_from_1m_arrays(
     right = int(np.searchsorted(candles_1m.timestamp_ms, as_of_ms, side="right"))
     if left >= right:
         return None
-    return {
-        "timestamp_ms": float(hour_open_ms),
-        "open": float(candles_1m.open[left]),
-        "high": float(np.max(candles_1m.high[left:right])),
-        "low": float(np.min(candles_1m.low[left:right])),
-        "close": float(candles_1m.close[right - 1]),
-        "volume": float(np.sum(candles_1m.volume[left:right])),
-    }
+    return OhlcvArrays(
+        timestamp_ms=np.array([hour_open_ms], dtype=np.int64),
+        open=np.array([float(candles_1m.open[left])], dtype=np.float64),
+        high=np.array([float(np.max(candles_1m.high[left:right]))], dtype=np.float64),
+        low=np.array([float(np.min(candles_1m.low[left:right]))], dtype=np.float64),
+        close=np.array([float(candles_1m.close[right - 1])], dtype=np.float64),
+        volume=np.array([float(np.sum(candles_1m.volume[left:right]))], dtype=np.float64),
+    )
+
+
+def _concat_ohlcv(left: OhlcvArrays, right: OhlcvArrays) -> OhlcvArrays:
+    if len(left) == 0:
+        return right
+    if len(right) == 0:
+        return left
+    return OhlcvArrays(
+        timestamp_ms=np.concatenate([left.timestamp_ms, right.timestamp_ms]),
+        open=np.concatenate([left.open, right.open]),
+        high=np.concatenate([left.high, right.high]),
+        low=np.concatenate([left.low, right.low]),
+        close=np.concatenate([left.close, right.close]),
+        volume=np.concatenate([left.volume, right.volume]),
+    )
 
 
 def completed_1h_end_index(candles_1h: OhlcvArrays, as_of_ms: int) -> int:
@@ -213,6 +239,32 @@ def completed_1h_end_index(candles_1h: OhlcvArrays, as_of_ms: int) -> int:
     )
 
 
+def as_of_1h_from_arrays_view(
+    candles_1h: OhlcvArrays,
+    candles_1m: OhlcvArrays | None,
+    as_of_ms: int,
+    *,
+    max_records: int = LIVE_MACD_MAX_RECORDS,
+) -> OhlcvArrays:
+    """Same bars as ``as_of_1h_from_arrays`` without per-bar Python dicts."""
+    assert as_of_ms > 0
+    assert max_records > 0
+    completed_end = completed_1h_end_index(candles_1h, as_of_ms)
+    forming = forming_1h_from_1m_arrays_view(
+        candles_1m or OhlcvArrays.empty(),
+        as_of_ms,
+    )
+    if forming is None:
+        start = max(0, completed_end - max_records)
+        return candles_1h.slice(start, completed_end)
+    completed_start = max(0, completed_end - (max_records - 1))
+    completed = candles_1h.slice(completed_start, completed_end)
+    series = _concat_ohlcv(completed, forming)
+    if len(series) <= max_records:
+        return series
+    return series.slice(len(series) - max_records, len(series))
+
+
 def as_of_1h_from_arrays(
     candles_1h: OhlcvArrays,
     candles_1m: OhlcvArrays | None,
@@ -221,14 +273,9 @@ def as_of_1h_from_arrays(
     max_records: int = LIVE_MACD_MAX_RECORDS,
 ) -> list[dict[str, float]]:
     """In-memory equivalent of ``as_of_1h_candles`` (must match bar-for-bar)."""
-    assert as_of_ms > 0
-    assert max_records > 0
-    completed_end = completed_1h_end_index(candles_1h, as_of_ms)
-    forming = forming_1h_from_1m_arrays(candles_1m or OhlcvArrays.empty(), as_of_ms)
-    if forming is None:
-        start = max(0, completed_end - max_records)
-        return candles_1h.slice(start, completed_end).to_candles()
-    completed_start = max(0, completed_end - (max_records - 1))
-    series = candles_1h.slice(completed_start, completed_end).to_candles()
-    series.append(forming)
-    return series[-max_records:]
+    return as_of_1h_from_arrays_view(
+        candles_1h,
+        candles_1m,
+        as_of_ms,
+        max_records=max_records,
+    ).to_candles()

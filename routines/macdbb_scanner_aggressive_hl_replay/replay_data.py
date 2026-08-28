@@ -68,4 +68,10 @@ def refresh_snapshot_caches(config: ReplayConfigBase) -> None:
         from routines.macdbb_scanner_aggressive_hl_replay.snapshot_store import DEFAULT_SNAPSHOT_DIR
 
         configure_snapshot_dir(DEFAULT_SNAPSHOT_DIR)
-    reload_snapshot_caches(snapshot_dir)
+    range_start = str(getattr(config, "range_start_utc", "") or "").strip() or None
+    range_end = str(getattr(config, "range_end_utc", "") or "").strip() or None
+    reload_snapshot_caches(
+        snapshot_dir,
+        range_start_utc=range_start,
+        range_end_utc=range_end,
+    )
