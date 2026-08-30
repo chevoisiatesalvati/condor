@@ -71,38 +71,6 @@ def get_preset_overrides() -> dict[str, dict[str, Any]]:
         merged = dict(payload)
         merged.setdefault("live_equivalent_queue", True)
         overrides[name] = merged
-    # #region agent log
-    try:
-        import time as _time
-
-        with open(
-            "/home/saul/projects/Hummingbot/.cursor/debug-f59e1a.log",
-            "a",
-            encoding="utf-8",
-        ) as _dbg:
-            _dbg.write(
-                json.dumps(
-                    {
-                        "sessionId": "f59e1a",
-                        "hypothesisId": "H1",
-                        "location": "macdbb_pullback_hl_backtest.py:get_preset_overrides",
-                        "message": "UI preset_overrides keys",
-                        "data": {
-                            "key_count": len(overrides),
-                            "has_lead_008": "pullback_sweep_lead_008" in overrides,
-                            "lead_008_live_eq": (
-                                overrides.get("pullback_sweep_lead_008") or {}
-                            ).get("live_equivalent_queue"),
-                            "keys": sorted(overrides),
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
     return overrides
 
 
@@ -306,6 +274,8 @@ async def save_pullback_backtest_report(
     *,
     all_trades: list[Any],
     session_rows: list[dict[str, Any]],
+    extra_tags: list[str] | None = None,
+    title_suffix: str | None = None,
 ) -> tuple[str, str | None]:
     """Write the Condor UI report for a completed pullback backtest.
 
@@ -353,11 +323,17 @@ async def save_pullback_backtest_report(
         from condor.reports import ReportBuilder, get_last_report_id, reset_last_report_id
 
         reset_last_report_id()
-        builder = ReportBuilder(
-            f"MACDBB Pullback Backtest — {PRESET_LABELS.get(config.preset, config.preset)}"
+        title = (
+            f"MACDBB Pullback Backtest — "
+            f"{PRESET_LABELS.get(config.preset, config.preset)}"
         )
+        if title_suffix:
+            title = f"{title} ({title_suffix})"
+        builder = ReportBuilder(title)
         builder.source("routine", "macdbb_pullback_hl_backtest")
-        builder.tags(["backtest", "macdbb_pullback", config.preset])
+        builder.tags(
+            ["backtest", "macdbb_pullback", config.preset, *(extra_tags or [])]
+        )
         builder.manual_order()
         builder.kpi("Sim Trades", str(stats["total_trades"]))
         builder.kpi("Immediate", str(stats["immediate_n"]))
@@ -494,46 +470,6 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResu
 
     tick_count = sum(len(ticks) for ticks in parsed_sessions.values())
     ticks_with_pairs, universe_pairs = _tick_universe_stats(parsed_sessions)
-    # #region agent log
-    try:
-        import time as _time
-
-        with open(
-            "/home/saul/projects/Hummingbot/.cursor/debug-f59e1a.log",
-            "a",
-            encoding="utf-8",
-        ) as _dbg:
-            _dbg.write(
-                json.dumps(
-                    {
-                        "sessionId": "f59e1a",
-                        "hypothesisId": "H5",
-                        "location": "macdbb_pullback_hl_backtest.py:run:hydrate",
-                        "message": "resolved config and tick hydrate",
-                        "data": {
-                            "preset": config.preset,
-                            "range_start_utc": config.range_start_utc,
-                            "range_end_utc": config.range_end_utc,
-                            "impulse_atr_mult": config.impulse_atr_mult,
-                            "pullback_epsilon_pct": config.pullback_epsilon_pct,
-                            "sl_pct": config.sl_pct,
-                            "tp_pct": config.tp_pct,
-                            "enable_dynamic_barriers": config.enable_dynamic_barriers,
-                            "live_equivalent_queue": config.live_equivalent_queue,
-                            "price_source": config.price_source,
-                            "candle_source": config.candle_source,
-                            "tick_count": tick_count,
-                            "ticks_with_pairs": ticks_with_pairs,
-                            "universe_pairs": len(universe_pairs),
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
     logger.info(
         "Pullback backtest: preset=%s ticks=%d ticks_with_pairs=%d pairs=%d "
         "snapshot=%s candle_source=%s range %s → %s",
@@ -657,47 +593,6 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> RoutineResu
             session_rows=session_rows,
         )
         stats = summarize_pullback_trades(all_trades)
-        # #region agent log
-        try:
-            import time as _time
-
-            with open(
-                "/home/saul/projects/Hummingbot/.cursor/debug-f59e1a.log",
-                "a",
-                encoding="utf-8",
-            ) as _dbg:
-                _dbg.write(
-                    json.dumps(
-                        {
-                            "sessionId": "f59e1a",
-                            "hypothesisId": "H3",
-                            "location": "macdbb_pullback_hl_backtest.py:run:summary",
-                            "message": "simulated trade summary",
-                            "data": {
-                                "preset": config.preset,
-                                "total_trades": stats["total_trades"],
-                                "immediate_trades": stats["immediate_n"],
-                                "pullback_trades": stats["pullback_n"],
-                                "sl_hits": stats["sl_n"],
-                                "tp_hits": stats["tp_n"],
-                                "net_pnl_quote": stats["total_pnl"],
-                                "impulse_atr_mult": config.impulse_atr_mult,
-                                "enable_dynamic_barriers": (
-                                    config.enable_dynamic_barriers
-                                ),
-                                "live_equivalent_queue": (
-                                    config.live_equivalent_queue
-                                ),
-                                "decay_hits": stats.get("decay_n"),
-                            },
-                            "timestamp": int(_time.time() * 1000),
-                        }
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # #endregion
 
         out_dir = __import__("pathlib").Path("data/backtests/macdbb_pullback_hl")
         out_dir.mkdir(parents=True, exist_ok=True)

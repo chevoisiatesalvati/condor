@@ -207,7 +207,7 @@ def _monitor_stops(
 
     decay_limit = int(params.get("thesis_decay_exit_ticks") or 0)
     if decay_limit <= 0 and enable_decay:
-        decay_hours = float(params.get("thesis_decay_exit_hours") or 28.0)
+        decay_hours = float(params.get("thesis_decay_exit_hours") or 8.0)
         decay_limit = _hours_to_ticks(decay_hours, tick.frequency_sec)
     flip_limit = max(1, int(params.get("flip_confirm_ticks") or 2))
     flip_cooldown_ticks = int(params.get("flip_cooldown_ticks") or 0)

@@ -70,56 +70,6 @@ def format_close_notification(
         parts.append(f"PnL ${float(pnl):+.2f}")
     if net_pnl_pct is not None:
         parts.append(f"{float(net_pnl_pct) * 100:+.2f}%")
-    # #region agent log
-    try:
-        import json as _json
-        import time as _time
-        _pnl_f = float(pnl) if pnl is not None else None
-        _pct_f = float(net_pnl_pct) if net_pnl_pct is not None else None
-        _vol_f = float(volume) if volume is not None else None
-        _pnl_over_vol = (
-            (_pnl_f / _vol_f) if _pnl_f is not None and _vol_f not in (None, 0.0) else None
-        )
-        with open(
-            "/home/saul/projects/Hummingbot/.cursor/debug-c92ebe.log", "a", encoding="utf-8"
-        ) as _dbg:
-            _dbg.write(
-                _json.dumps(
-                    {
-                        "sessionId": "c92ebe",
-                        "hypothesisId": "A",
-                        "location": "notifications.py:format_close_notification",
-                        "message": "close pct units",
-                        "timestamp": int(_time.time() * 1000),
-                        "data": {
-                            "pair": pair,
-                            "side": side,
-                            "reason": reason,
-                            "close_type": close_type,
-                            "pnl": _pnl_f,
-                            "net_pnl_pct_raw": _pct_f,
-                            "volume": _vol_f,
-                            "displayed_as_is": (
-                                f"{_pct_f:+.2f}%" if _pct_f is not None else None
-                            ),
-                            "displayed_x100": (
-                                f"{_pct_f * 100:+.2f}%" if _pct_f is not None else None
-                            ),
-                            "pnl_over_volume": _pnl_over_vol,
-                            "pnl_over_volume_x100": (
-                                None if _pnl_over_vol is None else _pnl_over_vol * 100
-                            ),
-                            "abs_pct_lt_1": (
-                                abs(_pct_f) < 1.0 if _pct_f is not None else None
-                            ),
-                        },
-                    }
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
     if volume is not None and float(volume) > 0:
         parts.append(f"vol ${float(volume):.0f}")
     if executor_id:

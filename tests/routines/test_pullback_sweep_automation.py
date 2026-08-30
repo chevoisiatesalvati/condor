@@ -448,6 +448,40 @@ def test_lead_presets_missing_reports_includes_new_leads(tmp_path: Path, monkeyp
     assert f"{PRESET_NAME_PREFIX}001" in lead_presets_missing_reports()
 
 
+def test_lead_presets_missing_reports_tracks_30d_and_1y_windows(
+    tmp_path: Path, monkeypatch
+):
+    _install_named_preset(tmp_path, f"{PRESET_NAME_PREFIX}001")
+    from routines.macdbb_pullback_hl_replay.sweep_automation import (
+        REPORT_WINDOW_SWEEP_30D,
+        REPORT_WINDOW_VERIFY_1Y,
+        lead_presets_missing_reports,
+    )
+
+    name = f"{PRESET_NAME_PREFIX}001"
+
+    monkeypatch.setattr("condor.reports.list_reports", lambda **kwargs: ([], 0))
+    assert name in lead_presets_missing_reports(window_tag=REPORT_WINDOW_SWEEP_30D)
+    assert name in lead_presets_missing_reports(window_tag=REPORT_WINDOW_VERIFY_1Y)
+
+    monkeypatch.setattr(
+        "condor.reports.list_reports",
+        lambda **kwargs: (
+            [{"id": "rep1", "tags": [name, REPORT_WINDOW_VERIFY_1Y]}],
+            1,
+        ),
+    )
+    assert name in lead_presets_missing_reports(window_tag=REPORT_WINDOW_SWEEP_30D)
+    assert name not in lead_presets_missing_reports(window_tag=REPORT_WINDOW_VERIFY_1Y)
+
+    monkeypatch.setattr(
+        "condor.reports.list_reports",
+        lambda **kwargs: ([{"id": "rep-legacy", "tags": [name]}], 1),
+    )
+    assert name not in lead_presets_missing_reports(window_tag=REPORT_WINDOW_SWEEP_30D)
+    assert name not in lead_presets_missing_reports(window_tag=REPORT_WINDOW_VERIFY_1Y)
+
+
 def test_start_lead_report_process_spawns_backtest_script(tmp_path: Path, monkeypatch):
     from routines.macdbb_pullback_hl_replay.sweep_automation import (
         start_lead_report_process,
@@ -555,9 +589,11 @@ def test_save_lead_reports_from_shared_reuses_tape(tmp_path: Path, monkeypatch):
             "net_pnl_quote": 1.0,
         }
 
-    async def _save(config, *, all_trades, session_rows):
+    async def _save(config, *, all_trades, session_rows, extra_tags=None, title_suffix=None):
         posted["saved_preset"] = config.preset
         posted["n_trades"] = len(all_trades)
+        posted["extra_tags"] = extra_tags
+        posted["title_suffix"] = title_suffix
         return "ok", "rep-shared"
 
     monkeypatch.setattr(
@@ -593,6 +629,80 @@ def test_save_lead_reports_from_shared_reuses_tape(tmp_path: Path, monkeypatch):
     assert posted["saved_preset"] == "pullback_sweep_lead_006"
     assert posted["used_tape"] == "tape0"
     assert posted["n_trades"] == 1
+    assert posted["extra_tags"] == []
+    assert posted["title_suffix"] is None
+
+
+def test_save_lead_reports_from_shared_tags_window(tmp_path: Path, monkeypatch):
+    _install_named_preset(tmp_path, "pullback_sweep_lead_006")
+    posted: dict[str, object] = {}
+
+    class _Trade:
+        pnl_quote = 1.0
+        notional_quote = 100.0
+        entry_class = "pullback"
+        exit_reason = "take_profit"
+        sl_pct_used = 3.8
+        tp_pct_used = 9.0
+        pair = "BTC-USDT"
+        side = "long"
+        entry_time_utc = None
+        exit_time_utc = None
+        return_pct = 0.01
+
+    def _simulate(**kwargs):
+        return [], [], [_Trade()], {
+            "status": "ok",
+            "total_trades": 1,
+            "immediate_trades": 0,
+            "pullback_trades": 1,
+            "win_rate_pct": 100.0,
+            "sl_before_tp_rate": 0.0,
+            "net_pnl_quote": 1.0,
+        }
+
+    async def _save(config, *, all_trades, session_rows, extra_tags=None, title_suffix=None):
+        posted["extra_tags"] = extra_tags
+        posted["title_suffix"] = title_suffix
+        return "ok", "rep-30d"
+
+    monkeypatch.setattr(
+        "routines.macdbb_pullback_hl_replay.simulator.simulate_pullback_session",
+        _simulate,
+    )
+    monkeypatch.setattr(
+        "routines.macdbb_pullback_hl_backtest.save_pullback_backtest_report",
+        _save,
+    )
+
+    import asyncio
+
+    from routines.macdbb_pullback_hl_replay.sweep_automation import (
+        REPORT_WINDOW_SWEEP_30D,
+        save_lead_reports_from_shared,
+    )
+
+    shared = {
+        "base_kwargs": {"preset": "pullback_decay_2h_60s", "total_amount_quote": 100.0},
+        "loader": object(),
+        "signal_tapes": {0: "tape0"},
+        "parsed_sessions": {0: {1: object()}},
+        "reports_by_pair": {},
+        "hl_caches_by_session": {},
+        "hl_candle_cache": {},
+        "hl_barrier_candle_cache": {},
+        "hl_vol_candle_cache": {},
+    }
+    saved = asyncio.run(
+        save_lead_reports_from_shared(
+            shared,
+            ["pullback_sweep_lead_006"],
+            window_tag=REPORT_WINDOW_SWEEP_30D,
+        )
+    )
+    assert saved == [("pullback_sweep_lead_006", "rep-30d")]
+    assert posted["extra_tags"] == [REPORT_WINDOW_SWEEP_30D]
+    assert posted["title_suffix"] == "30d"
 
 
 def test_save_pullback_backtest_report_sets_routine_source(tmp_path: Path, monkeypatch):
@@ -646,6 +756,62 @@ def test_save_pullback_backtest_report_sets_routine_source(tmp_path: Path, monke
     assert "pullback_sweep_lead_001" in captured["tags"]
     assert report_id == "rep1"
     assert "Preset: pullback_sweep_lead_001" in text
+
+
+def test_save_pullback_backtest_report_accepts_window_tag(tmp_path: Path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _FakeBuilder:
+        def __init__(self, title):
+            captured["title"] = title
+
+        def source(self, source_type, source_name):
+            return self
+
+        def tags(self, tags):
+            captured["tags"] = tags
+            return self
+
+        def manual_order(self):
+            return self
+
+        def kpi(self, *args, **kwargs):
+            return self
+
+        def markdown(self, *args, **kwargs):
+            return self
+
+        def table(self, *args, **kwargs):
+            return self
+
+        async def save(self):
+            return "rep-30d"
+
+    monkeypatch.setattr("condor.reports.ReportBuilder", _FakeBuilder)
+    monkeypatch.setattr("condor.reports.get_last_report_id", lambda: "rep-30d")
+    monkeypatch.setattr("condor.reports.reset_last_report_id", lambda: None)
+
+    import asyncio
+
+    from routines.macdbb_pullback_hl_backtest import Config, save_pullback_backtest_report
+    from routines.macdbb_pullback_hl_replay.sweep_automation import (
+        REPORT_WINDOW_SWEEP_30D,
+    )
+
+    _install_named_preset(tmp_path, "pullback_sweep_lead_001")
+
+    _text, report_id = asyncio.run(
+        save_pullback_backtest_report(
+            Config(preset="pullback_sweep_lead_001"),
+            all_trades=[],
+            session_rows=[],
+            extra_tags=[REPORT_WINDOW_SWEEP_30D],
+            title_suffix="30d",
+        )
+    )
+    assert report_id == "rep-30d"
+    assert REPORT_WINDOW_SWEEP_30D in captured["tags"]
+    assert str(captured["title"]).endswith("(30d)")
 
 
 def _report_trade(**overrides):

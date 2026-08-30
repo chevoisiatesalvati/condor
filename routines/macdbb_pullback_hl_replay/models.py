@@ -149,7 +149,7 @@ class PullbackReplayConfig(BaseModel):
     flip_confirm_ticks: int = 2
     flip_cooldown_hours: float = 1.5
     enable_thesis_decay_exit: bool = False
-    thesis_decay_exit_hours: float = 28.0
+    thesis_decay_exit_hours: float = 8.0,
     thesis_bb_drift_pts: float = 20.0
     thesis_decay_negative_grace_minutes: float = 30.0
     pullback_timeout_ticks: int = 0

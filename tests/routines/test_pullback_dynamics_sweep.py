@@ -16,6 +16,7 @@ from condor.strategy_runners.macdbb_pullback.presets import invalidate_preset_ca
 from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
     CHASE_PAIRS,
     DECAY_HOURS_VALUES,
+    DRIFT_VALUES,
     DYNAMICS_SWEEP_CONFIG_COUNT,
     EPSILON_VALUES,
     GRACE_VALUES,
@@ -23,6 +24,8 @@ from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
     HELD_RANDOM_ENTRY,
     PROBE_ATR_PERIODS,
     PROBE_LOOKBACK_BARS,
+    SL_VALUES,
+    TIMEOUT_HOURS_VALUES,
     TP_VALUES,
     current_lead_baseline_case,
     current_lead_sweep_values,
@@ -92,8 +95,18 @@ def _install_lead(tmp_path: Path, lead_n: int, **overrides) -> Path:
     return dest / "presets.yaml"
 
 
-def test_space_is_several_times_larger_than_sample():
-    assert dynamics_sweep_space_size() > DYNAMICS_SWEEP_CONFIG_COUNT * 2
+def test_space_is_larger_than_sample():
+    decay_on = len(DECAY_HOURS_VALUES) - 1
+    expected = (
+        (1 + decay_on * len(GRACE_VALUES) * len(DRIFT_VALUES))
+        * len(EPSILON_VALUES)
+        * len(TP_VALUES)
+        * len(CHASE_PAIRS)
+        * len(SL_VALUES)
+        * len(TIMEOUT_HOURS_VALUES)
+    )
+    assert dynamics_sweep_space_size() == expected
+    assert expected > DYNAMICS_SWEEP_CONFIG_COUNT
 
 
 def test_latest_lead_drives_preset_seed_out_dir_and_baseline(tmp_path, monkeypatch):
@@ -111,7 +124,7 @@ def test_latest_lead_drives_preset_seed_out_dir_and_baseline(tmp_path, monkeypat
     assert case["name"] == current_lead_baseline_case(presets_path=presets_path)["name"]
     held = held_random_entry(presets_path=presets_path)
     assert held["impulse_atr_mult"] == 1.75
-    assert held["sl_pct"] == 4.4
+    assert "sl_pct" not in held
     assert "pullback_epsilon_pct" not in held
     cases = pullback_dynamics_cases(
         min_configs=8,
@@ -119,11 +132,13 @@ def test_latest_lead_drives_preset_seed_out_dir_and_baseline(tmp_path, monkeypat
     )
     assert cases[0]["impulse_atr_mult"] == 1.75
     assert cases[0]["name"] == case["name"]
+    assert cases[0]["sl_pct"] == 4.4
     for row in cases[1:]:
         assert row["impulse_atr_mult"] == 1.75
-        assert row["sl_pct"] == 4.4
+        assert row["sl_pct"] in SL_VALUES
         assert row["enable_flip_exit"] is False
         assert row["enable_dynamic_sizing"] is False
+        assert row["enable_dynamic_barriers"] is False
         assert row["pullback_epsilon_pct"] in EPSILON_VALUES
 
 
@@ -139,6 +154,44 @@ def test_dynamics_cli_defaults_follow_latest_lead(monkeypatch):
     args = _resolve_grid_defaults(_parse_args())
     assert args.seed == dynamics_sweep_seed()
     assert args.out_dir == dynamics_sweep_out_dir()
+    assert args.min_configs == DYNAMICS_SWEEP_CONFIG_COUNT
+
+
+def test_dynamics_cli_overrides_configs_and_seed(monkeypatch):
+    import sys
+
+    from scripts.run_macdbb_pullback_mega_sweep import (
+        _parse_args,
+        _resolve_grid_defaults,
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["prog", "--grid", "dynamics", "--min-configs", "10000", "--seed", "46"],
+    )
+    args = _resolve_grid_defaults(_parse_args())
+    assert args.min_configs == 10000
+    assert args.seed == 46
+    assert args.out_dir == dynamics_sweep_out_dir()
+
+
+def test_dynamics_cli_configs_alias_overrides_default(monkeypatch):
+    import sys
+
+    from scripts.run_macdbb_pullback_mega_sweep import (
+        _parse_args,
+        _resolve_grid_defaults,
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["prog", "--grid", "dynamics", "--configs", "10000"],
+    )
+    args = _resolve_grid_defaults(_parse_args())
+    assert args.min_configs == 10000
+    assert args.seed == dynamics_sweep_seed()
 
 
 def test_probe_cli_defaults_follow_latest_lead(monkeypatch):
@@ -164,7 +217,7 @@ def test_current_lead_baseline_uses_generated_case_name():
     assert generated["name"]
 
 
-def test_three_thousand_unique_names_start_from_current_lead():
+def test_default_grid_unique_names_start_from_current_lead():
     cases = pullback_dynamics_cases()
     assert len(cases) == DYNAMICS_SWEEP_CONFIG_COUNT
     names = [case["name"] for case in cases]
@@ -174,6 +227,15 @@ def test_three_thousand_unique_names_start_from_current_lead():
     for key, value in current_lead_sweep_values().items():
         if key in cases[0]:
             assert cases[0][key] == value
+
+
+def test_oversize_config_count_stops_at_unique_space():
+    space = dynamics_sweep_space_size()
+    cases = pullback_dynamics_cases(min_configs=space + 2000, seed=46)
+    names = [case["name"] for case in cases]
+    assert len(names) == len(set(names))
+    assert len(cases) <= space + 1
+    assert len(cases) >= space
 
 
 def test_random_cases_hold_lead_impulse_and_v2_axes():
@@ -187,8 +249,11 @@ def test_random_cases_hold_lead_impulse_and_v2_axes():
             assert case[key] == value
         assert case["enable_flip_exit"] is False
         assert case["enable_dynamic_sizing"] is False
+        assert case["enable_dynamic_barriers"] is False
         assert case["pullback_epsilon_pct"] in EPSILON_VALUES
         assert case["tp_pct"] in TP_VALUES
+        assert case["sl_pct"] in SL_VALUES
+        assert case["pullback_timeout_hours"] in TIMEOUT_HOURS_VALUES
         assert (
             case["chase_long_bb_pos_max"],
             case["chase_short_bb_pos_min"],
@@ -197,9 +262,11 @@ def test_random_cases_hold_lead_impulse_and_v2_axes():
         if case["thesis_decay_exit_hours"] == 0.0:
             assert case["enable_thesis_decay_exit"] is False
             assert case["thesis_decay_negative_grace_minutes"] == 30.0
+            assert case["thesis_bb_drift_pts"] == 20.0
         else:
             assert case["enable_thesis_decay_exit"] is True
             assert case["thesis_decay_negative_grace_minutes"] in GRACE_VALUES
+            assert case["thesis_bb_drift_pts"] in DRIFT_VALUES
 
 
 def test_default_seed_is_deterministic_and_avoids_prior_draws():

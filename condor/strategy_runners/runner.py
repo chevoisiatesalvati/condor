@@ -887,40 +887,6 @@ class DeterministicRunner:
                     close_type = str(
                         refreshed.get("close_type") or stop.close_type or ""
                     )
-                    # #region agent log
-                    try:
-                        import json as _json
-                        import time as _time
-                        with open(
-                            "/home/saul/projects/Hummingbot/.cursor/debug-c92ebe.log",
-                            "a",
-                            encoding="utf-8",
-                        ) as _dbg:
-                            _dbg.write(
-                                _json.dumps(
-                                    {
-                                        "sessionId": "c92ebe",
-                                        "hypothesisId": "C",
-                                        "location": "runner.py:_apply_decision",
-                                        "message": "stop snapshot before close notif",
-                                        "timestamp": int(_time.time() * 1000),
-                                        "data": {
-                                            "executor_id": stop.executor_id,
-                                            "pair": stop.pair,
-                                            "snap_pnl": snap.get("pnl"),
-                                            "snap_net_pnl_pct": snap.get("net_pnl_pct"),
-                                            "snap_volume": snap.get("volume"),
-                                            "refreshed_keys": sorted(
-                                                list(refreshed.keys())
-                                            )[:20],
-                                        },
-                                    }
-                                )
-                                + "\n"
-                            )
-                    except Exception:
-                        pass
-                    # #endregion
                     result.notified_closes.append(
                         format_close_notification(
                             pair=stop.pair,

@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 PRESET_NAME_PREFIX = "pullback_sweep_lead_"
 VERIFY_DIR_NAME = "verify"
+REPORT_WINDOW_SWEEP_30D = "sweep_30d"
+REPORT_WINDOW_VERIFY_1Y = "verify_1y"
+REPORT_WINDOW_TITLES: dict[str, str] = {
+    REPORT_WINDOW_SWEEP_30D: "30d",
+    REPORT_WINDOW_VERIFY_1Y: "1y",
+}
 
 
 def lead_preset_names() -> list[str]:
@@ -39,20 +45,67 @@ def lead_preset_names() -> list[str]:
     )
 
 
-def preset_has_backtest_report(preset_name: str) -> bool:
+def _preset_report_entries(preset_name: str) -> list[dict[str, Any]]:
     from condor.reports import list_reports
 
     entries, _total = list_reports(
         source_type="routine",
         source_names=["macdbb_pullback_hl_backtest"],
         tag=preset_name,
-        limit=1,
+        limit=50,
     )
-    return bool(entries)
+    return list(entries or [])
 
 
-def lead_presets_missing_reports() -> list[str]:
-    return [name for name in lead_preset_names() if not preset_has_backtest_report(name)]
+def preset_has_backtest_report(
+    preset_name: str,
+    *,
+    window_tag: str | None = None,
+) -> bool:
+    entries = _preset_report_entries(preset_name)
+    if not window_tag:
+        return bool(entries)
+    return any(window_tag in (entry.get("tags") or []) for entry in entries)
+
+
+def _lead_report_window_flags(preset_name: str) -> tuple[bool, bool, bool]:
+    entries = _preset_report_entries(preset_name)
+    has_any = bool(entries)
+    has_30d = any(
+        REPORT_WINDOW_SWEEP_30D in (entry.get("tags") or []) for entry in entries
+    )
+    has_1y = any(
+        REPORT_WINDOW_VERIFY_1Y in (entry.get("tags") or []) for entry in entries
+    )
+    return has_any, has_30d, has_1y
+
+
+def lead_presets_missing_reports(*, window_tag: str | None = None) -> list[str]:
+    """Leads that still need a Condor report.
+
+    ``window_tag=None`` is the legacy check (no report at all). Tagged 30d/1y
+    windows are tracked separately. An untagged existing report is treated as
+    the 1y report so older leads are not rewritten.
+    """
+    missing: list[str] = []
+    for name in lead_preset_names():
+        has_any, has_30d, has_1y = _lead_report_window_flags(name)
+        legacy_untagged = has_any and not has_30d and not has_1y
+        if window_tag is None:
+            if not has_any:
+                missing.append(name)
+            continue
+        if window_tag == REPORT_WINDOW_VERIFY_1Y:
+            if not has_1y and not legacy_untagged:
+                missing.append(name)
+            continue
+        if window_tag == REPORT_WINDOW_SWEEP_30D:
+            if not has_30d and not legacy_untagged:
+                missing.append(name)
+            continue
+        if not preset_has_backtest_report(name, window_tag=window_tag):
+            missing.append(name)
+    return missing
 
 
 PRESET_STRIP_KEYS = frozenset(
@@ -684,23 +737,29 @@ async def run_backtest_for_preset(
 
 
 async def send_report_html_telegram(
-    chat_id: str, preset_name: str, report_id: str | None
+    chat_id: str,
+    preset_name: str,
+    report_id: str | None,
+    *,
+    window_label: str | None = None,
 ) -> None:
     from condor.routine_hooks import _resolve_report_html
     from condor.routine_store import _http_bot
 
+    suffix = f" ({window_label})" if window_label else ""
     await _http_bot.send_message(
         chat_id=chat_id,
-        text=f"Pullback backtest report saved\nPreset: {preset_name}",
+        text=f"Pullback backtest report saved\nPreset: {preset_name}{suffix}",
     )
     if not report_id:
         return
     html, filename = _resolve_report_html(report_id, None)
+    window_stem = f"_{window_label}" if window_label else ""
     await _http_bot.send_document(
         chat_id=chat_id,
         document=html.encode("utf-8"),
-        caption=f"Backtest report: {preset_name}",
-        filename=filename or f"{preset_name}.html",
+        caption=f"Backtest report: {preset_name}{suffix}",
+        filename=filename or f"{preset_name}{window_stem}.html",
     )
 
 
@@ -709,10 +768,12 @@ async def save_lead_reports_from_shared(
     preset_names: list[str],
     *,
     total_amount_quote: float = 100.0,
+    window_tag: str | None = None,
 ) -> list[tuple[str, str | None]]:
     """Simulate each lead on an already-hydrated tape and save Condor UI reports.
 
     Intended to run after sweep workers exit so it does not allocate a second tape.
+    ``window_tag`` marks the report as the 30d screen or 1y verify run.
     """
     from routines.macdbb_pullback_hl_backtest import (
         Config,
@@ -727,7 +788,13 @@ async def save_lead_reports_from_shared(
     loader = shared["loader"]
     saved: list[tuple[str, str | None]] = []
     for preset_name in unique_names:
-        logger.info("Saving pullback backtest report for %s on shared tape", preset_name)
+        logger.info(
+            "Saving pullback backtest report for %s on shared tape%s",
+            preset_name,
+            f" ({REPORT_WINDOW_TITLES.get(window_tag, window_tag)})"
+            if window_tag
+            else "",
+        )
         kwargs = {
             **shared["base_kwargs"],
             "preset": preset_name,
@@ -760,10 +827,14 @@ async def save_lead_reports_from_shared(
                     trades=trades,
                 )
             )
+        extra_tags = [window_tag] if window_tag else []
+        title_suffix = REPORT_WINDOW_TITLES.get(window_tag or "", "") or None
         _text, report_id = await save_pullback_backtest_report(
             config,
             all_trades=all_trades,
             session_rows=session_rows,
+            extra_tags=extra_tags,
+            title_suffix=title_suffix,
         )
         logger.info(
             "Saved report id=%s for %s trades=%d",
@@ -840,6 +911,9 @@ __all__ = [
     "LeaderTracker",
     "PRESET_NAME_PREFIX",
     "PRESET_STRIP_KEYS",
+    "REPORT_WINDOW_SWEEP_30D",
+    "REPORT_WINDOW_TITLES",
+    "REPORT_WINDOW_VERIFY_1Y",
     "PromoteJob",
     "PullbackSweepResult",
     "SweepLeaderState",

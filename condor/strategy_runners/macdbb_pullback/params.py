@@ -223,7 +223,7 @@ class MacdbbPullbackHlParams(BaseModel):
         json_schema_extra={"group": "Position monitor"},
     )
     thesis_decay_exit_hours: float = Field(
-        default=28.0,
+        default=8.0,
         ge=0.0,
         le=168.0,
         description="Hours of thesis-decay NEUTRAL monitor ticks before closing",

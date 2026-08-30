@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tape-once pullback sweep: entry-gate 2k, dynamics 3k, or lookback/ATR probe.
+"""Tape-once pullback sweep: entry-gate 2k, dynamics 5k, or lookback/ATR probe.
 
 Hydrates the 30d ticks/candles/signal tape once. 1y verify hydrates lazily on
 the first screen leader and is kept for later verifies. Checkpoints every N
@@ -85,7 +85,7 @@ def verify_tape_policy(*, verify_enabled: bool, coverage_ok: bool) -> str:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Pullback mega-sweep (random 2k / dynamics 3k / lookback-ATR probe)"
+        description="Pullback mega-sweep (random 2k / dynamics 5k / lookback-ATR probe)"
     )
     parser.add_argument(
         "--grid",
@@ -119,8 +119,28 @@ def _parse_args() -> argparse.Namespace:
             "pullback_lookback_atr_probe_lead_NNN (probe)"
         ),
     )
-    parser.add_argument("--min-configs", type=int, default=0)
-    parser.add_argument("--seed", type=int, default=-1)
+    parser.add_argument(
+        "--min-configs",
+        "--configs",
+        dest="min_configs",
+        type=int,
+        default=0,
+        help=(
+            "Number of configs to draw. 0 uses the grid default "
+            "(2000 entry, 5000 dynamics, probe cell count). "
+            "Same override pattern as --seed."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=-1,
+        help=(
+            "RNG seed. Negative uses the grid default "
+            "(auto from latest sweep lead for dynamics/probe). "
+            "Pass an explicit value to override."
+        ),
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY)
     parser.add_argument(
@@ -168,6 +188,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _resolve_grid_defaults(args: argparse.Namespace) -> argparse.Namespace:
     from routines.macdbb_pullback_hl_replay.dynamics_sweep import (
+        DYNAMICS_SWEEP_CONFIG_COUNT,
         dynamics_sweep_out_dir,
         dynamics_sweep_seed,
         lookback_atr_probe_out_dir,
@@ -189,7 +210,7 @@ def _resolve_grid_defaults(args: argparse.Namespace) -> argparse.Namespace:
             args.out_dir = "data/backtests/pullback_dynamics_gate"
     if args.min_configs <= 0:
         if grid == "dynamics":
-            args.min_configs = 3000
+            args.min_configs = DYNAMICS_SWEEP_CONFIG_COUNT
         elif grid == "probe":
             args.min_configs = lookback_atr_probe_space_size()
         else:
@@ -397,6 +418,9 @@ async def _main() -> int:
         consider_and_promote,
         default_telegram_chat_id,
         default_verify_range_start,
+        REPORT_WINDOW_SWEEP_30D,
+        REPORT_WINDOW_TITLES,
+        REPORT_WINDOW_VERIFY_1Y,
         lead_presets_missing_reports,
         load_verify_result,
         promote_leader,
@@ -562,19 +586,24 @@ async def _main() -> int:
             return verify_shared
         return run_coro_blocking(lambda: _hydrate_verify_shared(case_row))
 
-    async def _write_missing_lead_reports(reason: str) -> None:
-        missing = lead_presets_missing_reports()
-        if not missing:
-            logging.info("No missing pullback lead reports (%s)", reason)
-            return
-        if verify_enabled and verify_shared is None:
+    async def _write_window_lead_reports(
+        *,
+        window_tag: str,
+        report_shared: dict[str, Any] | None,
+        tape_label: str,
+        reason: str,
+    ) -> None:
+        if report_shared is None:
             logging.info(
-                "Deferring 1y lead reports until verify tape is hydrated (%s)",
+                "Deferring %s lead reports until tape is ready (%s)",
+                tape_label,
                 reason,
             )
             return
-        report_shared = verify_shared if verify_shared is not None else shared
-        tape_label = "verify tape" if verify_shared is not None else "sweep tape"
+        missing = lead_presets_missing_reports(window_tag=window_tag)
+        if not missing:
+            logging.info("No missing %s lead reports (%s)", tape_label, reason)
+            return
         logging.info(
             "Writing Condor reports for %d lead(s) on the %s (%s)",
             len(missing),
@@ -585,15 +614,44 @@ async def _main() -> int:
             report_shared,
             missing,
             total_amount_quote=args.total_amount_quote,
+            window_tag=window_tag,
         )
+        window_label = REPORT_WINDOW_TITLES.get(window_tag, window_tag)
         if chat_id:
             for preset_name, report_id in saved:
                 try:
-                    await send_report_html_telegram(chat_id, preset_name, report_id)
+                    await send_report_html_telegram(
+                        chat_id,
+                        preset_name,
+                        report_id,
+                        window_label=window_label,
+                    )
                 except Exception:
                     logging.exception(
                         "Telegram report send failed for %s", preset_name
                     )
+
+    async def _write_missing_lead_reports(reason: str) -> None:
+        await _write_window_lead_reports(
+            window_tag=REPORT_WINDOW_SWEEP_30D,
+            report_shared=shared,
+            tape_label="30d sweep tape",
+            reason=reason,
+        )
+        if not verify_enabled:
+            return
+        if verify_shared is None:
+            logging.info(
+                "Deferring 1y lead reports until verify tape is hydrated (%s)",
+                reason,
+            )
+            return
+        await _write_window_lead_reports(
+            window_tag=REPORT_WINDOW_VERIFY_1Y,
+            report_shared=verify_shared,
+            tape_label="1y verify tape",
+            reason=reason,
+        )
 
     def _verify_and_maybe_promote(screen_row: dict[str, Any]) -> None:
         if verify_shared is None:
